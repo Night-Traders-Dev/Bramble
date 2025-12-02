@@ -1,51 +1,67 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "emulator.h"
 
+#define MAX_STEPS 10000
+
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("Usage: %s <firmware.uf2>
-", argv[0]);
-        return 1;
+        fprintf(stderr, "Usage: %s <firmware.uf2>\n", argv[0]);
+        return EXIT_FAILURE;
     }
 
-    // 1. Initialize Memory
-    // Note: cpu is defined in cpu.c, so we can access it here
-    memset(cpu.flash, 0, FLASH_SIZE);
+    printf("=== Bramble RP2040 Emulator ===\n\n");
+
+    /* Initialize CPU */
+    cpu_init();
+    memset(cpu.flash, 0xFF, FLASH_SIZE);  /* Flash default to 0xFF */
     memset(cpu.ram, 0, RAM_SIZE);
-    memset(cpu.r, 0, sizeof(cpu.r));
 
-    // 2. Load Firmware
+    /* Load Firmware */
+    printf("[Boot] Loading UF2 firmware...\n");
     if (!load_uf2(argv[1])) {
-        return 1;
+        fprintf(stderr, "[Boot] FATAL: Failed to load UF2\n");
+        return EXIT_FAILURE;
     }
 
-    // 3. Boot Sequence
-    // Standard RP2040 UF2s have a "Boot2" stage. The actual Application 
-    // Vector Table is usually at 0x10000100 (256 bytes in).
-    // We shortcut Boot2 and jump straight to the App Reset Handler.
+    /* Boot Sequence */
+    printf("[Boot] Initializing RP2040...\n");
     
-    uint32_t vector_table = FLASH_BASE + 0x100; 
+    /* Vector Table typically at 0x10000100 (after Boot2 ROM) */
+    uint32_t vector_table = FLASH_BASE + 0x100;
     
-    // Initial SP is the first word in the Vector Table
-    cpu.r[13] = mem_read32(vector_table); 
-    
-    // Reset Vector (PC) is the second word
-    cpu.r[15] = mem_read32(vector_table + 4); 
-    
-    // Thumb bit: PC LSB must be 1, masked off for execution logic
-    cpu.r[15] &= ~1; 
+    uint32_t initial_sp = mem_read32(vector_table);
+    uint32_t reset_vector = mem_read32(vector_table + 4);
 
-    printf("[System] Booting... SP=0x%08X, PC=0x%08X
-", cpu.r[13], cpu.r[15]);
+    /* Validate vectors */
+    if (initial_sp < RAM_BASE || initial_sp >= RAM_BASE + RAM_SIZE) {
+        fprintf(stderr, "[Boot] WARNING: Invalid Stack Pointer: 0x%08X\n", initial_sp);
+        initial_sp = RAM_BASE + RAM_SIZE;
+    }
+    if (reset_vector < FLASH_BASE || reset_vector >= FLASH_BASE + FLASH_SIZE) {
+        fprintf(stderr, "[Boot] FATAL: Invalid Reset Vector: 0x%08X\n", reset_vector);
+        return EXIT_FAILURE;
+    }
 
-    // 4. Run Loop
-    // Limit iterations for safety in this basic test
-    for (int i = 0; i < 100; i++) {
+    /* Set initial state */
+    cpu.r[13] = initial_sp;           /* R13 = SP */
+    cpu.r[15] = reset_vector & ~1;    /* R15 = PC (mask Thumb bit) */
+
+    printf("[Boot] SP = 0x%08X\n", cpu.r[13]);
+    printf("[Boot] PC = 0x%08X\n", cpu.r[15]);
+    printf("[Boot] Starting execution...\n\n");
+
+    /* Execution Loop */
+    for (int step = 0; step < MAX_STEPS; step++) {
         cpu_step();
+
+        if (cpu_is_halted()) {
+            printf("\n[CPU] Halted at step %d\n", step);
+            break;
+        }
     }
-    
-    printf("[System] Halted.
-");
-    return 0;
+
+    printf("\n[Boot] Execution complete. Total steps: %u\n", cpu.step_count);
+    return EXIT_SUCCESS;
 }

@@ -2,28 +2,40 @@
 #define EMULATOR_H
 
 #include <stdint.h>
+#include <stddef.h>
 
-// --- Memory Constants ---
-#define FLASH_BASE 0x10000000
-#define FLASH_SIZE (2 * 1024 * 1024) // 2 MB
-#define RAM_BASE   0x20000000
-#define RAM_SIZE   (264 * 1024)      // 264 KB
+/* Memory Layout */
+#define FLASH_BASE  0x10000000
+#define FLASH_SIZE  (2 * 1024 * 1024)      /* 2 MB */
+#define RAM_BASE    0x20000000
+#define RAM_SIZE    (264 * 1024)           /* 264 KB */
+#define MEM_END     0x30000000             /* Safe boundary */
 
-// --- System State ---
+/* UART0 Registers */
+#define UART0_BASE  0x40034000
+#define UART0_DR    (UART0_BASE + 0x000)   /* Data Register */
+#define UART0_FR    (UART0_BASE + 0x018)   /* Flag Register */
+
+/* CPU State */
 typedef struct {
     uint8_t flash[FLASH_SIZE];
     uint8_t ram[RAM_SIZE];
-    uint32_t r[16];  // Registers R0-R15
-    uint32_t xpsr;   // Status Register
+    uint32_t r[16];     /* R0-R15 (R13=SP, R14=LR, R15=PC) */
+    uint32_t xpsr;      /* Application Program Status Register */
+    uint32_t step_count;
 } cpu_state_t;
 
-// Global CPU instance (defined in cpu.c)
 extern cpu_state_t cpu;
 
-// --- Function Prototypes ---
+/* Function Prototypes */
 void mem_write32(uint32_t addr, uint32_t val);
 uint32_t mem_read32(uint32_t addr);
+uint16_t mem_read16(uint32_t addr);
+
+void cpu_init(void);
 void cpu_step(void);
+int cpu_is_halted(void);
+
 int load_uf2(const char *filename);
 
 #endif
