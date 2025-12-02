@@ -36,6 +36,10 @@ void cpu_step(void) {
     /* Decode and execute instruction */
     if ((instr & 0xF800) == 0x2000) {
         instr_movs_imm8(instr);
+    } else if ((instr & 0xFE00) == 0x1C00) {  // ADD immediate 3-bit
+        instr_adds_imm3(instr);
+    } else if ((instr & 0xFE00) == 0x1E00) {  // SUB immediate 3-bit
+        instr_subs_imm3(instr);
     } else if ((instr & 0xF800) == 0x4800) {
         instr_ldr_pc_imm8(instr);
     } else if ((instr & 0xF800) == 0x6000) {
@@ -85,8 +89,8 @@ void cpu_step(void) {
     } else if ((instr & 0xFFC0) == 0x43C0) {
         instr_bitwise_mvn(instr);
     } else {
+        printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
         return;
-//        printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
     }
 
     cpu.r[15] += 2;

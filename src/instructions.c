@@ -3,6 +3,21 @@
 #include "emulator.h"
 #include "instructions.h"
 
+void instr_adds_imm3(uint16_t instr) {
+    uint8_t imm = (instr >> 6) & 0x07;  // 3-bit immediate
+    uint8_t reg_src = (instr >> 3) & 0x07;
+    uint8_t reg_dst = instr & 0x07;
+    cpu.r[reg_dst] = cpu.r[reg_src] + imm;
+}
+
+void instr_subs_imm3(uint16_t instr) {
+    uint8_t imm = (instr >> 6) & 0x07;  // 3-bit immediate
+    uint8_t reg_src = (instr >> 3) & 0x07;
+    uint8_t reg_dst = instr & 0x07;
+    cpu.r[reg_dst] = cpu.r[reg_src] - imm;
+}
+
+
 void instr_movs_imm8(uint16_t instr) {
     uint8_t reg = (instr >> 8) & 0x07;
     uint8_t imm = instr & 0xFF;
