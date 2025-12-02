@@ -89,7 +89,9 @@ void cpu_step(void) {
     } else if ((instr & 0xFFC0) == 0x43C0) {
         instr_bitwise_mvn(instr);
     } else {
-        printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
+//        printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
+        cpu.r[15] += 2;
+        cpu.step_count++;
         return;
     }
 

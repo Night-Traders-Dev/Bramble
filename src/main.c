@@ -3,8 +3,6 @@
 #include <string.h>
 #include "emulator.h"
 
-#define MAX_STEPS 1000000  /* Increased from 100000 */
-
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <firmware.uf2>\n", argv[0]);
@@ -24,14 +22,14 @@ int main(int argc, char **argv) {
     }
 
     printf("[Boot] Initializing RP2040...\n");
-    
+
     uint32_t vector_table = FLASH_BASE + 0x100;
     uint32_t initial_sp = mem_read32(vector_table);
     uint32_t reset_vector = mem_read32(vector_table + 4);
 
-    if (initial_sp < RAM_BASE || initial_sp >= RAM_BASE + RAM_SIZE) {
+    if (initial_sp != RAM_TOP) {
         fprintf(stderr, "[Boot] WARNING: Invalid Stack Pointer: 0x%08X\n", initial_sp);
-        initial_sp = RAM_BASE + RAM_SIZE;
+        initial_sp = RAM_TOP;
     }
     if (reset_vector < FLASH_BASE || reset_vector >= FLASH_BASE + FLASH_SIZE) {
         fprintf(stderr, "[Boot] FATAL: Invalid Reset Vector: 0x%08X\n", reset_vector);
@@ -45,12 +43,8 @@ int main(int argc, char **argv) {
     printf("[Boot] PC = 0x%08X\n", cpu.r[15]);
     printf("[Boot] Starting execution...\n\n");
 
-    for (int step = 0; step < MAX_STEPS; step++) {
+    while (!cpu_is_halted()) {
         cpu_step();
-        if (cpu_is_halted()) {
-            printf("\n[CPU] Halted at step %d\n", step);
-            break;
-        }
     }
 
     printf("\n[Boot] Execution complete. Total steps: %u\n", cpu.step_count);
