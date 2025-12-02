@@ -17,7 +17,7 @@ int cpu_is_halted(void) {
 }
 
 void cpu_step(void) {
-    if (cpu.r[15] >= FLASH_BASE + FLASH_SIZE) {
+    if (cpu.r[15] > FLASH_BASE + FLASH_SIZE) {
         printf("[CPU] ERROR: PC out of bounds (0x%08X)\n", cpu.r[15]);
         return;
     }
