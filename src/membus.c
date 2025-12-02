@@ -2,67 +2,58 @@
 #include <string.h>
 #include "emulator.h"
 
-void mem_write32(uint32_t addr, uint32_t val) {
-    /* Bounds check */
-    if (addr + 4 > MEM_END) {
-        printf("[MEMBUS] WARNING: Write out of bounds at 0x%08X\n", addr);
-        return;
-    }
+/* SIO (Single-cycle I/O) Base */
+#define SIO_BASE   0xD0000000
 
+void mem_write32(uint32_t addr, uint32_t val) {
     if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
         uint32_t offset = addr - RAM_BASE;
         memcpy(&cpu.ram[offset], &val, 4);
+        return;
     }
-    else if (addr == UART0_DR) {
-        /* UART Data Register - Echo to stdout */
+    
+    if (addr == UART0_DR) {
         putchar((char)(val & 0xFF));
         fflush(stdout);
+        return;
     }
-    else if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
-        /* Flash is read-only in bootloader context */
-        printf("[MEMBUS] WARNING: Attempted write to Flash at 0x%08X\n", addr);
-    }
-    /* Silently ignore other peripheral writes */
+    
+    if (addr >= 0x40000000 && addr < 0x50000000) return;
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) return;
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) return;
 }
 
 uint32_t mem_read32(uint32_t addr) {
-    /* Bounds check */
-    if (addr + 4 > MEM_END) {
-        printf("[MEMBUS] WARNING: Read out of bounds at 0x%08X\n", addr);
-        return 0;
-    }
-
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
         uint32_t val;
         memcpy(&val, &cpu.flash[offset], 4);
         return val;
     }
-    else if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+    
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
         uint32_t offset = addr - RAM_BASE;
         uint32_t val;
         memcpy(&val, &cpu.ram[offset], 4);
         return val;
     }
+    
+    if (addr == UART0_FR) return 0x00000000;
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) return 0x00000000;
+    if (addr >= 0x40000000 && addr < 0x50000000) return 0x00000000;
 
-    /* Return 0 for unmapped memory */
     return 0;
 }
 
 uint16_t mem_read16(uint32_t addr) {
-    /* For Thumb instruction fetch */
-    if (addr + 2 > MEM_END) {
-        printf("[MEMBUS] WARNING: Read16 out of bounds at 0x%08X\n", addr);
-        return 0;
-    }
-
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
         uint16_t val;
         memcpy(&val, &cpu.flash[offset], 2);
         return val;
     }
-    else if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+    
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
         uint32_t offset = addr - RAM_BASE;
         uint16_t val;
         memcpy(&val, &cpu.ram[offset], 2);

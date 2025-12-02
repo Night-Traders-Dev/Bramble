@@ -12,7 +12,7 @@ void cpu_init(void) {
 }
 
 int cpu_is_halted(void) {
-    return 0;
+    return 0; // Extend with halt condition if needed
 }
 
 void cpu_step(void) {
@@ -22,10 +22,10 @@ void cpu_step(void) {
     }
 
     uint16_t instr = mem_read16(cpu.r[15]);
-    
+
     if (instr == 0x0000) {
-        if (cpu.step_count % 10000 == 0) {
-            printf("[CPU] 0x%08X: NOP (step %u)\n", cpu.r[15], cpu.step_count);
+        if (cpu.step_count % 50000 == 0) {
+            printf("[CPU] NOP at step %u\n", cpu.step_count);
         }
         cpu.r[15] += 2;
         cpu.step_count++;
@@ -38,7 +38,6 @@ void cpu_step(void) {
         uint8_t imm = instr & 0xFF;
         cpu.r[reg] = imm;
     }
-    
     /* LDR Rd, [PC, #imm8] (0100 1Rdii iiiiii) */
     else if ((instr & 0xF800) == 0x4800) {
         uint8_t reg = (instr >> 8) & 0x07;
@@ -46,16 +45,22 @@ void cpu_step(void) {
         uint32_t addr = (cpu.r[15] & ~3) + (imm * 4) + 4;
         cpu.r[reg] = mem_read32(addr);
     }
-    
+    /* LDR Rd, [Rn, #imm5] (0110 1iiii nnRdRd) */
+    else if ((instr & 0xF800) == 0x6800) {
+        uint8_t reg_dst = instr & 0x07;
+        uint8_t reg_src = (instr >> 3) & 0x07;
+        uint8_t imm = (instr >> 6) & 0x1F;
+        uint32_t addr = cpu.r[reg_src] + (imm * 4);
+        cpu.r[reg_dst] = mem_read32(addr);
+    }
     /* STR Rd, [Rn, #imm5] (0110 0iiii nnRdRd) */
     else if ((instr & 0xF800) == 0x6000) {
-        uint8_t reg_src = (instr >> 0) & 0x07;
+        uint8_t reg_src = instr & 0x07;
         uint8_t reg_dst = (instr >> 3) & 0x07;
         uint8_t imm = (instr >> 6) & 0x1F;
         uint32_t addr = cpu.r[reg_dst] + (imm * 4);
         mem_write32(addr, cpu.r[reg_src]);
     }
-    
     /* STRB Rd, [Rn, #imm5] (0111 0iiii nnRdRd) */
     else if ((instr & 0xF800) == 0x7000) {
         uint8_t reg_src = instr & 0x07;
@@ -65,35 +70,44 @@ void cpu_step(void) {
         uint8_t val = cpu.r[reg_src] & 0xFF;
         mem_write32(addr, val);
     }
-    
+    /* LDRB Rd, [Rn, #imm5] (0111 1iiii nnRdRd) */
+    else if ((instr & 0xF800) == 0x7800) {
+        uint8_t reg_dst = instr & 0x07;
+        uint8_t reg_src = (instr >> 3) & 0x07;
+        uint8_t imm = (instr >> 6) & 0x1F;
+        uint32_t addr = cpu.r[reg_src] + imm;
+        cpu.r[reg_dst] = mem_read32(addr) & 0xFF;
+    }
     /* ADD Rd, Rn (0100 01dd nnnnddd) */
     else if ((instr & 0xFFC0) == 0x4400) {
         uint8_t reg_src = (instr >> 3) & 0x0F;
         uint8_t reg_dst = ((instr >> 4) & 0x08) | (instr & 0x07);
         cpu.r[reg_dst] += cpu.r[reg_src];
     }
-    
     /* SUB Rd, Rn (0001 10nn nnRdRd) */
     else if ((instr & 0xFE00) == 0x1A00) {
         uint8_t reg_src = (instr >> 3) & 0x07;
         uint8_t reg_dst = instr & 0x07;
         cpu.r[reg_dst] -= cpu.r[reg_src];
     }
-    
     /* SUBS Rd, #imm8 (0011 1Rdd iiiiiiii) */
     else if ((instr & 0xF800) == 0x3800) {
         uint8_t reg = (instr >> 8) & 0x07;
         uint8_t imm = instr & 0xFF;
         cpu.r[reg] -= imm;
     }
-    
     /* ADDS Rd, #imm8 (0011 0Rdd iiiiiiii) */
     else if ((instr & 0xF800) == 0x3000) {
         uint8_t reg = (instr >> 8) & 0x07;
         uint8_t imm = instr & 0xFF;
         cpu.r[reg] += imm;
     }
-    
+    /* MOV Rd, Rm (0100 0110 dddmmm) */
+    else if ((instr & 0xFF00) == 0x4600) {
+        uint8_t reg_src = (instr >> 3) & 0x0F;
+        uint8_t reg_dst = ((instr >> 4) & 0x08) | (instr & 0x07);
+        cpu.r[reg_dst] = cpu.r[reg_src];
+    }
     /* PUSH {Rlist} (1011 0100 Rlist) */
     else if ((instr & 0xFF00) == 0xB400) {
         uint8_t rlist = instr & 0xFF;
@@ -104,7 +118,6 @@ void cpu_step(void) {
             }
         }
     }
-    
     /* POP {Rlist} (1011 1100 Rlist) */
     else if ((instr & 0xFF00) == 0xBC00) {
         uint8_t rlist = instr & 0xFF;
@@ -115,12 +128,10 @@ void cpu_step(void) {
             }
         }
     }
-    
-    /* BKPT #imm8 (1011 1110 iiii iiii) - BREAKPOINT INSTRUCTION */
+    /* BKPT #imm8 (1011 1110 iiii iiii) */
     else if ((instr & 0xFF00) == 0xBE00) {
-        return;  /* Halt execution */
+        /* Skip and continue execution */
     }
-    
     /* CMP Rd, Rn (0100 0010 00nn nddd) */
     else if ((instr & 0xFFC0) == 0x4280) {
         uint8_t reg_src = (instr >> 3) & 0x0F;
@@ -130,8 +141,7 @@ void cpu_step(void) {
         if (result == 0) cpu.xpsr |= 0x60000000;
         if ((int32_t)result < 0) cpu.xpsr |= 0x80000000;
     }
-    
-    /* STMIA Rn!, {Rlist} (1100 0nnn Rlist) - Store Multiple */
+    /* STMIA Rn!, {Rlist} (1100 0nnn Rlist) */
     else if ((instr & 0xF800) == 0xC000) {
         uint8_t reg_base = (instr >> 8) & 0x07;
         uint8_t rlist = instr & 0xFF;
@@ -142,8 +152,7 @@ void cpu_step(void) {
             }
         }
     }
-    
-    /* LDMIA Rn!, {Rlist} (1100 1nnn Rlist) - Load Multiple */
+    /* LDMIA Rn!, {Rlist} (1100 1nnn Rlist) */
     else if ((instr & 0xF800) == 0xC800) {
         uint8_t reg_base = (instr >> 8) & 0x07;
         uint8_t rlist = instr & 0xFF;
@@ -154,13 +163,11 @@ void cpu_step(void) {
             }
         }
     }
-    
     /* BEQ/BNE/BCS/BCC/BMI/BPL/BVS/BVC (1101 cccc iiii iiii) */
     else if ((instr & 0xF000) == 0xD000) {
         uint8_t cond = (instr >> 8) & 0x0F;
         int8_t offset = instr & 0xFF;
         offset = (offset << 24) >> 23;
-        
         int branch_taken = 0;
         switch (cond) {
             case 0x0: branch_taken = (cpu.xpsr & 0x60000000) != 0; break;
@@ -172,15 +179,13 @@ void cpu_step(void) {
             case 0x6: branch_taken = (cpu.xpsr & 0x10000000) != 0; break;
             case 0x7: branch_taken = (cpu.xpsr & 0x10000000) == 0; break;
         }
-        
         if (branch_taken) {
             cpu.r[15] += offset;
             cpu.step_count++;
             return;
         }
     }
-    
-    /* BL target (1111 0sss ssss ssss 1111 1sss ssss ssss) */
+    /* BL instruction (32-bit) */
     else if ((instr & 0xF800) == 0xF000) {
         uint16_t instr2 = mem_read16(cpu.r[15] + 2);
         if ((instr2 & 0xF800) == 0xF800) {
@@ -193,7 +198,6 @@ void cpu_step(void) {
             return;
         }
     }
-    
     /* BX Rn (0100 0111 0nnn 000) */
     else if ((instr & 0xFF87) == 0x4700) {
         uint8_t reg = (instr >> 3) & 0x0F;
@@ -202,11 +206,7 @@ void cpu_step(void) {
         cpu.step_count++;
         return;
     }
-    
-    else {
-        /* Skip unimplemented instructions silently */
-    }
-
+    /* Default: unimplemented instruction, skip */
     cpu.r[15] += 2;
     cpu.step_count++;
 }
