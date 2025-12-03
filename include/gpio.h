@@ -8,6 +8,12 @@
 #define PADS_BANK0_BASE     0x4001C000  /* GPIO pad controls */
 #define SIO_BASE_GPIO       0xD0000000  /* SIO for direct GPIO access */
 
+/* Register Alias Offsets for Atomic Operations */
+#define REG_ALIAS_RW_BITS   0x0000      /* Normal read/write */
+#define REG_ALIAS_XOR_BITS  0x1000      /* Atomic XOR */
+#define REG_ALIAS_SET_BITS  0x2000      /* Atomic SET (write 1s to set bits) */
+#define REG_ALIAS_CLR_BITS  0x3000      /* Atomic CLEAR (write 1s to clear bits) */
+
 /* SIO GPIO Registers (fast GPIO access) */
 #define SIO_GPIO_IN         (SIO_BASE_GPIO + 0x004)  /* GPIO input values */
 #define SIO_GPIO_OUT        (SIO_BASE_GPIO + 0x010)  /* GPIO output values */
@@ -51,19 +57,19 @@ typedef struct {
     uint32_t gpio_in;        /* Current input values */
     uint32_t gpio_out;       /* Output values */
     uint32_t gpio_oe;        /* Output enable mask */
-    
+
     /* Per-pin configuration (IO_BANK0) */
     struct {
         uint32_t status;     /* GPIO status register */
         uint32_t ctrl;       /* GPIO control register */
     } pins[NUM_GPIO_PINS];
-    
+
     /* Interrupt registers */
     uint32_t intr[4];        /* Raw interrupt status (8 pins per register) */
     uint32_t proc0_inte[4];  /* Interrupt enable for processor 0 */
     uint32_t proc0_intf[4];  /* Interrupt force for processor 0 */
     uint32_t proc0_ints[4];  /* Interrupt status for processor 0 */
-    
+
     /* Pad control registers */
     uint32_t pads[NUM_GPIO_PINS];
 } gpio_state_t;

@@ -21,9 +21,9 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* GPIO registers */
+    /* GPIO registers - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x100) ||
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         gpio_write32(addr, val);
         return;
@@ -48,9 +48,9 @@ void mem_write16(uint32_t addr, uint16_t val) {
         return;
     }
 
-    /* GPIO - promote to 32-bit write */
+    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x100) ||
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         gpio_write32(addr & ~0x3, val);  /* Align to 32-bit boundary */
         return;
@@ -67,20 +67,20 @@ void mem_write8(uint32_t addr, uint8_t val) {
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return;  /* Flash writes ignored */
     }
-    
+
     if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
         cpu.ram[addr - RAM_BASE] = val;
         return;
     }
-    
-    /* GPIO - promote to 32-bit write */
+
+    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x100) ||
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         gpio_write32(addr & ~0x3, val);  /* Align to 32-bit boundary */
         return;
     }
-    
+
     /* Stub out peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
     if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
@@ -106,9 +106,9 @@ uint32_t mem_read32(uint32_t addr) {
         return 0x00000090;
     }
 
-    /* GPIO registers */
+    /* GPIO registers - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x100) ||
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         return gpio_read32(addr);
     }
@@ -136,9 +136,9 @@ uint16_t mem_read16(uint32_t addr) {
         return val;
     }
 
-    /* GPIO - promote to 32-bit read and extract lower 16 bits */
+    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x100) ||
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         return (uint16_t)(val32 & 0xFFFF);
@@ -155,15 +155,15 @@ uint8_t mem_read8(uint32_t addr) {
     if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
         return cpu.ram[addr - RAM_BASE];
     }
-    
-    /* GPIO - promote to 32-bit read and extract appropriate byte */
+
+    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x100) ||
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         uint8_t byte_offset = addr & 0x3;
         return (uint8_t)((val32 >> (byte_offset * 8)) & 0xFF);
     }
-    
+
     return 0xFF;  /* Unmapped reads return 0xFF */
 }
