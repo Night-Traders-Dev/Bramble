@@ -20,6 +20,7 @@ set(SOURCES
     src/instructions.c
     src/membus.c
     src/uf2.c
+    src/gpio.c
 )
 
 # Executable
