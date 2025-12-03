@@ -274,7 +274,7 @@ void instr_pop(uint16_t instr) {
 
     /* P=1 means pop PC (R15) */
     if (p) {
-        cpu.r[15] = mem_read32(cpu.r[13]);
+        cpu.r[15] = mem_read32(cpu.r[13]) & ~1;
         cpu.r[13] += 4;
         /* Don't increment PC further - POP PC is a branch */
         return;
