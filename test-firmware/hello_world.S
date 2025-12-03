@@ -1,4 +1,4 @@
-/* hello_world.S - Final working version */
+/* hello_world.S - Fixed with explicit labels */
 
 .section .vectors, "a", %progbits
 .align 2
@@ -14,32 +14,31 @@ _start:
 .section .text
 .thumb_func
 reset_handler:
-    push {r4, lr}
-    ldr r0, =message
-    ldr r1, =0x40034000
-    ldr r2, =0x40034018
+    ldr r0, =message          /* Load message pointer */
+    ldr r1, =0x40034000       /* UART0 base */
+    ldr r2, =0x40034018       /* UART0_FR */
 
-1:  ldrb r3, [r0]
+print_loop:
+    ldrb r3, [r0]             /* Load byte */
     cmp r3, #0
-    beq 2f
+    beq  print_done           /* If null, done */
 
-wait:
-    ldr r4, [r2]
+wait_tx_ready:
+    ldr r4, [r2]              /* Read UART0_FR */
     movs r5, #0x20
-    tst r4, r5
-    bne wait
+    tst r4, r5                /* Check TXFF bit 5 */
+    bne  wait_tx_ready        /* Wait if FIFO full */
 
-    str r3, [r1]
-    add r0, #1
-    b 1b
+    str r3, [r1]              /* Write to UART0_DR */
+    add r0, #1                /* Advance pointer */
+    b    print_loop           /* Next character */
 
-2:  pop {r4, pc}
-    bkpt #0      /* Clean halt */
+print_done:
+    bkpt #0                   /* Halt emulator */
+    b    print_done           /* Stay here forever */
 
 .section .rodata
 message:
     .ascii "Hello from ASM!"
-    .byte 0      /* Explicit null terminator */
+    .byte 0                   /* Null terminator */
     .align 2
-
-/* No .size directives needed */
