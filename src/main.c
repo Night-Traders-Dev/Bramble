@@ -6,7 +6,26 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <firmware.uf2>", argv[0]);
+        fprintf(stderr, "Usage: %s [-debug] <firmware.uf2>\n", argv[0]);
+        fprintf(stderr, "  -debug    Enable verbose CPU step output\n");
+        return EXIT_FAILURE;
+    }
+
+    /* Parse command line arguments */
+    int debug_mode = 0;
+    char *firmware_path = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-debug") == 0 || strcmp(argv[i], "--debug") == 0) {
+            debug_mode = 1;
+        } else {
+            firmware_path = argv[i];
+        }
+    }
+
+    if (!firmware_path) {
+        fprintf(stderr, "Error: No firmware file specified\n");
+        fprintf(stderr, "Usage: %s [-debug] <firmware.uf2>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -14,6 +33,9 @@ int main(int argc, char **argv) {
 
     /* Initialize CPU state */
     cpu_init();
+
+    /* Set debug mode */
+    cpu.debug_enabled = debug_mode;
 
     /* Initialize peripherals */
     gpio_init();
@@ -23,7 +45,7 @@ int main(int argc, char **argv) {
     memset(cpu.ram, 0, RAM_SIZE);
 
     printf("[Boot] Loading UF2 firmware...\n");
-    if (!load_uf2(argv[1])) {
+    if (!load_uf2(firmware_path)) {
         fprintf(stderr, "[Boot] FATAL: Failed to load UF2\n");
         return EXIT_FAILURE;
     }
@@ -31,15 +53,13 @@ int main(int argc, char **argv) {
     printf("[Boot] Initializing RP2040...\n");
 
     /* Read vector table from START OF FLASH (0x10000000) */
-    uint32_t vector_table = FLASH_BASE;  /* ✅ FIXED: No +0x100 offset */
+    uint32_t vector_table = FLASH_BASE;
     uint32_t initial_sp = mem_read32(vector_table);
     uint32_t reset_vector = mem_read32(vector_table + 4);
 
     /* Validate SP (should be top of RAM) */
     if (initial_sp != RAM_TOP) {
         fprintf(stderr, "[Boot] WARNING: Stack Pointer not at RAM_TOP: 0x%08X\n", initial_sp);
-        /* Optional: Force it to RAM_TOP if firmware has wrong SP */
-        /* initial_sp = RAM_TOP; */
     }
 
     /* Validate reset vector (should be in flash range) */
@@ -54,6 +74,11 @@ int main(int argc, char **argv) {
 
     printf("[Boot] SP = 0x%08X\n", cpu.r[13]);
     printf("[Boot] PC = 0x%08X\n", cpu.r[15]);
+    
+    if (debug_mode) {
+        printf("[Boot] Debug mode enabled\n");
+    }
+    
     printf("[Boot] Starting execution...\n");
 
     /* Run until halt */
