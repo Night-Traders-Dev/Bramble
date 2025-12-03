@@ -31,8 +31,10 @@ void instr_bitwise_orr(uint16_t instr);
 void instr_bitwise_bic(uint16_t instr);
 void instr_bitwise_mvn(uint16_t instr);
 void instr_adds_imm3(uint16_t instr);
+void instr_adds_imm8(uint16_t instr);
 void instr_subs_imm3(uint16_t instr);
 void instr_ldrb_reg_offset(uint16_t instr);
+void instr_tst_reg_reg(uint16_t instr);
 
 
 #endif

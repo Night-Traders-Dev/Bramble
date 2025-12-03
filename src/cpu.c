@@ -98,6 +98,8 @@ void cpu_step(void) {
         instr_ldr_reg_offset(instr);
     } else if ((instr & 0xFFC0) == 0x4400) {   /* ADD (register) */
         instr_add_reg_reg(instr);
+    } else if ((instr & 0xF800) == 0x3000) {   /* ADDS imm8 */
+        instr_adds_imm8(instr);
     } else if ((instr & 0xFE00) == 0x1A00) {   /* SUB (register) */
         instr_sub_reg_reg(instr);
     } else if ((instr & 0xFE00) == 0xB400) {   /* PUSH (includes R14) */
@@ -135,6 +137,8 @@ void cpu_step(void) {
         instr_bitwise_bic(instr);
     } else if ((instr & 0xFFC0) == 0x43C0) {   /* MVN (register) */
         instr_bitwise_mvn(instr);
+    } else if ((instr & 0xFFC0) == 0x4200) {   /* TST (register) */
+        instr_tst_reg_reg(instr);
     } else {
         /* Unknown / unimplemented instruction: log and halt */
         instr_unimplemented(instr);

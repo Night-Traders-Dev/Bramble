@@ -12,6 +12,17 @@ void instr_adds_imm3(uint16_t instr) {
     cpu.r[reg_dst] = cpu.r[reg_src] + imm;
 }
 
+
+void instr_adds_imm8(uint16_t instr) {
+    uint8_t reg = (instr >> 8) & 0x07;
+    uint8_t imm = instr & 0xFF;
+    cpu.r[reg] += imm;
+    /* Update flags */
+    cpu.xpsr = 0;
+    if (cpu.r[reg] == 0) cpu.xpsr |= 0x40000000;      /* Z flag */
+    if ((cpu.r[reg] & 0x80000000) != 0) cpu.xpsr |= 0x80000000;  /* N flag */
+}
+
 void instr_subs_imm3(uint16_t instr) {
     uint8_t imm = (instr >> 6) & 0x07;
     uint8_t reg_src = (instr >> 3) & 0x07;
@@ -47,6 +58,16 @@ void instr_cmp_reg_reg(uint16_t instr) {
 }
 
 /* ============ Bitwise Instructions ============ */
+
+void instr_tst_reg_reg(uint16_t instr) {
+    uint8_t reg_src = (instr >> 3) & 0x07;
+    uint8_t reg_dst = instr & 0x07;
+    uint32_t result = cpu.r[reg_dst] & cpu.r[reg_src];
+
+    cpu.xpsr = 0;
+    if (result == 0) cpu.xpsr |= 0x40000000;      /* Z flag (bit 30) */
+    if ((int32_t)result < 0) cpu.xpsr |= 0x80000000;  /* N flag (bit 31) */
+}
 
 void instr_bitwise_and(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x07;
