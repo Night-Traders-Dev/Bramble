@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "emulator.h"
+#include "gpio.h"
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -13,6 +14,9 @@ int main(int argc, char **argv) {
 
     /* Initialize CPU state */
     cpu_init();
+
+    /* Initialize peripherals */
+    gpio_init();
 
     /* Clear flash to erased state (0xFF) and RAM to 0 */
     memset(cpu.flash, 0xFF, FLASH_SIZE);
