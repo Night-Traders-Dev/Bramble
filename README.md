@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **Working Beta** ✅
+## Current Status: **Enhanced Beta** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set, and provides working UART0 output. The emulator cleanly executes test programs with proper halting via BKPT instructions.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set, provides working UART0 output, and **now includes full GPIO emulation**! The emulator cleanly executes test programs with proper halting via BKPT instructions.
 
 ### ✅ What Works
 
@@ -43,6 +43,12 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
 
 - **Accurate Flag Handling**: N, Z, C, V flags with proper carry/overflow detection
 - **UART0 Emulation**: Character output via `UART0_DR` (0x40034000) with TX FIFO status
+- **✨ GPIO Emulation (NEW!)**: Complete 30-pin GPIO peripheral with:
+  - SIO fast GPIO access (direct read/write, atomic operations)
+  - IO_BANK0 per-pin configuration (function select, control)
+  - PADS_BANK0 pad control (pull-up/down, drive strength)
+  - Interrupt registers (enable, force, status)
+  - All 10 GPIO functions supported (SIO, UART, SPI, I2C, PWM, PIO, etc.)
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -55,12 +61,21 @@ Output: "Hello from ASM!" ✅
 Halt: Clean BKPT #0 at 0x1000005A ✅
 ```
 
-All registers preserved correctly, flags set accurately, no garbage output.
+**gpio_test.uf2** (GPIO test):
+```
+GPIO Test Starting...
+GPIO 25 configured as output
+LED ON / LED OFF (x5 cycles) ✅
+Final state: LED OFF ✅
+GPIO Test Complete!
+```
+
+All registers preserved correctly, flags set accurately, GPIO state properly managed!
 
 ### ⚠️ Known Limitations
 
-- **Limited Peripheral Emulation**: Only UART0 is fully implemented; other RP2040 peripherals (GPIO, timers, DMA, etc.) return stub values
-- **No Interrupt Support**: NVIC and interrupt handling are not yet implemented
+- **Limited Peripheral Emulation**: UART0 and GPIO are implemented; other peripherals (timers, DMA, etc.) return stub values
+- **No Interrupt Support**: NVIC and interrupt handling are not yet implemented (GPIO interrupt registers exist but don't trigger CPU)
 - **No Cycle Accuracy**: Instructions execute in logical order without timing simulation
 - **Single Core Only**: Second Cortex-M0+ core not emulated
 
@@ -70,6 +85,7 @@ All registers preserved correctly, flags set accurately, no garbage output.
 
 - GCC cross-compiler: `arm-none-eabi-gcc`
 - CMake 3.10+
+- Python 3 (for UF2 conversion)
 - Standard C library (host)
 
 ### Build the Emulator
@@ -83,40 +99,53 @@ This builds the `bramble` executable in the project root.
 
 ### Build Test Firmware
 
-Assembly test program (prints "Hello from ASM!"):
+**Hello World** (prints "Hello from ASM!"):
 ```bash
 cd test-firmware
-./build.sh
+chmod +x build.sh
+./build.sh hello_world
+```
+
+**GPIO Test** (toggles LED on GPIO 25):
+```bash
+cd test-firmware
+./build.sh gpio
+```
+
+**Build All Tests**:
+```bash
+cd test-firmware
+./build.sh all
 ```
 
 ### Run
 
+**Hello World:**
 ```bash
 ./bramble hello_world.uf2
 ```
 
-Expected output:
+**GPIO Test:**
+```bash
+./bramble gpio_test.uf2
+```
+
+Expected GPIO output:
 ```
 === Bramble RP2040 Emulator ===
 
 [Boot] Loading UF2 firmware...
-[LOADER] Starting UF2 load from: hello_world.uf2
-[LOADER] Block 1: magic0=0x0A324655 magic1=0x9E5D5157 target=0x10000000 size=256
-[LOADER] Wrote to flash[0x00000000] = 0x20042000
-[LOADER] Load complete: 1/1 valid blocks processed
 [Boot] Initializing RP2040...
 [Boot] SP = 0x20042000
 [Boot] PC = 0x10000040
 [Boot] Starting execution...
-[CPU] Step  1: PC=0x10000040 instr=0x4807
+GPIO Test Starting...
+GPIO 25 configured as output
+LED ON
+LED OFF
 ...
-Hello from ASM!
-[CPU] BKPT #0 at 0x1000005A
-[CPU] Program halted at breakpoint
-Register State:
-  R0 =0x1000007B    R1 =0x40034000    R2 =0x40034018    R3 =0x00000000
-  ...
-[Boot] Execution complete. Total steps: 187
+GPIO Test Complete!
+[Boot] Execution complete.
 ```
 
 ## Project Structure
@@ -128,17 +157,56 @@ Bramble/
 │   ├── cpu.c           # Cortex-M0+ core: fetch, decode, dispatch
 │   ├── instructions.c  # 60+ Thumb instruction implementations
 │   ├── membus.c        # Memory system: flash, RAM, peripherals
+│   ├── gpio.c          # GPIO peripheral emulation (NEW!)
 │   └── uf2.c           # UF2 file loader
 ├── include/
-│   └── emulator.h      # Core definitions and CPU state
-│   └── instructions.h  # Instruction handler prototypes
+│   ├── emulator.h      # Core definitions and CPU state
+│   ├── instructions.h  # Instruction handler prototypes
+│   └── gpio.h          # GPIO register definitions (NEW!)
 ├── test-firmware/
-│   ├── hello_world.S   # Assembly test program
+│   ├── hello_world.S   # Assembly UART test
+│   ├── gpio_test.S     # Assembly GPIO test (NEW!)
 │   ├── linker.ld       # Memory layout definition
+│   ├── uf2conv.py      # UF2 conversion utility
 │   └── build.sh        # Firmware build script
+├── docs/
+│   └── GPIO.md         # GPIO peripheral documentation (NEW!)
 ├── CMakeLists.txt      # Build configuration
-└── build.sh            # Top-level build script
+├── build.sh            # Top-level build script
+└── README.md           # This file
 ```
+
+## GPIO Peripheral ✨
+
+### Features
+
+- **30 GPIO Pins** (GPIO 0-29, matching RP2040)
+- **SIO Fast Access**: Direct read/write at 0xD0000000
+- **Atomic Operations**: SET, CLR, XOR registers for thread-safe bit manipulation
+- **Function Select**: All 10 GPIO functions (SIO, UART, SPI, I2C, PWM, PIO0/1, etc.)
+- **Per-Pin Configuration**: Control and status registers via IO_BANK0
+- **Pad Control**: Pull-up/down, drive strength via PADS_BANK0
+- **Interrupt Support**: Registers implemented (NVIC integration pending)
+
+### Quick Example
+
+```assembly
+/* Configure GPIO 25 as output (LED on Pico) */
+ldr r0, =0x400140CC      /* GPIO25_CTRL */
+movs r1, #5              /* Function 5 = SIO */
+str r1, [r0]
+
+/* Enable output */
+ldr r0, =0xD0000024      /* SIO_GPIO_OE_SET */
+ldr r1, =(1 << 25)       /* Bit 25 */
+str r1, [r0]
+
+/* Turn LED on */
+ldr r0, =0xD0000014      /* SIO_GPIO_OUT_SET */
+str r1, [r0]
+```
+
+See [docs/GPIO.md](docs/GPIO.md) for complete documentation.
 
 ## Technical Implementation
 
@@ -148,9 +216,17 @@ The emulator accurately models the RP2040 address space:
 - **Flash (XIP)**: 0x10000000 - 0x101FFFFF (2MB executable)
 - **SRAM**: 0x20000000 - 0x20041FFF (264KB)
 - **APB Peripherals**: 0x40000000 - 0x4FFFFFFF (UART, GPIO, timers, etc.)
-- **SIO**: 0xD0000000 - 0xD0000FFF (Single-cycle I/O)
+- **SIO**: 0xD0000000 - 0xD0000FFF (Single-cycle I/O, GPIO fast access)
 
 All accesses respect alignment requirements and return appropriate values for unimplemented regions.
+
+### Peripheral Integration
+
+Peripherals are integrated into the memory bus (`membus.c`):
+- Reads/writes to peripheral address ranges are routed to peripheral modules
+- GPIO: `0x40014000` (IO_BANK0), `0x4001C000` (PADS), `0xD0000000` (SIO)
+- UART0: `0x40034000`
+- Stub responses for unimplemented peripherals
 
 ### Instruction Decoding
 
@@ -163,25 +239,6 @@ Thumb instructions are decoded using a priority-ordered bitmask dispatch system 
 
 Critical insight: The dispatcher must check more-specific masks before less-specific ones to avoid false matches.
 
-### Branch Offset Calculation
-
-**Conditional branches (Bcond):**
-```c
-target = PC + 4 + (sign_extend(imm8) << 1)
-```
-The +4 accounts for ARM's pipelined PC (pointing 2 instructions ahead).
-
-**Unconditional branch (B):**
-```c
-target = PC + 4 + (sign_extend(imm11) << 1)
-```
-
-**Branch and Link (BL - 32-bit):**
-```c
-target = PC + 4 + (sign_extend(imm22) << 1)
-LR = next_instruction | 1  // Set Thumb bit
-```
-
 ### Flag Management
 
 The emulator implements full APSR flag semantics:
@@ -191,13 +248,6 @@ The emulator implements full APSR flag semantics:
 - **V (Overflow)**: Signed overflow (operands same sign, result different)
 
 Helper functions `update_add_flags()` and `update_sub_flags()` ensure consistency across all arithmetic instructions.
-
-### UART0 Implementation
-
-- **UART0_DR (0x40034000)**: Writes output via `putchar()`, reads return 0xFF
-- **UART0_FR (0x40034018)**: Returns 0x90 (TXFE=1, RXFE=1) indicating ready state
-
-This minimal implementation supports character output without timing simulation.
 
 ### UF2 Loading
 
@@ -209,71 +259,12 @@ The loader validates:
 
 Multi-block firmware images are supported with sequential loading.
 
-## Development Notes
-
-Building this emulator from scratch revealed several critical ARM emulation pitfalls:
-
-### 1. **The BCOND +4 Offset Bug** (Most Critical)
-Conditional branches must add 4 to PC *before* applying the signed offset. Early versions added only the offset, causing branches to land 4 bytes early, missing BKPT instructions and looping incorrectly.
-
-**Fix:**
-```c
-if (take_branch) {
-    cpu.r[15] += 4 + signed_offset;  // Not just signed_offset!
-} else {
-    cpu.r[15] += 2;
-}
-```
-
-### 2. **PC Management Discipline**
-Control-flow instructions (B, BL, BX, BKPT, POP with PC) must fully own PC updates and `return` immediately. Data processing instructions must *never* touch PC—the dispatcher increments it. Mixing these responsibilities causes infinite loops and instruction skips.
-
-### 3. **Instruction Dispatch Ordering**
-More-specific encodings must be checked before general ones:
-```c
-// WRONG: Matches everything starting with 0100
-if ((instr & 0xF000) == 0x4000) { /* ... */ }
-else if ((instr & 0xFFC0) == 0x4000) { /* ANDS */ }
-
-// RIGHT: Check specific first
-if ((instr & 0xFFC0) == 0x4000) { /* ANDS */ }
-else if ((instr & 0xF000) == 0x4000) { /* ... */ }
-```
-
-### 4. **32-bit Instruction Handling**
-BL and other 32-bit instructions require reading the second halfword explicitly:
-```c
-uint16_t instr2 = mem_read16(cpu.r[15] + 2);
-// Then combine and decode both halfwords
-// Then advance PC by 4, not 2
-```
-
-### 5. **Flag Semantics Matter**
-- **CMP/TST**: Set flags, don't store result
-- **CMN**: ADD for flags (compare negative)
-- **Carry**: Different meaning for ADD (overflow) vs. SUB (NOT borrow)
-- **Shift carry**: Bit shifted *out* becomes carry
-
-### 6. **Sign Extension Gotchas**
-Loading signed bytes/halfwords requires explicit sign extension:
-```c
-uint8_t byte = mem_read8(addr);
-cpu.r[rd] = (byte & 0x80) ? (byte | 0xFFFFFF00) : byte;
-```
-
-### 7. **Test-Driven Development**
-Each instruction was validated with real RP2040 assembly. The `hello_world.S` test exercises:
-- PC-relative loads (LDR with literal pool)
-- Memory access (LDRB byte reads)
-- Loops (conditional branches)
-- UART output (peripheral writes)
-- Proper termination (BKPT)
-
 ## Performance
 
 The emulator executes simple firmware at approximately:
 - **Simple loop**: ~5,000 instructions/second (development build)
 - **UART output**: Limited by `putchar()` overhead
+- **GPIO operations**: Instant (no electrical simulation)
 - **Memory access**: Direct array indexing (no caching overhead)
 
 Performance is adequate for firmware debugging and testing. Optimization (JIT, caching) could achieve 100x improvement but isn't currently needed.
@@ -281,7 +272,7 @@ Performance is adequate for firmware debugging and testing. Optimization (JIT, c
 ## Future Work
 
 ### High Priority
-- [ ] **GPIO Emulation**: Basic pin state and direction registers
+- [x] **GPIO Emulation**: Basic pin state and direction registers ✅
 - [ ] **Timer Peripherals**: TIMER0-3 with alarm support
 - [ ] **Interrupt Support**: NVIC, exception entry/exit, priority handling
 - [ ] **GDB Stub**: Remote debugging protocol for source-level debugging
@@ -289,8 +280,9 @@ Performance is adequate for firmware debugging and testing. Optimization (JIT, c
 ### Medium Priority
 - [ ] **Cycle Counting**: Accurate timing for peripheral synchronization
 - [ ] **Watchdog Timer**: Reset and debug timeout functionality
-- [ ] **SIO Operations**: FIFO, spinlocks, divider
+- [ ] **SIO Operations**: FIFO, spinlocks, hardware divider
 - [ ] **DMA Engine**: Multi-channel transfer controller
+- [ ] **Additional Peripherals**: SPI, I2C, PWM
 
 ### Low Priority
 - [ ] **PIO State Machines**: RP2040's unique programmable I/O
@@ -299,7 +291,7 @@ Performance is adequate for firmware debugging and testing. Optimization (JIT, c
 - [ ] **USB Device**: Full-speed USB 1.1 controller emulation
 
 ### Nice to Have
-- [ ] **Visual Debugger**: GUI with register/memory inspection
+- [ ] **Visual GPIO Debugger**: GUI showing pin states in real-time
 - [ ] **Trace Export**: Execution history for analysis
 - [ ] **Performance Profiling**: Hotspot identification
 - [ ] **Automated Test Suite**: Instruction validation framework
@@ -307,7 +299,7 @@ Performance is adequate for firmware debugging and testing. Optimization (JIT, c
 ## Contributing
 
 Contributions welcome! Areas of particular interest:
-- **Peripheral implementations** (GPIO, I2C, SPI, PWM)
+- **Peripheral implementations** (timers, I2C, SPI, PWM)
 - **Test firmware** exercising different instruction patterns
 - **Bug reports** with reproducible test cases
 - **Documentation** improvements
@@ -326,7 +318,6 @@ MIT License - Feel free to use, modify, and learn from this project.
 
 ***
 
-**Bramble** demonstrates that accurate hardware emulation requires both correct implementation *and* proper testing. With 60+ instructions, accurate flag handling, and clean halt detection, it's ready for real firmware development and debugging workflows.
+**Bramble** demonstrates that accurate hardware emulation requires both correct implementation *and* proper testing. With 60+ instructions, accurate flag handling, full GPIO support, and clean halt detection, it's ready for real firmware development and debugging workflows.
 
 *Built from scratch with ☕ and debugging patience.*
-
