@@ -5,6 +5,7 @@
 #include "instructions.h"
 
 cpu_state_t cpu = {0};
+int pc_updated = 0;
 
 void cpu_init(void) {
     memset(cpu.r, 0, sizeof(cpu.r));
@@ -56,9 +57,6 @@ void cpu_step(void) {
     if ((instr & 0xFF00) == 0xBE00) {          /* BKPT */
         instr_bkpt(instr);
         return;
-    } else if ((instr & 0xF000) == 0xD000) {   /* B{cond} */
-        instr_bcond(instr);
-        return;
     } else if ((instr & 0xF800) == 0xF000) {   /* BL (32-bit) */
         instr_bl(instr);
         return;
@@ -72,8 +70,13 @@ void cpu_step(void) {
 
     /* -------- Normal 16-bit instructions (PC auto-increments) -------- */
 
+    if ((instr & 0xF000) == 0xD000) {          /* B{cond} */
+        instr_bcond(instr);
+        pc_updated = 1;  /* BCOND always updates PC (branch or fallthrough) */
+
+
     /* ADD/SUB with immediate (including SP-relative) */
-    if ((instr & 0xFF00) == 0xAF00) {          /* ADD SP, SP, imm8 */
+    } else if ((instr & 0xFF00) == 0xAF00) {          /* ADD SP, SP, imm8 */
         uint8_t imm = (instr & 0x7F) * 4;
         cpu.r[13] += imm;
     } else if ((instr & 0xFF00) == 0xAE00) {   /* SUB SP, SP, imm8 */
