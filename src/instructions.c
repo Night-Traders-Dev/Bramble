@@ -295,7 +295,7 @@ void instr_b_uncond(uint16_t instr) {
     /* Multiply by 2 (Thumb instructions are 2-byte aligned) */
     signed_offset <<= 1;
     /* Branch: PC = PC + 4 + offset */
-    cpu.r[15] += signed_offset;
+    cpu.r[15] += 4 + signed_offset;  // ← FIXED: Added +4
 }
 
 void instr_bcond(uint16_t instr) {
@@ -354,7 +354,7 @@ void instr_bcond(uint16_t instr) {
     }
 
     if (take_branch) {
-        cpu.r[15] += 4 + signed_offset;  // ← FIXED: Added +4
+        cpu.r[15] += 4 + signed_offset;
     } else {
         cpu.r[15] += 2;
     }
