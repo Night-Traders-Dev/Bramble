@@ -34,8 +34,8 @@ wait_tx_ready:
     b    print_loop           /* Next character */
 
 print_done:
-    bkpt #0                   /* Halt emulator */
-    b    print_done           /* Stay here forever */
+    BKPT #0
+    B print_done
 
 .section .rodata
 message:
