@@ -1,5 +1,5 @@
 /*
- * Simplified GPIO Test - Inline version
+ * Simplified GPIO Test - Fixed version
  */
 
 .syntax unified
@@ -32,14 +32,7 @@ _vectors:
 _start:
     /* Print: GPIO Test Starting... */
     ldr r0, =msg1
-    ldr r1, =UART0_DR
-1:  ldrb r2, [r0]
-    cmp r2, #0
-    beq 2f
-    str r2, [r1]
-    adds r0, #1
-    b 1b
-2:
+    bl print_str
 
     /* Configure GPIO 25 as SIO (function 5) */
     ldr r0, =GPIO25_CTRL
@@ -53,37 +46,24 @@ _start:
 
     /* Print: Configured */
     ldr r0, =msg2
-    ldr r1, =UART0_DR
-1:  ldrb r2, [r0]
-    cmp r2, #0
-    beq 2f
-    str r2, [r1]
-    adds r0, #1
-    b 1b
-2:
+    bl print_str
 
     /* Toggle 3 times */
     movs r4, #3
-toggle:
+toggle_loop:
     /* LED ON */
     ldr r0, =SIO_GPIO_OUT_SET
     ldr r1, =LED_MASK
     str r1, [r0]
 
     ldr r0, =msg_on
-    ldr r1, =UART0_DR
-1:  ldrb r2, [r0]
-    cmp r2, #0
-    beq 2f
-    str r2, [r1]
-    adds r0, #1
-    b 1b
-2:
+    bl print_str
 
     /* Delay */
     ldr r3, =50000
-1:  subs r3, #1
-    bne 1b
+delay1:
+    subs r3, #1
+    bne delay1
 
     /* LED OFF */
     ldr r0, =SIO_GPIO_OUT_CLR
@@ -91,59 +71,58 @@ toggle:
     str r1, [r0]
 
     ldr r0, =msg_off
-    ldr r1, =UART0_DR
-1:  ldrb r2, [r0]
-    cmp r2, #0
-    beq 2f
-    str r2, [r1]
-    adds r0, #1
-    b 1b
-2:
+    bl print_str
 
     /* Delay */
     ldr r3, =50000
-1:  subs r3, #1
-    bne 1b
+delay2:
+    subs r3, #1
+    bne delay2
 
     subs r4, #1
-    bne toggle
+    bne toggle_loop
 
     /* Read GPIO state */
     ldr r0, =SIO_GPIO_IN
     ldr r0, [r0]
     ldr r1, =LED_MASK
     ands r0, r1
-    bne final_on
+    bne led_on_final
 
-final_off:
+led_off_final:
     ldr r0, =msg_off_final
-    b final_print
+    b print_final
 
-final_on:
+led_on_final:
     ldr r0, =msg_on_final
 
-final_print:
-    ldr r1, =UART0_DR
-1:  ldrb r2, [r0]
-    cmp r2, #0
-    beq 2f
-    str r2, [r1]
-    adds r0, #1
-    b 1b
-2:
+print_final:
+    bl print_str
 
     /* Print done */
     ldr r0, =msg_done
-    ldr r1, =UART0_DR
-1:  ldrb r2, [r0]
-    cmp r2, #0
-    beq done
-    str r2, [r1]
-    adds r0, #1
-    b 1b
+    bl print_str
 
-done:
+    /* Halt */
     bkpt #0
+
+/* Print string subroutine */
+/* Input: r0 = pointer to null-terminated string */
+.align 2
+.thumb_func
+print_str:
+    push {r0, r1, r2, lr}
+    movs r1, r0              /* String pointer */
+    ldr r2, =UART0_DR        /* UART data register */
+print_loop:
+    ldrb r0, [r1]            /* Load byte */
+    cmp r0, #0               /* Check for null */
+    beq print_done
+    str r0, [r2]             /* Write to UART */
+    adds r1, #1              /* Next character */
+    b print_loop
+print_done:
+    pop {r0, r1, r2, pc}     /* Return */
 
 .section .rodata
 .align 2
