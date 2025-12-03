@@ -27,6 +27,40 @@ void mem_write32(uint32_t addr, uint32_t val) {
     /* Any other region is currently treated as unmapped/no-op. */
 }
 
+void mem_write16(uint32_t addr, uint16_t val) {
+    /* Writes to XIP flash are ignored: in real hardware this is external QSPI flash. */
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+        return;
+    }
+
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+        uint32_t offset = addr - RAM_BASE;
+        memcpy(&cpu.ram[offset], &val, 2);
+        return;
+    }
+
+    /* Stub out peripheral writes for now. */
+    if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
+    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
+
+    /* Any other region is currently treated as unmapped/no-op. */
+}
+
+void mem_write8(uint32_t addr, uint8_t val) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+        return;  /* Flash writes ignored */
+    }
+    
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+        cpu.ram[addr - RAM_BASE] = val;
+        return;
+    }
+    
+    /* Stub out peripheral writes for now. */
+    if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
+    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
+}
+
 uint32_t mem_read32(uint32_t addr) {
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
@@ -74,7 +108,6 @@ uint16_t mem_read16(uint32_t addr) {
     return 0;
 }
 
-
 uint8_t mem_read8(uint32_t addr) {
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return cpu.flash[addr - FLASH_BASE];
@@ -83,10 +116,4 @@ uint8_t mem_read8(uint32_t addr) {
         return cpu.ram[addr - RAM_BASE];
     }
     return 0xFF;  /* Unmapped reads return 0xFF */
-}
-
-void mem_write8(uint32_t addr, uint8_t val) {
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        cpu.ram[addr - RAM_BASE] = val;
-    }
 }
