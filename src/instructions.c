@@ -162,23 +162,42 @@ void instr_ldmia(uint16_t instr) {
 
 void instr_push(uint16_t instr) {
     uint8_t rlist = instr & 0xFF;
+    uint8_t m = (instr >> 8) & 0x01;  /* M bit: R14 for PUSH */
+
     for (int i = 0; i < 8; i++) {
         if (rlist & (1 << i)) {
             cpu.r[13] -= 4;
             mem_write32(cpu.r[13], cpu.r[i]);
         }
     }
+
+    /* M=1 means push LR (R14) */
+    if (m) {
+        cpu.r[13] -= 4;
+        mem_write32(cpu.r[13], cpu.r[14]);
+    }
 }
 
 void instr_pop(uint16_t instr) {
     uint8_t rlist = instr & 0xFF;
+    uint8_t p = (instr >> 8) & 0x01;  /* P bit: R15 for POP */
+
     for (int i = 0; i < 8; i++) {
         if (rlist & (1 << i)) {
             cpu.r[i] = mem_read32(cpu.r[13]);
             cpu.r[13] += 4;
         }
     }
+
+    /* P=1 means pop PC (R15) */
+    if (p) {
+        cpu.r[15] = mem_read32(cpu.r[13]);
+        cpu.r[13] += 4;
+        /* Don't increment PC further - POP PC is a branch */
+        return;
+    }
 }
+
 
 /* ============ Branch Instructions ============ */
 

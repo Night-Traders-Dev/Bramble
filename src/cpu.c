@@ -89,10 +89,14 @@ void cpu_step(void) {
         instr_add_reg_reg(instr);
     } else if ((instr & 0xFE00) == 0x1A00) {   /* SUB (register) */
         instr_sub_reg_reg(instr);
-    } else if ((instr & 0xFF00) == 0xB400) {   /* PUSH */
+    } else if ((instr & 0xFE00) == 0xB400) {   /* PUSH */
         instr_push(instr);
-    } else if ((instr & 0xFF00) == 0xBC00) {   /* POP (R0-R7 only for now) */
+    } else if ((instr & 0xFE00) == 0xBC00) {   /* POP (R0-R7 only for now) */
         instr_pop(instr);
+        if ((instr & 0x0100) == 0) {  /* If P=0, advance PC normally */
+            cpu.r[15] = pc + 2;
+        }
+        return;
     } else if ((instr & 0xFFC0) == 0x4280) {   /* CMP (register) */
         instr_cmp_reg_reg(instr);
     } else if ((instr & 0xF800) == 0xC000) {   /* STMIA */
