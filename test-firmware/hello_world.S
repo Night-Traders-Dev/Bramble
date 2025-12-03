@@ -1,7 +1,8 @@
+/* hello_world.S - Final working version */
+
 .section .vectors, "a", %progbits
 .align 2
 .global _start
-.global reset_handler
 
 _start:
     .word 0x20042000          /* Initial SP */
@@ -22,17 +23,23 @@ reset_handler:
     cmp r3, #0
     beq 2f
 
-3:  ldr r4, [r2]
+wait:
+    ldr r4, [r2]
     movs r5, #0x20
     tst r4, r5
-    bne 3b
+    bne wait
 
     str r3, [r1]
     add r0, #1
     b 1b
 
 2:  pop {r4, pc}
+    bkpt #0      /* Clean halt */
 
 .section .rodata
 message:
-    .asciz "Hello from ASM!"
+    .ascii "Hello from ASM!"
+    .byte 0      /* Explicit null terminator */
+    .align 2
+
+/* No .size directives needed */

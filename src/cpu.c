@@ -139,6 +139,9 @@ void cpu_step(void) {
         instr_bitwise_mvn(instr);
     } else if ((instr & 0xFFC0) == 0x4200) {   /* TST (register) */
         instr_tst_reg_reg(instr);
+    } else if ((instr & 0xF800) == 0xE000) {   /* B (unconditional) */
+        instr_b_uncond(instr);
+        return;
     } else {
         /* Unknown / unimplemented instruction: log and halt */
         instr_unimplemented(instr);

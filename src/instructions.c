@@ -240,6 +240,22 @@ void instr_pop(uint16_t instr) {
 
 /* ============ Branch Instructions ============ */
 
+void instr_b_uncond(uint16_t instr) {
+    /* B encoding: 11100 offset[10:0] */
+    int16_t offset = instr & 0x07FF;  /* Extract 11-bit offset */
+    /* Sign extend from 11 bits */
+    if (offset & 0x0400) {  /* If bit 10 set */
+        offset |= 0xF800;   /* Sign extend to 16 bits */
+    }
+    /* Sign extend to 32 bits */
+    int32_t signed_offset = (int32_t)offset;
+    /* Multiply by 2 (Thumb instructions are 2-byte aligned) */
+    signed_offset <<= 1;
+    /* Branch: PC = PC + 4 + offset */
+    cpu.r[15] += signed_offset;
+}
+
+
 void instr_bcond(uint16_t instr) {
     uint8_t cond = (instr >> 8) & 0x0F;
     int8_t offset = instr & 0xFF;
