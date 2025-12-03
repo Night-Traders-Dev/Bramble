@@ -1,34 +1,35 @@
-.syntax unified
-.cpu cortex-m0plus
-.thumb
+/* boot.S - Minimal RP2040 vector table */
 
-.section .vectors, "ax"
+.section .vectors, "a", %progbits
 .align 2
+.global _vectors
 
-/* Vector table */
-.word 0x20042000           /* Initial Stack Pointer (top of RAM) */
-.word _start + 1           /* Reset vector (Thumb mode bit set) */
+_vectors:
+    .word 0x20042000          /* Initial SP (top of SRAM) */
+    .word Reset_Handler + 1   /* Reset vector (Thumb bit set) */
+    .word Reset_Handler + 1   /* NMI */
+    .word Reset_Handler + 1   /* HardFault */
+    /* Fill remaining vectors */
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
+    .word 0xFFFFFFFF
 
+/* Reset handler */
 .section .text
-.align 2
-.thumb_func
+.global Reset_Handler
+.type Reset_Handler, %function
 
-.global _start
-_start:
-    /* Stack pointer already initialized by vector table */
-    
-    /* Call main function */
-    movs r0, #0            /* Clear r0 */
-    movs r1, #0            /* Clear r1 */
-    movs r2, #0            /* Clear r2 */
-    movs r3, #0            /* Clear r3 */
-    
-    /* Branch to main (PC-relative) */
-    ldr  r4, =main
-    bx   r4
+Reset_Handler:
+    bl main          /* Call C main */
+    b .              /* Loop forever */
 
-halt:
-    bkpt #0                /* Breakpoint for emulator */
-    b    halt              /* Loop forever */
-
-.size _start, . - _start
+.size Reset_Handler, . - Reset_Handler

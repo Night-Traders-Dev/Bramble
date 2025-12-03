@@ -1,32 +1,22 @@
-#include <stdint.h>
-
-/* UART0 Register Addresses */
+/* hello_world.c - UART only */
 #define UART0_BASE  0x40034000
-#define UART0_DR    (UART0_BASE + 0x000)   /* Data Register */
-#define UART0_FR    (UART0_BASE + 0x018)   /* Flag Register */
+#define UART0_DR    (*(volatile unsigned int *)(UART0_BASE + 0x00))
+#define UART0_FR    (*(volatile unsigned int *)(UART0_BASE + 0x18))
 
-/* Simple UART write function */
-void uart_putc(char c) {
-    volatile uint32_t *uart_dr = (uint32_t *)UART0_DR;
-    *uart_dr = (uint32_t)c;
+static void uart_putc(char c) {
+    while (UART0_FR & (1 << 5)) {}  /* Wait while TXFF set */
+    UART0_DR = c;
 }
 
-/* Print string to UART */
-void uart_puts(const char *str) {
-    while (*str) {
-        uart_putc(*str++);
+static void uart_print(const char *s) {
+    while (*s) {
+        uart_putc(*s++);
     }
 }
 
-/* Entry point - called by boot.S */
-int main(void) {
-    /* Print message */
-    uart_puts("\n=== Bramble RP2040 Emulator ===\n");
-    uart_puts("Hello, Bramble!\n");
-    uart_puts("Firmware executed successfully.\n\n");
-    
-    /* Terminate with breakpoint for clean exit */
-    __asm__ volatile("bkpt #0");
-    
-    return 0;
+void main(void) {
+    uart_print("Hello from bare-metal!");
+    while (1) {
+        __asm__ volatile ("wfi");
+    }
 }
