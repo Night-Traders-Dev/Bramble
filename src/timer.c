@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #include "timer.h"
 #include "emulator.h"
 
@@ -60,8 +61,7 @@ void timer_tick(uint32_t cycles) {
                 /* TODO: Trigger IRQ to NVIC when implemented */
                 /* For now, just log it */
                 if (cpu.debug_enabled) {
-                    printf("[TIMER] Alarm %d triggered at %llu us\n", 
-                           i, timer_state.time_us);
+                     printf("[TIMER] Alarm %d triggered at %" PRIu64 " us\n", i, timer_state.time_us);
                 }
             }
         }
