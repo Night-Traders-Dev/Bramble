@@ -39,6 +39,15 @@ void     mem_write32(uint32_t addr, uint32_t val);
 uint32_t mem_read32(uint32_t addr);
 uint16_t mem_read16(uint32_t addr);
 
+/* Memory access */
+uint8_t mem_read8(uint32_t addr);
+void mem_write8(uint32_t addr, uint8_t val);
+
+/* Instructions */
+void instr_cmp_imm8(uint16_t instr);
+void instr_ldrb_reg_offset(uint16_t instr);
+
+
 void cpu_init(void);
 void cpu_step(void);
 int  cpu_is_halted(void);

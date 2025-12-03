@@ -1,10 +1,11 @@
-/* hello_world.c - UART only */
+/* Minimal RP2040 UART0 Hello World - C version */
+
 #define UART0_BASE  0x40034000
 #define UART0_DR    (*(volatile unsigned int *)(UART0_BASE + 0x00))
 #define UART0_FR    (*(volatile unsigned int *)(UART0_BASE + 0x18))
 
 static void uart_putc(char c) {
-    while (UART0_FR & (1 << 5)) {}  /* Wait while TXFF set */
+    while (UART0_FR & (1 << 5));  /* Wait while TXFF set */
     UART0_DR = c;
 }
 
@@ -15,7 +16,7 @@ static void uart_print(const char *s) {
 }
 
 void main(void) {
-    uart_print("Hello from bare-metal!");
+    uart_print("Hello from C!");
     while (1) {
         __asm__ volatile ("wfi");
     }

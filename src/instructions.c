@@ -115,6 +115,25 @@ void instr_shift_arithmetic_right(uint16_t instr) {
 
 /* ============ Memory Instructions ============ */
 
+void instr_cmp_imm8(uint16_t instr) {
+    uint8_t reg = (instr >> 8) & 0x07;
+    uint8_t imm = instr & 0xFF;
+    uint32_t result = cpu.r[reg] - imm;
+    cpu.xpsr = 0;
+    if (result == 0) cpu.xpsr |= 0x60000000;      /* Z flag */
+    if ((int32_t)result < 0) cpu.xpsr |= 0x80000000;  /* N flag */
+    /* Add overflow/carry if needed */
+}
+
+
+void instr_ldrb_reg_offset(uint16_t instr) {
+    uint8_t reg_dst = instr & 0x07;
+    uint8_t reg_src = (instr >> 3) & 0x07;
+    uint8_t imm = (instr >> 6) & 0x1F;
+    uint32_t addr = cpu.r[reg_src] + imm;
+    cpu.r[reg_dst] = mem_read8(addr);  /* Note: you need mem_read8 */
+}
+
 void instr_ldr_pc_imm8(uint16_t instr) {
     uint8_t reg = (instr >> 8) & 0x07;
     uint8_t imm = instr & 0xFF;
@@ -273,7 +292,7 @@ void instr_bkpt(uint16_t instr) {
 
     for (int i = 0; i < 13; i++) {
         printf("  R%-2d=0x%08X  ", i, cpu.r[i]);
-        if ((i + 1) % 4 == 0) printf("");
+        if ((i + 1) % 4 == 0) printf("\n");
     }
     printf("  R13(SP)=0x%08X  R14(LR)=0x%08X  R15(PC)=0x%08X",
            cpu.r[13], cpu.r[14], cpu.r[15]);

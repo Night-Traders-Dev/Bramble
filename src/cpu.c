@@ -81,6 +81,8 @@ void cpu_step(void) {
         instr_adds_imm3(instr);
     } else if ((instr & 0xFE00) == 0x1E00) {   /* SUBS imm3 */
         instr_subs_imm3(instr);
+    } else if ((instr & 0xF800) == 0x7800) {   /* LDRB (reg offset) */
+        instr_ldrb_reg_offset(instr);
     } else if ((instr & 0xF800) == 0x4800) {   /* LDR (PC-relative, imm8) */
         instr_ldr_pc_imm8(instr);
     } else if ((instr & 0xF800) == 0x6000) {   /* STR (reg offset) */
@@ -100,6 +102,10 @@ void cpu_step(void) {
             cpu.r[15] = pc + 2;
         }
         return;  /* POP modifies PC directly */
+    } else if ((instr & 0xF800) == 0x2800) {   /* CMP imm8 */
+        instr_cmp_imm8(instr);
+    } else if ((instr & 0xF800) == 0x7800) {   /* LDRB (reg offset) */
+        instr_ldrb_reg_offset(instr);
     } else if ((instr & 0xFFC0) == 0x4280) {   /* CMP (register) */
         instr_cmp_reg_reg(instr);
     } else if ((instr & 0xF800) == 0xC000) {   /* STMIA */

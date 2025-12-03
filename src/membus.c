@@ -73,3 +73,20 @@ uint16_t mem_read16(uint32_t addr) {
     /* No 16-bit peripheral emulation yet. */
     return 0;
 }
+
+
+uint8_t mem_read8(uint32_t addr) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+        return cpu.flash[addr - FLASH_BASE];
+    }
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+        return cpu.ram[addr - RAM_BASE];
+    }
+    return 0xFF;  /* Unmapped reads return 0xFF */
+}
+
+void mem_write8(uint32_t addr, uint8_t val) {
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+        cpu.ram[addr - RAM_BASE] = val;
+    }
+}

@@ -12,7 +12,6 @@ arm-none-eabi-ld -T ../linker.ld hello_world.o -o hello_world.elf
 echo "[3/3] Converting to UF2..."
 arm-none-eabi-objcopy -O binary hello_world.elf hello_world.bin
 python3 ../uf2conv.py hello_world.bin -o ../../hello_world.uf2 -b 0x10000000 -f 0xE48BFF56
-cp hello_world.elf ../
-#cd ../ && rm -rf build
+cd ../ && rm -rf build
 
 echo "✓ Build complete: hello_world.uf2"
