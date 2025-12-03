@@ -42,12 +42,15 @@ _start:
     .word 0xFFFFFFFF          /* Unused exception vectors */
     .endr
 
-/* Entry point */
+/* Code section */
 .section .text
+.align 2
+
+/* Entry point */
 .thumb_func
 reset_handler:
     /* Print startup message */
-    ldr r1, =msg_start
+    ldr r0, =msg_start
     bl print_string
 
     /* Configure GPIO 25 as SIO function */
@@ -60,7 +63,7 @@ reset_handler:
     ldr r1, =LED_MASK
     str r1, [r0]
 
-    ldr r1, =msg_configured
+    ldr r0, =msg_configured
     bl print_string
 
     /* Toggle LED 5 times */
@@ -71,7 +74,7 @@ toggle_loop:
     ldr r1, =LED_MASK
     str r1, [r0]
     
-    ldr r1, =msg_on
+    ldr r0, =msg_on
     bl print_string
 
     /* Simple delay */
@@ -85,7 +88,7 @@ delay_on:
     ldr r1, =LED_MASK
     str r1, [r0]
     
-    ldr r1, =msg_off
+    ldr r0, =msg_off
     bl print_string
 
     /* Simple delay */
@@ -108,25 +111,28 @@ delay_off:
     beq led_is_off
 
 led_is_on:
-    ldr r1, =msg_final_on
+    ldr r0, =msg_final_on
     bl print_string
     b test_complete
 
 led_is_off:
-    ldr r1, =msg_final_off
+    ldr r0, =msg_final_off
     bl print_string
 
 test_complete:
-    ldr r1, =msg_done
+    ldr r0, =msg_done
     bl print_string
 
-    /* Halt - BKPT already stops execution, no need for infinite loop */
+    /* Halt - BKPT stops execution */
     bkpt #0
 
+.align 2
 /* Print null-terminated string */
-/* r1 = pointer to string */
+/* r0 = pointer to string */
 .thumb_func
 print_string:
+    push {r1, r2, r3, lr}    /* Save registers */
+    movs r1, r0              /* Move string pointer to r1 */
     ldr r2, =UART0_DR
 print_loop:
     ldrb r3, [r1]
@@ -136,7 +142,7 @@ print_loop:
     adds r1, #1
     b print_loop
 print_done:
-    bx lr
+    pop {r1, r2, r3, pc}     /* Restore and return */
 
 /* Data section */
 .section .rodata
@@ -155,3 +161,4 @@ msg_final_off:
     .asciz "Final state: LED OFF\n"
 msg_done:
     .asciz "GPIO Test Complete!\n"
+.align 2
