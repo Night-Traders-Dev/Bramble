@@ -3,6 +3,7 @@
 #include <string.h>
 #include "emulator.h"
 #include "instructions.h"
+#include "timer.h"
 
 
 cpu_state_t cpu = {0};
@@ -349,6 +350,8 @@ void cpu_step(void) {
         instr_unimplemented(instr);
         return;
     }
+
+    timer_tick(1);
 
     /* Advance to next 16-bit instruction (if not already handled) */
     cpu.r[15] = pc + 2;

@@ -21,6 +21,7 @@ set(SOURCES
     src/membus.c
     src/uf2.c
     src/gpio.c
+    src/timer.c
 )
 
 # Executable

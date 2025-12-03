@@ -2,6 +2,7 @@
 #include <string.h>
 #include "emulator.h"
 #include "gpio.h"
+#include "timer.h"
 
 void mem_write32(uint32_t addr, uint32_t val) {
     /* Writes to XIP flash are ignored: in real hardware this is external QSPI flash. */
@@ -18,6 +19,11 @@ void mem_write32(uint32_t addr, uint32_t val) {
     if (addr == UART0_DR) {
         putchar((char)(val & 0xFF));
         fflush(stdout);
+        return;
+    }
+
+    if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
+        timer_write32(addr, val);
         return;
     }
 
@@ -105,6 +111,10 @@ uint32_t mem_read32(uint32_t addr) {
     if (addr == UART0_FR) {
         /* PL011-style UARTFR reset: TXFE=1 (bit 7), RXFE=1 (bit 4), others 0. */
         return 0x00000090;
+    }
+
+    if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
+        return timer_read32(addr);
     }
 
     /* GPIO registers - UPDATED to include all PADSBANK0 alias regions */
