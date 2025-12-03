@@ -77,6 +77,7 @@ uint32_t timer_read32(uint32_t addr) {
             
         case TIMER_TIMELR:
             /* Read low word of 64-bit counter */
+            printf("[TIMER] Read TIMELR = %u us\n", (uint32_t)(timer_state.time_us & 0xFFFFFFFF));
             return (uint32_t)(timer_state.time_us & 0xFFFFFFFF);
             
         case TIMER_TIMERAWH:

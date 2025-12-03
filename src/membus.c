@@ -22,8 +22,11 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+
+    /* Timer registers */
     if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
         timer_write32(addr, val);
+        printf("[MEMBUS] Timer read at 0x%08X\n", addr);  /* ADD THIS DEBUG LINE */
         return;
     }
 

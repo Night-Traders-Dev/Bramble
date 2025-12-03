@@ -852,9 +852,14 @@ void instr_isb(uint32_t instr) {
 }
 
 void instr_wfi(uint16_t instr) {
-    // WFI - Wait For Interrupt
+    /* Wait For Interrupt - halt CPU until interrupt pending */
     (void)instr;
-    printf("[CPU] WFI at 0x%08X (no-op in emulator)\n", cpu.r[15]);
+    if (cpu.debug_enabled) {
+        printf("[CPU] WFI - Waiting for interrupt\n");
+    }
+    /* In our emulator, just continue - timer will trigger on next tick */
+    /* Real implementation would halt until timer_state.intr != 0 */
+    cpu.r[15] += 2;
 }
 
 void instr_wfe(uint16_t instr) {
