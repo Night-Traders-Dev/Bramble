@@ -43,8 +43,8 @@ void cpu_step(void) {
     uint16_t instr = mem_read16(pc);
 
     cpu.step_count++;
-    if (cpu.step_count < 200) {
-        printf("[CPU] Step %2u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
+    if (cpu.step_count < 500) {  /* Increased from 200 to 500 for GPIO testing */
+        printf("[CPU] Step %3u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
     }
 
     /* Treat all-zero halfword as NOP */
