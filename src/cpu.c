@@ -4,7 +4,6 @@
 #include "emulator.h"
 #include "instructions.h"
 
-#define MAX_STEPS 1000
 
 cpu_state_t cpu = {0};
 int pc_updated = 0;
@@ -44,13 +43,7 @@ void cpu_step(void) {
     uint16_t instr = mem_read16(pc);
 
     cpu.step_count++;
-    // Safety limit
-    if (cpu.step_count > MAX_STEPS) {
-        printf("\n\n[CPU] Maximum steps reached (%d), halting\n", MAX_STEPS);
-        cpu.r[15] = 0xFFFFFFFF;
-        return;
-    }
-    if (cpu.step_count < 50) {
+    if (cpu.step_count < 200) {
         printf("[CPU] Step %2u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
     }
 

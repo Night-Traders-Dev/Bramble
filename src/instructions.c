@@ -298,7 +298,6 @@ void instr_b_uncond(uint16_t instr) {
     cpu.r[15] += signed_offset;
 }
 
-
 void instr_bcond(uint16_t instr) {
     uint8_t cond = (instr >> 8) & 0x0F;
     int8_t offset = instr & 0xFF;
@@ -355,9 +354,8 @@ void instr_bcond(uint16_t instr) {
     }
 
     if (take_branch) {
-        cpu.r[15] += signed_offset;
+        cpu.r[15] += 4 + signed_offset;  // ← FIXED: Added +4
     } else {
-        // Branch not taken - advance PC normally
         cpu.r[15] += 2;
     }
 }
