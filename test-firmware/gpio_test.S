@@ -120,9 +120,8 @@ test_complete:
     ldr r1, =msg_done
     bl print_string
 
-    /* Halt */
+    /* Halt - BKPT already stops execution, no need for infinite loop */
     bkpt #0
-    b test_complete
 
 /* Print null-terminated string */
 /* r1 = pointer to string */
