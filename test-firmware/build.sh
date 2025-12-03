@@ -24,7 +24,7 @@ arm-none-eabi-objcopy -O binary hello_world.elf hello_world.bin
 # Convert to UF2
 echo "[5/5] Converting to UF2..."
 python3 ../uf2conv.py hello_world.bin -o ../../hello_world.uf2 -b 0x10000000 -f 0xE48BFF56
-cp hello_world.elf ../
+#cp hello_world.elf ../
 cd ../ && rm -rf build
 
 echo "✓ Build complete: hello_world.uf2"
