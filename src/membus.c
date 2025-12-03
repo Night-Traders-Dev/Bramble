@@ -25,6 +25,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
+//        printf("[GPIO_WRITE] addr=0x%08X val=0x%08X\n", addr, val);
         gpio_write32(addr, val);
         return;
     }

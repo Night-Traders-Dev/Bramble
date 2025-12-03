@@ -243,43 +243,74 @@ void instr_ldmia(uint16_t instr) {
 }
 
 void instr_push(uint16_t instr) {
-    uint8_t rlist = instr & 0xFF;
-    uint8_t m = (instr >> 8) & 0x01;  /* M bit: R14 for PUSH */
+    uint8_t reglist = instr & 0xFF;
+    uint8_t M = (instr >> 8) & 0x1;  /* bit 8: store LR? */
 
-    // Push in reverse order (R7 first if set)
-    for (int i = 7; i >= 0; i--) {
-        if (rlist & (1 << i)) {
-            cpu.r[13] -= 4;
-            mem_write32(cpu.r[13], cpu.r[i]);
+    uint32_t sp = cpu.r[13];
+
+    /* Debug: Print before PUSH */
+    if (cpu.debug_enabled && M) {
+//        printf("[PUSH] LR = 0x%08X\n", cpu.r[14]);
+    }
+
+    if (M) {
+        sp -= 4;
+        mem_write32(sp, cpu.r[14]);  /* Push LR */
+
+        if (cpu.debug_enabled) {
+  //          printf("[PUSH] Stored LR=0x%08X to 0x%08X\n", cpu.r[14], sp);
         }
     }
 
-    /* M=1 means push LR (R14) */
-    if (m) {
-        cpu.r[13] -= 4;
-        mem_write32(cpu.r[13], cpu.r[14]);
+    for (int i = 7; i >= 0; i--) {
+        if (reglist & (1 << i)) {
+            sp -= 4;
+            mem_write32(sp, cpu.r[i]);
+        }
     }
+
+    cpu.r[13] = sp;
 }
 
 void instr_pop(uint16_t instr) {
-    uint8_t rlist = instr & 0xFF;
-    uint8_t p = (instr >> 8) & 0x01;  /* P bit: R15 for POP */
+    uint8_t reglist = instr & 0xFF;
+    uint8_t P = (instr >> 8) & 0x1;  /* bit 8: load PC? */
+
+    uint32_t sp = cpu.r[13];
+
+    /* Debug: Print stack pointer */
+    if (cpu.debug_enabled) {
+//        printf("[POP] SP=0x%08X reglist=0x%02X P=%d\n", sp, reglist, P);
+    }
 
     for (int i = 0; i < 8; i++) {
-        if (rlist & (1 << i)) {
-            cpu.r[i] = mem_read32(cpu.r[13]);
-            cpu.r[13] += 4;
+        if (reglist & (1 << i)) {
+            cpu.r[i] = mem_read32(sp);
+
+            /* Debug: Show what we're popping */
+            if (cpu.debug_enabled) {
+//                printf("[POP] R%d = 0x%08X (from 0x%08X)\n", i, cpu.r[i], sp);
+            }
+
+            sp += 4;
         }
     }
 
-    /* P=1 means pop PC (R15) */
-    if (p) {
-        cpu.r[15] = mem_read32(cpu.r[13]) & ~1;
-        cpu.r[13] += 4;
-        /* Don't increment PC further - POP PC is a branch */
-        return;
+    if (P) {
+        uint32_t pc_val = mem_read32(sp);
+
+        /* Debug: Show PC being loaded */
+        if (cpu.debug_enabled) {
+//            printf("[POP] PC = 0x%08X (from 0x%08X)\n", pc_val, sp);
+        }
+
+        cpu.r[15] = pc_val & ~1;  /* Clear thumb bit */
+        sp += 4;
     }
+
+    cpu.r[13] = sp;
 }
+
 
 /* ============ Branch Instructions ============ */
 
@@ -360,31 +391,42 @@ void instr_bcond(uint16_t instr) {
     }
 }
 
-
 void instr_bl(uint16_t instr) {
-    /* BL is a 32-bit instruction encoded as two 16-bit halfwords */
+    /* Read second halfword */
     uint16_t instr2 = mem_read16(cpu.r[15] + 2);
-
-    /* Extract offset from both halfwords */
-    int32_t offset = 0;
-    offset |= (instr & 0x07FF) << 12;      /* Upper 11 bits of offset */
-    offset |= (instr2 & 0x07FF) << 1;      /* Lower 11 bits of offset */
-
-    /* Sign extend from bit 22 */
-    if (offset & 0x00400000) {
-        offset |= 0xFF800000;
+    
+    /* Extract signed 22-bit offset */
+    int32_t S = (instr >> 10) & 0x1;
+    int32_t J1 = (instr2 >> 13) & 0x1;
+    int32_t J2 = (instr2 >> 11) & 0x1;
+    int32_t I1 = !(J1 ^ S);
+    int32_t I2 = !(J2 ^ S);
+    
+    uint32_t imm10 = instr & 0x3FF;
+    uint32_t imm11 = instr2 & 0x7FF;
+    
+    int32_t offset = (S << 24) | (I1 << 23) | (I2 << 22) | 
+                     (imm10 << 12) | (imm11 << 1);
+    
+    if (offset & 0x01000000) {
+        offset |= 0xFE000000;
     }
 
-    /* Calculate next instruction address and target */
-    uint32_t next_pc = cpu.r[15] + 4;  /* Skip both halfwords */
-    uint32_t target = next_pc + offset;
+    uint32_t pc = cpu.r[15];
+    uint32_t target = pc + 4 + offset;
 
-    /* Save return address in LR with Thumb bit set */
-    cpu.r[14] = next_pc | 1;
+    /* LR = address of next instruction */
+    cpu.r[14] = (pc + 4) | 1;  /* Set thumb bit */
 
-    /* Set PC to target (clear Thumb bit for internal use) */
+    /* Debug: Show BL details */
+    if (cpu.debug_enabled) {
+//        printf("[BL] PC=0x%08X target=0x%08X LR=0x%08X\n",
+//               pc, target, cpu.r[14]);
+    }
+
     cpu.r[15] = target & ~1;
 }
+
 
 void instr_bx(uint16_t instr) {
     uint8_t reg = (instr >> 3) & 0x0F;
