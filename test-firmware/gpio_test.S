@@ -30,10 +30,22 @@
 .equ LED_PIN,           25          /* GPIO 25 is the LED on Raspberry Pi Pico */
 .equ LED_MASK,          (1 << LED_PIN)
 
+/* Vector table */
+.section .vectors, "a", %progbits
+.align 2
+.global _start
+
+_start:
+    .word 0x20042000          /* Initial SP (top of RAM) */
+    .word reset_handler + 1   /* Reset vector (Thumb mode) */
+    .rept 14
+    .word 0xFFFFFFFF          /* Unused exception vectors */
+    .endr
+
 /* Entry point */
 .section .text
-.global _start
-_start:
+.thumb_func
+reset_handler:
     /* Print startup message */
     ldr r1, =msg_start
     bl print_string
@@ -110,9 +122,11 @@ test_complete:
 
     /* Halt */
     bkpt #0
+    b test_complete
 
 /* Print null-terminated string */
 /* r1 = pointer to string */
+.thumb_func
 print_string:
     ldr r2, =UART0_DR
 print_loop:
@@ -127,6 +141,7 @@ print_done:
 
 /* Data section */
 .section .rodata
+.align 2
 msg_start:
     .asciz "GPIO Test Starting...\n"
 msg_configured:
@@ -141,5 +156,3 @@ msg_final_off:
     .asciz "Final state: LED OFF\n"
 msg_done:
     .asciz "GPIO Test Complete!\n"
-
-.align 2
