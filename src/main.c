@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
 
     /* Initialize CPU state */
     cpu_init();
-    
+
     /* Clear flash to erased state (0xFF) and RAM to 0 */
     memset(cpu.flash, 0xFF, FLASH_SIZE);
     memset(cpu.ram, 0, RAM_SIZE);

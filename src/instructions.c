@@ -120,11 +120,10 @@ void instr_cmp_imm8(uint16_t instr) {
     uint8_t imm = instr & 0xFF;
     uint32_t result = cpu.r[reg] - imm;
     cpu.xpsr = 0;
-    if (result == 0) cpu.xpsr |= 0x60000000;      /* Z flag */
-    if ((int32_t)result < 0) cpu.xpsr |= 0x80000000;  /* N flag */
-    /* Add overflow/carry if needed */
+    if (result == 0) cpu.xpsr |= 0x40000000;      /* Z flag (bit 30) */
+    if ((int32_t)result < 0) cpu.xpsr |= 0x80000000;  /* N flag (bit 31) */
+    /* Add carry and overflow if needed for completeness */
 }
-
 
 void instr_ldrb_reg_offset(uint16_t instr) {
     uint8_t reg_dst = instr & 0x07;
@@ -223,33 +222,49 @@ void instr_pop(uint16_t instr) {
 void instr_bcond(uint16_t instr) {
     uint8_t cond = (instr >> 8) & 0x0F;
     int8_t offset = instr & 0xFF;
-    
-    /* Sign extend from 8 bits: shift left 24, arithmetic shift right 23 */
     int32_t signed_offset = (int32_t)(offset << 24) >> 23;
     
     int take_branch = 0;
     switch (cond) {
-        case 0x0: take_branch = (cpu.xpsr & 0x60000000) != 0; break; /* EQ (Z=1) */
-        case 0x1: take_branch = (cpu.xpsr & 0x60000000) == 0; break; /* NE (Z=0) */
-        case 0x2: take_branch = (cpu.xpsr & 0x20000000) != 0; break; /* CS (C=1) */
-        case 0x3: take_branch = (cpu.xpsr & 0x20000000) == 0; break; /* CC (C=0) */
-        case 0x4: take_branch = (cpu.xpsr & 0x80000000) != 0; break; /* MI (N=1) */
-        case 0x5: take_branch = (cpu.xpsr & 0x80000000) == 0; break; /* PL (N=0) */
-        case 0x6: take_branch = (cpu.xpsr & 0x10000000) != 0; break; /* VS (V=1) */
-        case 0x7: take_branch = (cpu.xpsr & 0x10000000) == 0; break; /* VC (V=0) */
-        default: take_branch = 0; break;
+        case 0x0: /* EQ - Z set */
+            take_branch = (cpu.xpsr & 0x40000000) != 0;
+            break;
+        case 0x1: /* NE - Z clear */
+            take_branch = (cpu.xpsr & 0x40000000) == 0;
+            break;
+        case 0x2: /* CS/HS - C set */
+            take_branch = (cpu.xpsr & 0x20000000) != 0;
+            break;
+        case 0x3: /* CC/LO - C clear */
+            take_branch = (cpu.xpsr & 0x20000000) == 0;
+            break;
+        case 0x4: /* MI - N set */
+            take_branch = (cpu.xpsr & 0x80000000) != 0;
+            break;
+        case 0x5: /* PL - N clear */
+            take_branch = (cpu.xpsr & 0x80000000) == 0;
+            break;
+        case 0x6: /* VS - V set */
+            take_branch = (cpu.xpsr & 0x10000000) != 0;
+            break;
+        case 0x7: /* VC - V clear */
+            take_branch = (cpu.xpsr & 0x10000000) == 0;
+            break;
+        default:
+            break;
     }
     
     if (take_branch) {
         cpu.r[15] += signed_offset;
     }
-    /* If branch not taken, PC increments normally in cpu_step */
 }
+
+
 
 void instr_bl(uint16_t instr) {
     /* BL is a 32-bit instruction encoded as two 16-bit halfwords */
     uint16_t instr2 = mem_read16(cpu.r[15] + 2);
-    
+
     /* Extract offset from both halfwords */
     /* First halfword: 11110 sign Offset[10:0] */
     /* Second halfword: 11111 J1 J2 Offset[9:0] */

@@ -39,7 +39,11 @@ void cpu_step(void) {
     }
 
     uint16_t instr = mem_read16(pc);
+
     cpu.step_count++;
+    if (cpu.step_count < 50) {
+        printf("[CPU] Step %2u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
+    }
 
     /* Treat all-zero halfword as NOP */
     if (instr == 0x0000) {

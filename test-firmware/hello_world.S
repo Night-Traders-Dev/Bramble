@@ -1,43 +1,37 @@
-/* hello_world.S - Simplified Cortex-M0+ */
-
 .section .vectors, "a", %progbits
 .align 2
 .global _start
+.global reset_handler
 
 _start:
-    .word 0x20042000          /* SP */
-    .word reset_handler + 1   /* Reset */
+    .word 0x20042000          /* Initial SP */
+    .word reset_handler + 1   /* Reset vector */
     .rept 14
     .word 0xFFFFFFFF
     .endr
 
 .section .text
-.global reset_handler
 .thumb_func
-
 reset_handler:
     push {r4, lr}
     ldr r0, =message
     ldr r1, =0x40034000
     ldr r2, =0x40034018
 
-loop:
-    ldrb r3, [r0]
+1:  ldrb r3, [r0]
     cmp r3, #0
-    beq done
+    beq 2f
 
-wait:
-    ldr r4, [r2]
+3:  ldr r4, [r2]
     movs r5, #0x20
     tst r4, r5
-    bne wait
+    bne 3b
 
     str r3, [r1]
     add r0, #1
-    b loop
+    b 1b
 
-done:
-    pop {r4, pc}
+2:  pop {r4, pc}
 
 .section .rodata
 message:
