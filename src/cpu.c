@@ -12,6 +12,7 @@ void cpu_init(void) {
     memset(cpu.r, 0, sizeof(cpu.r));
     cpu.xpsr = 0;
     cpu.step_count = 0;
+    cpu.debug_enabled = 0;  /* Default: debug off */
 }
 
 /* Treat PC out of the flash code region or sentinel as halted */
@@ -43,7 +44,9 @@ void cpu_step(void) {
     uint16_t instr = mem_read16(pc);
 
     cpu.step_count++;
-    if (cpu.step_count < 500) {  /* Increased from 200 to 500 for GPIO testing */
+    
+    /* Only print debug output if debug mode is enabled */
+    if (cpu.debug_enabled) {
         printf("[CPU] Step %3u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
     }
 
