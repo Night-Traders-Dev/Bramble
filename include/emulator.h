@@ -30,6 +30,7 @@ typedef struct {
     uint32_t r[16];        /* R0-R15 (R13=SP, R14=LR, R15=PC) */
     uint32_t xpsr;         /* Application Program Status Register */
     uint32_t step_count;
+    int      debug_enabled; /* Enable verbose CPU step output */
 } cpu_state_t;
 
 extern cpu_state_t cpu;
