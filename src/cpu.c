@@ -33,7 +33,7 @@ void cpu_step(void) {
 
     /* Stop if PC already out of range */
     if (pc < FLASH_BASE || pc >= FLASH_BASE + FLASH_SIZE) {
-        printf("[CPU] ERROR: PC out of bounds (0x%08X)", pc);
+        printf("[CPU] ERROR: PC out of bounds (0x%08X)\n", pc);
         cpu.r[15] = 0xFFFFFFFF;  /* Mark halted */
         return;
     }
@@ -47,11 +47,7 @@ void cpu_step(void) {
         return;
     }
 
-    /* -------- Decode and execute -------- */
-
-    /* Control-flow / PC-modifying instructions:
-       These functions are responsible for setting the new PC themselves.
-       cpu_step() must NOT add +2 afterwards for them. */
+    /* -------- Control-flow instructions (handle PC themselves) -------- */
 
     if ((instr & 0xFF00) == 0xBE00) {          /* BKPT */
         instr_bkpt(instr);
@@ -65,15 +61,21 @@ void cpu_step(void) {
     } else if ((instr & 0xFF87) == 0x4700) {   /* BX */
         instr_bx(instr);
         return;
-    } else if (instr == 0xE7FD) {              /* UDF or special trap */
+    } else if (instr == 0xE7FD) {              /* UDF */
         instr_udf(instr);
         return;
     }
 
-    /* The rest are “normal” 16-bit instructions; they do NOT change PC directly.
-       After executing them, cpu_step() will advance PC by 2. */
+    /* -------- Normal 16-bit instructions (PC auto-increments) -------- */
 
-    if ((instr & 0xF800) == 0x2000) {          /* MOVS imm8 */
+    /* ADD/SUB with immediate (including SP-relative) */
+    if ((instr & 0xFF00) == 0xAF00) {          /* ADD SP, SP, imm8 */
+        uint8_t imm = (instr & 0x7F) * 4;
+        cpu.r[13] += imm;
+    } else if ((instr & 0xFF00) == 0xAE00) {   /* SUB SP, SP, imm8 */
+        uint8_t imm = (instr & 0x7F) * 4;
+        cpu.r[13] -= imm;
+    } else if ((instr & 0xF800) == 0x2000) {   /* MOVS imm8 */
         instr_movs_imm8(instr);
     } else if ((instr & 0xFE00) == 0x1C00) {   /* ADDS imm3 */
         instr_adds_imm3(instr);
@@ -89,14 +91,15 @@ void cpu_step(void) {
         instr_add_reg_reg(instr);
     } else if ((instr & 0xFE00) == 0x1A00) {   /* SUB (register) */
         instr_sub_reg_reg(instr);
-    } else if ((instr & 0xFE00) == 0xB400) {   /* PUSH */
+    } else if ((instr & 0xFE00) == 0xB400) {   /* PUSH (includes R14) */
         instr_push(instr);
-    } else if ((instr & 0xFE00) == 0xBC00) {   /* POP (R0-R7 only for now) */
+    } else if ((instr & 0xFE00) == 0xBC00) {   /* POP (includes R15) */
         instr_pop(instr);
-        if ((instr & 0x0100) == 0) {  /* If P=0, advance PC normally */
+        /* If P bit (bit 8) set, POP loaded PC - don't increment */
+        if ((instr & 0x0100) == 0) {
             cpu.r[15] = pc + 2;
         }
-        return;
+        return;  /* POP modifies PC directly */
     } else if ((instr & 0xFFC0) == 0x4280) {   /* CMP (register) */
         instr_cmp_reg_reg(instr);
     } else if ((instr & 0xF800) == 0xC000) {   /* STMIA */

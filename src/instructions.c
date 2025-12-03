@@ -267,9 +267,9 @@ void instr_bx(uint16_t instr) {
 
 void instr_bkpt(uint16_t instr) {
     uint8_t imm = instr & 0xFF;
-    printf("[CPU] BKPT #%d at 0x%08X", imm, cpu.r[15]);
-    printf("[CPU] Program halted at breakpoint");
-    printf("Register State:");
+    printf("[CPU] BKPT #%d at 0x%08X\n", imm, cpu.r[15]);
+    printf("[CPU] Program halted at breakpoint\n");
+    printf("Register State:\n");
 
     for (int i = 0; i < 13; i++) {
         printf("  R%-2d=0x%08X  ", i, cpu.r[i]);
@@ -290,13 +290,13 @@ void instr_nop(uint16_t instr) {
 
 void instr_udf(uint16_t instr) {
     (void)instr;  /* Suppress unused parameter warning */
-    printf("[CPU] UDF (Undefined Instruction) at 0x%08X", cpu.r[15]);
+    printf("[CPU] UDF (Undefined Instruction) at 0x%08X\n", cpu.r[15]);
     /* Halt by setting PC out of bounds */
     cpu.r[15] = 0xFFFFFFFF;
 }
 
 void instr_unimplemented(uint16_t instr) {
-    printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X", cpu.r[15], instr);
+    printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
     /* Halt */
     cpu.r[15] = 0xFFFFFFFF;
 }
