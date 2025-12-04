@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "emulator.h"
 #include "instructions.h"
+#include "nvic.h"
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -429,13 +430,36 @@ void instr_bl(uint16_t instr) {
 
 
 void instr_bx(uint16_t instr) {
-    uint8_t reg = (instr >> 3) & 0x0F;
-    uint32_t target = cpu.r[reg];
+    uint8_t rm = (instr >> 3) & 0x0F;
+    uint32_t target = cpu.r[rm];
 
-    /* BX: branch and exchange */
-    /* Bit 0 of target indicates Thumb mode (should be 1 for M0+) */
-    cpu.r[15] = target & ~1;  /* Clear Thumb bit for internal PC */
+    /* Check for Exception Return (Magic values like 0xFFFFFFF9) */
+    if ((target & 0xFFFFFFF0) == 0xFFFFFFF0) {
+        /* If we are currently handling an IRQ, we need to clear it */
+        if (cpu.current_irq != 0xFFFFFFFF) {
+            
+            /* Clear IABR bit for external interrupts (Vector >= 16) */
+            if (cpu.current_irq >= 16) {
+                nvic_state.iabr &= ~(1 << (cpu.current_irq - 16));
+            }
+            
+            /* Clear internal active bit */
+            nvic_state.active_exceptions &= ~(1 << cpu.current_irq);
+            
+            /* Reset current IRQ tracker */
+            cpu.current_irq = 0xFFFFFFFF;
+            if (cpu.debug_enabled) {
+                printf("[IRQ] Returning from IRQ handler (IABR=0x%X)\n",
+                        nvic_state.iabr);
+        }
+    }
+
+    /* Standard BX behavior: Branch to target (clear Thumb bit) */
+    cpu.r[15] = target & ~1; 
+    }
 }
+
+
 
 void instr_blx(uint16_t instr) {
     // BLX Rm - Branch with Link and Exchange
@@ -809,10 +833,13 @@ void instr_mov_high_reg(uint16_t instr) {
 }
 
 void instr_msr(uint32_t instr) {
+    (void)instr; /* Mark unused */
+    if (cpu.debug_enabled) {
+        printf("[INSTR] MSR instruction at 0x%08X (not implemented)\n", cpu.r[15]);
+    }
     // MSR - Move to Special Register (32-bit instruction)
     // Encoding: 1111 0011 1000 nnnn 1000 rrrr xxxx xxxx
     // Limited implementation for ARMv6-M
-    printf("[CPU] MSR instruction at 0x%08X (limited support)\n", cpu.r[15]);
 }
 
 void instr_mrs(uint32_t instr) {
@@ -820,6 +847,9 @@ void instr_mrs(uint32_t instr) {
     // Encoding: 1111 0011 1110 1111 1000 dddd xxxx xxxx
     uint8_t rd = (instr >> 8) & 0x0F;
     cpu.r[rd] = cpu.xpsr;  // Read XPSR
+    if (cpu.debug_enabled) {
+        printf("[INSTR] MRS R%u = 0x%08X (XPSR)\n", rd, cpu.r[rd]);
+    }
 }
 
 // ============================================================================
@@ -827,6 +857,7 @@ void instr_mrs(uint32_t instr) {
 // ============================================================================
 
 void instr_it(uint16_t instr) {
+    (void)instr; /* Mark unused */
     // IT - If-Then (conditional execution block)
     // Encoding: 1011 1111 cccc mask
     // ARMv6-M has limited IT support
@@ -852,14 +883,41 @@ void instr_isb(uint32_t instr) {
 }
 
 void instr_wfi(uint16_t instr) {
-    /* Wait For Interrupt - halt CPU until interrupt pending */
+    /* Wait For Interrupt - halt CPU until interrupt pending
+     * 
+     * In real hardware: CPU enters low-power state, wakes only on interrupt
+     * In emulator: We simulate by checking for pending interrupts
+     * If no interrupt pending, keep PC at current WFI instruction
+     * If interrupt pending, let cpu_step() handle exception entry
+     */
     (void)instr;
+    
     if (cpu.debug_enabled) {
         printf("[CPU] WFI - Waiting for interrupt\n");
     }
-    /* In our emulator, just continue - timer will trigger on next tick */
-    /* Real implementation would halt until timer_state.intr != 0 */
-    cpu.r[15] += 2;
+    
+    /* Check if there's a pending interrupt that's enabled */
+    uint32_t pending_irq = nvic_get_pending_irq();
+    
+    if (pending_irq != 0xFFFFFFFF) {
+        /* Interrupt is pending and enabled - exception handler will take over
+         * Don't advance PC, let cpu_step() detect and handle the interrupt
+         */
+        if (cpu.debug_enabled) {
+            printf("[CPU] WFI: Interrupt %u detected, returning to cpu_step()\n", pending_irq);
+        }
+        return;  /* cpu_step() will see pending interrupt on next call */
+    }
+    
+    /* No interrupt pending - stay at WFI instruction (re-execute on next cycle)
+     * This simulates the CPU spinning in WFI until interrupted
+     */
+    if (cpu.debug_enabled) {
+        printf("[CPU] WFI: No interrupt pending, staying at WFI\n");
+    }
+    
+    /* DO NOT advance PC - cpu_step() will re-execute WFI next cycle */
+    /* cpu.r[15] stays unchanged */
 }
 
 void instr_wfe(uint16_t instr) {

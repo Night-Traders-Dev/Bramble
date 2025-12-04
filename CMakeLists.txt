@@ -22,6 +22,7 @@ set(SOURCES
     src/uf2.c
     src/gpio.c
     src/timer.c
+    src/nvic.c
 )
 
 # Executable

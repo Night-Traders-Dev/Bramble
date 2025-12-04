@@ -4,6 +4,7 @@
 #include "emulator.h"
 #include "gpio.h"
 #include "timer.h"
+#include "nvic.h"
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -41,6 +42,7 @@ int main(int argc, char **argv) {
     /* Initialize peripherals */
     gpio_init();
     timer_init();
+    nvic_init();
 
     /* Clear flash to erased state (0xFF) and RAM to 0 */
     memset(cpu.flash, 0xFF, FLASH_SIZE);

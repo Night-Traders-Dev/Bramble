@@ -53,6 +53,17 @@ case "$TARGET" in
         echo "✓ Build complete: alarm_test.uf2"
         ;;
 
+    interrupt|interrupt_test)
+        echo "[1/3] Compiling interrupt_test.S..."
+        arm-none-eabi-gcc -mcpu=cortex-m0plus -mthumb -c ../interrupt_test.S -o interrupt_test.o
+        echo "[2/3] Linking..."
+        arm-none-eabi-ld -T ../linker.ld interrupt_test.o -o interrupt_test.elf
+        echo "[3/3] Converting to UF2..."
+        arm-none-eabi-objcopy -O binary interrupt_test.elf interrupt_test.bin
+        python3 ../uf2conv.py interrupt_test.bin -o ../../interrupt_test.uf2 -b 0x10000000 -f 0xE48BFF56
+        echo "✓ Build complete: interrupt_test.uf2"
+        ;;
+
     all)
         echo "Building all test firmware..."
 
@@ -88,8 +99,16 @@ case "$TARGET" in
         python3 ../uf2conv.py alarm_test.bin -o ../../alarm_test.uf2 -b 0x10000000 -f 0xE48BFF56
         echo "    ✓ alarm_test.uf2"
 
+        # Interrupt Test
+        echo "  - Building interrupt_test.uf2..."
+        arm-none-eabi-gcc -mcpu=cortex-m0plus -mthumb -c ../interrupt_test.S -o interrupt_test.o
+        arm-none-eabi-ld -T ../linker.ld interrupt_test.o -o interrupt_test.elf
+        arm-none-eabi-objcopy -O binary interrupt_test.elf interrupt_test.bin
+        python3 ../uf2conv.py interrupt_test.bin -o ../../interrupt_test.uf2 -b 0x10000000 -f 0xE48BFF56
+        echo "    ✓ interrupt_test.uf2"
+
         echo ""
-        echo "✓ All firmware built successfully (4/4)"
+        echo "✓ All firmware built successfully (5/5)"
         ;;
 
     *)
@@ -100,6 +119,7 @@ case "$TARGET" in
         echo "  gpio                  - Build GPIO test"
         echo "  timer                 - Build timer test"
         echo "  alarm                 - Build timer alarm test"
+        echo "  interrupt             - Build timer interrupt test (full flow)"
         echo "  all                   - Build all tests"
         echo ""
         cd .. && rm -rf build
