@@ -73,31 +73,58 @@ void nvic_set_priority(uint32_t irq, uint8_t priority) {
     }
 }
 
-/* Get the highest priority pending IRQ
- * Returns the IRQ number (0-25) if pending and enabled
+/**
+ * Get the highest priority pending IRQ.
+ * 
+ * Returns the IRQ (0-25) with:
+ *   - Pending bit set (nvic_state.pending)
+ *   - Enable bit set (nvic_state.enable)  
+ *   - LOWEST numeric priority value (bits [7:6] of priority register)
+ * 
+ * In ARM Cortex-M0+: LOWER numeric priority value = HIGHER importance
+ * Priority levels: 0x00 (level 0, highest), 0x40 (level 1), 0x80 (level 2), 0xC0 (level 3, lowest)
+ * 
+ * Tiebreaker: If multiple IRQs have same priority, returns the one with lower IRQ number
+ * 
  * Returns 0xFFFFFFFF if no pending IRQ
  */
 uint32_t nvic_get_pending_irq(void) {
-    /* Check which IRQs are both pending AND enabled */
     uint32_t pending_and_enabled = nvic_state.pending & nvic_state.enable;
     
     if (pending_and_enabled == 0) {
-        /* No pending IRQs */
+        /* No pending interrupts */
         return 0xFFFFFFFF;
     }
     
-    /* Find the highest priority (lowest IRQ number) pending IRQ */
+    uint32_t highest_priority_irq = 0xFFFFFFFF;
+    uint8_t highest_priority_value = 0xFF;  /* Start with worst possible priority */
+    
+    /* Scan all IRQs to find the one with lowest (best) numeric priority value */
     for (uint32_t irq = 0; irq < NUM_EXTERNAL_IRQS; irq++) {
-        if (pending_and_enabled & (1 << irq)) {
-            if (cpu.debug_enabled) {
-                printf("[NVIC] Get pending IRQ: Found IRQ %u (pending=0x%X, enabled=0x%X)\n", 
-                       irq, nvic_state.pending, nvic_state.enable);
+        if ((pending_and_enabled & (1 << irq))) {
+            /* Extract priority (only bits [7:6] used in Cortex-M0+) */
+            uint8_t prio = nvic_state.priority[irq] & 0xC0;
+            
+            /* Update if this IRQ has LOWER (better) numeric priority value */
+            if (prio < highest_priority_value) {
+                highest_priority_value = prio;
+                highest_priority_irq = irq;
             }
-            return irq;
+            /* Tiebreaker: same priority -> prefer lower IRQ number */
+            else if (prio == highest_priority_value) {
+                if (irq < highest_priority_irq) {
+                    highest_priority_irq = irq;
+                }
+            }
         }
     }
     
-    return 0xFFFFFFFF;
+    if (cpu.debug_enabled && highest_priority_irq != 0xFFFFFFFF) {
+        printf("[NVIC] Selected IRQ %u with priority 0x%02X\n", 
+               highest_priority_irq, highest_priority_value);
+    }
+    
+    return highest_priority_irq;
 }
 
 /* Read NVIC register */
