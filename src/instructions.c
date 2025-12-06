@@ -886,41 +886,23 @@ void instr_isb(uint32_t instr) {
 }
 
 void instr_wfi(uint16_t instr) {
-    /* Wait For Interrupt - halt CPU until interrupt pending
+    /* Wait For Interrupt
      * 
      * In real hardware: CPU enters low-power state, wakes only on interrupt
-     * In emulator: We simulate by checking for pending interrupts
-     * If no interrupt pending, keep PC at current WFI instruction
-     * If interrupt pending, let cpu_step() handle exception entry
+     * In emulator: We simulate by always advancing PC
+     * The cpu_step() function checks for interrupts at the start
+     * If interrupt pending, it will enter exception handler
+     * If no interrupt, WFI just advances like a normal instruction
      */
     (void)instr;
     
     if (cpu.debug_enabled) {
-        printf("[CPU] WFI - Waiting for interrupt\n");
+        printf("[CPU] WFI - Will check for interrupt on next cycle\n");
     }
     
-    /* Check if there's a pending interrupt that's enabled */
-    uint32_t pending_irq = nvic_get_pending_irq();
-    
-    if (pending_irq != 0xFFFFFFFF) {
-        /* Interrupt is pending and enabled - exception handler will take over
-         * Don't advance PC, let cpu_step() detect and handle the interrupt
-         */
-        if (cpu.debug_enabled) {
-            printf("[CPU] WFI: Interrupt %u detected, returning to cpu_step()\n", pending_irq);
-        }
-        return;  /* cpu_step() will see pending interrupt on next call */
-    }
-    
-    /* No interrupt pending - stay at WFI instruction (re-execute on next cycle)
-     * This simulates the CPU spinning in WFI until interrupted
-     */
-    if (cpu.debug_enabled) {
-        printf("[CPU] WFI: No interrupt pending, staying at WFI\n");
-    }
-    
-    /* DO NOT advance PC - cpu_step() will re-execute WFI next cycle */
-    /* cpu.r[15] stays unchanged */
+    /* Simply advance PC - cpu_step() will handle interrupt on next cycle */
+    /* This is the correct behavior: WFI doesn't block indefinitely */
+    cpu.r[15] += 2;
 }
 
 void instr_wfe(uint16_t instr) {
