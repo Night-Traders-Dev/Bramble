@@ -3,6 +3,7 @@
 #include "emulator.h"
 #include "gpio.h"
 #include "timer.h"
+#include "nvic.h"
 
 void mem_write32(uint32_t addr, uint32_t val) {
     /* Writes to XIP flash are ignored: in real hardware this is external QSPI flash. */
@@ -22,6 +23,11 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+    /* NVIC registers (0xE000E000 - 0xE000EFFF) */
+    if (addr >= NVIC_BASE && addr < NVIC_BASE + 0x1000) {
+        nvic_write_register(addr, val);
+        return;
+    }
 
     /* Timer registers */
     if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
@@ -58,6 +64,17 @@ void mem_write16(uint32_t addr, uint16_t val) {
         return;
     }
 
+    /* NVIC registers - align to 32-bit boundary for subword access */
+    if (addr >= NVIC_BASE && addr < NVIC_BASE + 0x1000) {
+        uint32_t addr32 = addr & ~0x3;
+        uint32_t current = nvic_read_register(addr32);
+        uint8_t offset = addr & 0x3;
+        uint32_t mask = 0xFFFF << (offset * 8);
+        uint32_t new_val = (current & ~mask) | ((uint32_t)val << (offset * 8));
+        nvic_write_register(addr32, new_val);
+        return;
+    }
+
     /* GPIO - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
@@ -80,6 +97,17 @@ void mem_write8(uint32_t addr, uint8_t val) {
 
     if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
         cpu.ram[addr - RAM_BASE] = val;
+        return;
+    }
+
+    /* NVIC registers - align to 32-bit boundary for byte access */
+    if (addr >= NVIC_BASE && addr < NVIC_BASE + 0x1000) {
+        uint32_t addr32 = addr & ~0x3;
+        uint32_t current = nvic_read_register(addr32);
+        uint8_t offset = addr & 0x3;
+        uint32_t mask = 0xFF << (offset * 8);
+        uint32_t new_val = (current & ~mask) | ((uint32_t)val << (offset * 8));
+        nvic_write_register(addr32, new_val);
         return;
     }
 
@@ -116,6 +144,11 @@ uint32_t mem_read32(uint32_t addr) {
         return 0x00000090;
     }
 
+    /* NVIC registers (0xE000E000 - 0xE000EFFF) */
+    if (addr >= NVIC_BASE && addr < NVIC_BASE + 0x1000) {
+        return nvic_read_register(addr);
+    }
+
     if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
         return timer_read32(addr);
     }
@@ -150,6 +183,14 @@ uint16_t mem_read16(uint32_t addr) {
         return val;
     }
 
+    /* NVIC registers - align to 32-bit boundary for subword access */
+    if (addr >= NVIC_BASE && addr < NVIC_BASE + 0x1000) {
+        uint32_t addr32 = addr & ~0x3;
+        uint32_t val32 = nvic_read_register(addr32);
+        uint8_t offset = addr & 0x3;
+        return (uint16_t)((val32 >> (offset * 8)) & 0xFFFF);
+    }
+
     /* GPIO - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
@@ -168,6 +209,14 @@ uint8_t mem_read8(uint32_t addr) {
     }
     if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
         return cpu.ram[addr - RAM_BASE];
+    }
+
+    /* NVIC registers - align to 32-bit boundary for byte access */
+    if (addr >= NVIC_BASE && addr < NVIC_BASE + 0x1000) {
+        uint32_t addr32 = addr & ~0x3;
+        uint32_t val32 = nvic_read_register(addr32);
+        uint8_t offset = addr & 0x3;
+        return (uint8_t)((val32 >> (offset * 8)) & 0xFF);
     }
 
     /* GPIO - UPDATED to include all PADSBANK0 alias regions */
