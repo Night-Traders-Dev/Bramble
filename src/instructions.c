@@ -249,18 +249,9 @@ void instr_push(uint16_t instr) {
 
     uint32_t sp = cpu.r[13];
 
-    /* Debug: Print before PUSH */
-    if (cpu.debug_enabled && M) {
-//        printf("[PUSH] LR = 0x%08X\n", cpu.r[14]);
-    }
-
     if (M) {
         sp -= 4;
         mem_write32(sp, cpu.r[14]);  /* Push LR */
-
-        if (cpu.debug_enabled) {
-  //          printf("[PUSH] Stored LR=0x%08X to 0x%08X\n", cpu.r[14], sp);
-        }
     }
 
     for (int i = 7; i >= 0; i--) {
@@ -279,32 +270,32 @@ void instr_pop(uint16_t instr) {
 
     uint32_t sp = cpu.r[13];
 
-    /* Debug: Print stack pointer */
-    if (cpu.debug_enabled) {
-//        printf("[POP] SP=0x%08X reglist=0x%02X P=%d\n", sp, reglist, P);
-    }
+    printf("[POP] SP=0x%08X reglist=0x%02X P=%d current_irq=%d\n", 
+           sp, reglist, P, cpu.current_irq);
 
     for (int i = 0; i < 8; i++) {
         if (reglist & (1 << i)) {
-            cpu.r[i] = mem_read32(sp);
-
-            /* Debug: Show what we're popping */
-            if (cpu.debug_enabled) {
-//                printf("[POP] R%d = 0x%08X (from 0x%08X)\n", i, cpu.r[i], sp);
-            }
-
+            uint32_t val = mem_read32(sp);
+            printf("[POP]   R%d @ 0x%08X = 0x%08X\n", i, sp, val);
+            cpu.r[i] = val;
             sp += 4;
         }
     }
 
     if (P) {
         uint32_t pc_val = mem_read32(sp);
-
-        /* Debug: Show PC being loaded */
-        if (cpu.debug_enabled) {
-//            printf("[POP] PC = 0x%08X (from 0x%08X)\n", pc_val, sp);
+        printf("[POP]   PC @ 0x%08X = 0x%08X (magic check: 0x%08X)\n", 
+               sp, pc_val, pc_val & 0xFFFFFFF0);
+        
+        /* Check if PC is a magic exception return value */
+        if ((pc_val & 0xFFFFFFF0) == 0xFFFFFFF0) {
+            printf("[POP] *** MAGIC VALUE DETECTED - EXCEPTION RETURN ***\n");
+            cpu_exception_return(pc_val);
+            sp += 4;
+            cpu.r[13] = sp;
+            return;  /* PC already updated */
         }
-
+        
         cpu.r[15] = pc_val & ~1;  /* Clear thumb bit */
         sp += 4;
     }
@@ -418,12 +409,6 @@ void instr_bl(uint16_t instr) {
 
     /* LR = address of next instruction */
     cpu.r[14] = (pc + 4) | 1;  /* Set thumb bit */
-
-    /* Debug: Show BL details */
-    if (cpu.debug_enabled) {
-//        printf("[BL] PC=0x%08X target=0x%08X LR=0x%08X\n",
-//               pc, target, cpu.r[14]);
-    }
 
     cpu.r[15] = target & ~1;
 }
