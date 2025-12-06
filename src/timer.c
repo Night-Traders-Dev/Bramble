@@ -77,8 +77,8 @@ void timer_tick(uint32_t cycles) {
 
             /* DISARM the alarm to prevent re-firing when timer wraps */
             timer_state.armed &= ~(1 << i);
-            printf("[TIMER] Alarm %d FIRED at " PRIu64 " us (lower32=0x%08lx), DISARMED\n",
-                   i, timer_state.time_us, (unsigned long)timer_low);
+            printf("[TIMER] Alarm %d FIRED at " PRIu64 " us (lower32=0x%08x), DISARMED\n",
+                   i, timer_state.time_us, timer_low);
         }
     }
 }
