@@ -52,19 +52,24 @@ void cpu_exception_entry(uint32_t vector_num) {
     }
 
     /* Save context to stack (Cortex-M0+ automatic stacking frame)
-     * Pushes: R0, R1, R2, R3, R12, LR, PC, xPSR
-     * Stack frame is 32 bytes
+     * Pushes (in order): R0, R1, R2, R3, R12, LR, PC, xPSR
+     * Stack frame is 32 bytes, grows downward
+     * After push, SP points to xPSR (lowest address of frame)
      */
     uint32_t sp = cpu.r[13]; /* Stack pointer */
-    sp -= 4; mem_write32(sp, cpu.r[0]);   /* Save R0 */
-    sp -= 4; mem_write32(sp, cpu.r[1]);   /* Save R1 */
-    sp -= 4; mem_write32(sp, cpu.r[2]);   /* Save R2 */
-    sp -= 4; mem_write32(sp, cpu.r[3]);   /* Save R3 */
-    sp -= 4; mem_write32(sp, cpu.r[12]);  /* Save R12 */
-    sp -= 4; mem_write32(sp, cpu.r[14]);  /* Save LR (return address) */
-    sp -= 4; mem_write32(sp, cpu.r[15]);  /* Save PC (instruction address) */
-    sp -= 4; mem_write32(sp, cpu.xpsr);   /* Save xPSR (flags) */
+    sp -= 4; mem_write32(sp, cpu.xpsr);   /* [SP+28] Save xPSR */
+    sp -= 4; mem_write32(sp, cpu.r[15]);  /* [SP+24] Save PC (instruction address) */
+    sp -= 4; mem_write32(sp, cpu.r[14]);  /* [SP+20] Save LR (return address) */
+    sp -= 4; mem_write32(sp, cpu.r[12]);  /* [SP+16] Save R12 */
+    sp -= 4; mem_write32(sp, cpu.r[3]);   /* [SP+12] Save R3 */
+    sp -= 4; mem_write32(sp, cpu.r[2]);   /* [SP+8]  Save R2 */
+    sp -= 4; mem_write32(sp, cpu.r[1]);   /* [SP+4]  Save R1 */
+    sp -= 4; mem_write32(sp, cpu.r[0]);   /* [SP+0]  Save R0 */
     cpu.r[13] = sp; /* Update SP to new position */
+
+    if (cpu.debug_enabled) {
+        printf("[CPU] Context saved, SP now=0x%08X\n", sp);
+    }
 
     /* Set up for ISR execution:
      * - PC = handler address
@@ -101,27 +106,27 @@ void cpu_exception_return(uint32_t lr_value) {
     /* Only support 0xFFFFFFF9 (return to thread mode) for Cortex-M0+ */
     if (return_mode == 0x9) {
         /* Pop the 8-register context frame from stack
-         * Stack layout (from top to bottom, as pushed):
-         *   [SP-0]  xPSR
-         *   [SP-4]  PC
-         *   [SP-8]  LR
-         *   [SP-12] R12
-         *   [SP-16] R3
-         *   [SP-20] R2
-         *   [SP-24] R1
-         *   [SP-28] R0
+         * Stack layout (SP points to R0):
+         *   [SP+0]  R0
+         *   [SP+4]  R1
+         *   [SP+8]  R2
+         *   [SP+12] R3
+         *   [SP+16] R12
+         *   [SP+20] LR
+         *   [SP+24] PC
+         *   [SP+28] xPSR
          */
         uint32_t sp = cpu.r[13];
         
         /* Pop in same order as push (LIFO) */
-        uint32_t xpsr = mem_read32(sp);      sp += 4;
-        uint32_t pc   = mem_read32(sp);      sp += 4;
-        uint32_t lr   = mem_read32(sp);      sp += 4;
-        uint32_t r12  = mem_read32(sp);      sp += 4;
-        uint32_t r3   = mem_read32(sp);      sp += 4;
-        uint32_t r2   = mem_read32(sp);      sp += 4;
-        uint32_t r1   = mem_read32(sp);      sp += 4;
         uint32_t r0   = mem_read32(sp);      sp += 4;
+        uint32_t r1   = mem_read32(sp);      sp += 4;
+        uint32_t r2   = mem_read32(sp);      sp += 4;
+        uint32_t r3   = mem_read32(sp);      sp += 4;
+        uint32_t r12  = mem_read32(sp);      sp += 4;
+        uint32_t lr   = mem_read32(sp);      sp += 4;
+        uint32_t pc   = mem_read32(sp);      sp += 4;
+        uint32_t xpsr = mem_read32(sp);      sp += 4;
         
         /* Restore registers */
         cpu.r[0]  = r0;
