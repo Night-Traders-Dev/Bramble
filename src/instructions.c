@@ -452,14 +452,19 @@ void instr_bx(uint16_t instr) {
     uint8_t rm = (instr >> 3) & 0x0F;
     uint32_t target = cpu.r[rm];
 
+    printf("[CPU] BX R%d: target=0x%08X (magic check: 0x%08X)\n", 
+           rm, target, target & 0xFFFFFFF0);
+
     /* Check for Exception Return (Magic values like 0xFFFFFFF9) */
     if ((target & 0xFFFFFFF0) == 0xFFFFFFF0) {
+        printf("[CPU] *** EXCEPTION RETURN DETECTED ***\n");
         /* This is an exception return - call dedicated handler */
         cpu_exception_return(target);
         return;  /* PC already updated by cpu_exception_return() */
     }
 
     /* Standard BX behavior: Branch to target (clear Thumb bit) */
+    printf("[CPU] Standard BX: jumping to 0x%08X\n", target);
     cpu.r[15] = target & ~1;
 }
 
