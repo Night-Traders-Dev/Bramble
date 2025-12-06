@@ -1,4 +1,4 @@
-![Bramble RP2040 Emulator](assets/bramble-logo.jpg)
+![Bramble RP2040 Emulator](assets/bramble-logo.png)
 
 # Bramble RP2040 Emulator
 
