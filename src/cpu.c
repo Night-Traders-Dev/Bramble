@@ -75,6 +75,92 @@ void cpu_exception_entry(uint32_t vector_num) {
     cpu.r[14] = 0xFFFFFFF9;        /* Special return address (return to thread mode) */
 }
 
+/**
+ * Handle exception return from ISR via BX LR with magic LR values.
+ * 
+ * Magic LR values in ARM Cortex-M0+:
+ *   - 0xFFFFFFF9: Return to Thread mode (normal ISR return)
+ *   - 0xFFFFFFF1: Return to Handler mode (nested exception)
+ *   - 0xFFFFFFFD: Return with FPU context (Cortex-M4/M7, not M0+)
+ * 
+ * For Cortex-M0+ (no FPU), typically only 0xFFFFFFF9 is used.
+ * 
+ * When returning from ISR:
+ *   1. Pop the 8-register stacking frame from stack
+ *   2. Restore PC, xPSR, R0-R3, R12, LR, SP
+ *   3. Clear active exception bit
+ *   4. Clear IABR bit for this IRQ
+ */
+void cpu_exception_return(uint32_t lr_value) {
+    uint32_t return_mode = lr_value & 0x0F;
+    
+    if (cpu.debug_enabled) {
+        printf("[CPU] Exception return: LR=0x%08X mode=%u\n", lr_value, return_mode);
+    }
+    
+    /* Only support 0xFFFFFFF9 (return to thread mode) for Cortex-M0+ */
+    if (return_mode == 0x9) {
+        /* Pop the 8-register context frame from stack
+         * Stack layout (from top to bottom, as pushed):
+         *   [SP-0]  xPSR
+         *   [SP-4]  PC
+         *   [SP-8]  LR
+         *   [SP-12] R12
+         *   [SP-16] R3
+         *   [SP-20] R2
+         *   [SP-24] R1
+         *   [SP-28] R0
+         */
+        uint32_t sp = cpu.r[13];
+        
+        /* Pop in same order as push (LIFO) */
+        uint32_t xpsr = mem_read32(sp);      sp += 4;
+        uint32_t pc   = mem_read32(sp);      sp += 4;
+        uint32_t lr   = mem_read32(sp);      sp += 4;
+        uint32_t r12  = mem_read32(sp);      sp += 4;
+        uint32_t r3   = mem_read32(sp);      sp += 4;
+        uint32_t r2   = mem_read32(sp);      sp += 4;
+        uint32_t r1   = mem_read32(sp);      sp += 4;
+        uint32_t r0   = mem_read32(sp);      sp += 4;
+        
+        /* Restore registers */
+        cpu.r[0]  = r0;
+        cpu.r[1]  = r1;
+        cpu.r[2]  = r2;
+        cpu.r[3]  = r3;
+        cpu.r[12] = r12;
+        cpu.r[13] = sp;           /* Updated SP */
+        cpu.r[14] = lr;           /* Restore LR */
+        cpu.r[15] = pc & ~1;      /* Restore PC, clear Thumb bit */
+        cpu.xpsr  = xpsr;         /* Restore condition flags */
+        
+        if (cpu.debug_enabled) {
+            printf("[CPU] Frame restored: PC=0x%08X SP=0x%08X XPSR=0x%08X\n",
+                   cpu.r[15], cpu.r[13], cpu.xpsr);
+        }
+        
+        /* Clear active exception tracking */
+        if (cpu.current_irq != 0xFFFFFFFF) {
+            uint32_t vector_num = cpu.current_irq;
+            
+            /* Clear IABR bit for external interrupts (Vector >= 16) */
+            if (vector_num >= 16) {
+                nvic_state.iabr &= ~(1 << (vector_num - 16));
+            }
+            
+            /* Clear active_exceptions bit */
+            nvic_state.active_exceptions &= ~(1 << vector_num);
+            
+            if (cpu.debug_enabled) {
+                printf("[CPU] Cleared active exception (vector %u), IABR=0x%X\n",
+                       vector_num, nvic_state.iabr);
+            }
+            
+            cpu.current_irq = 0xFFFFFFFF;  /* Reset current IRQ tracker */
+        }
+    }
+}
+
 void cpu_step(void) {
     uint32_t pc = cpu.r[15];
     
