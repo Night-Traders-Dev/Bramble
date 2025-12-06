@@ -270,13 +270,17 @@ void instr_pop(uint16_t instr) {
 
     uint32_t sp = cpu.r[13];
 
-    printf("[POP] SP=0x%08X reglist=0x%02X P=%d current_irq=%d\n", 
-           sp, reglist, P, cpu.current_irq);
+    if (cpu.debug_asm) {
+        printf("[POP] SP=0x%08X reglist=0x%02X P=%d current_irq=%d\n", 
+               sp, reglist, P, cpu.current_irq);
+    }
 
     for (int i = 0; i < 8; i++) {
         if (reglist & (1 << i)) {
             uint32_t val = mem_read32(sp);
-            printf("[POP]   R%d @ 0x%08X = 0x%08X\n", i, sp, val);
+            if (cpu.debug_asm) {
+                printf("[POP]   R%d @ 0x%08X = 0x%08X\n", i, sp, val);
+            }
             cpu.r[i] = val;
             sp += 4;
         }
@@ -284,12 +288,16 @@ void instr_pop(uint16_t instr) {
 
     if (P) {
         uint32_t pc_val = mem_read32(sp);
-        printf("[POP]   PC @ 0x%08X = 0x%08X (magic check: 0x%08X)\n", 
-               sp, pc_val, pc_val & 0xFFFFFFF0);
+        if (cpu.debug_asm) {
+            printf("[POP]   PC @ 0x%08X = 0x%08X (magic check: 0x%08X)\n", 
+                   sp, pc_val, pc_val & 0xFFFFFFF0);
+        }
         
         /* Check if PC is a magic exception return value */
         if ((pc_val & 0xFFFFFFF0) == 0xFFFFFFF0) {
-            printf("[POP] *** MAGIC VALUE DETECTED - EXCEPTION RETURN ***\n");
+            if (cpu.debug_asm) {
+                printf("[POP] *** MAGIC VALUE DETECTED - EXCEPTION RETURN ***\n");
+            }
             cpu_exception_return(pc_val);
             sp += 4;
             cpu.r[13] = sp;
@@ -437,19 +445,25 @@ void instr_bx(uint16_t instr) {
     uint8_t rm = (instr >> 3) & 0x0F;
     uint32_t target = cpu.r[rm];
 
-    printf("[CPU] BX R%d: target=0x%08X (magic check: 0x%08X)\n", 
-           rm, target, target & 0xFFFFFFF0);
+    if (cpu.debug_asm) {
+        printf("[BX] R%d: target=0x%08X (magic check: 0x%08X)\n", 
+               rm, target, target & 0xFFFFFFF0);
+    }
 
     /* Check for Exception Return (Magic values like 0xFFFFFFF9) */
     if ((target & 0xFFFFFFF0) == 0xFFFFFFF0) {
-        printf("[CPU] *** EXCEPTION RETURN DETECTED ***\n");
+        if (cpu.debug_asm) {
+            printf("[BX] *** EXCEPTION RETURN DETECTED ***\n");
+        }
         /* This is an exception return - call dedicated handler */
         cpu_exception_return(target);
         return;  /* PC already updated by cpu_exception_return() */
     }
 
     /* Standard BX behavior: Branch to target (clear Thumb bit) */
-    printf("[CPU] Standard BX: jumping to 0x%08X\n", target);
+    if (cpu.debug_asm) {
+        printf("[BX] Standard: jumping to 0x%08X\n", target);
+    }
     cpu.r[15] = target & ~1;
 }
 
@@ -1004,13 +1018,17 @@ void instr_add_pc_imm8(uint16_t instr) {
 void instr_cpsid(uint16_t instr) {
     // CPSID - Disable interrupts
     (void)instr;
-    printf("[CPU] CPSID at 0x%08X (no-op in emulator)\n", cpu.r[15]);
+    if (cpu.debug_asm) {
+        printf("[CPSID] Disable interrupts at 0x%08X (no-op in emulator)\n", cpu.r[15]);
+    }
 }
 
 void instr_cpsie(uint16_t instr) {
     // CPSIE - Enable interrupts
     (void)instr;
-    printf("[CPU] CPSIE at 0x%08X (no-op in emulator)\n", cpu.r[15]);
+    if (cpu.debug_asm) {
+        printf("[CPSIE] Enable interrupts at 0x%08X (no-op in emulator)\n", cpu.r[15]);
+    }
 }
 
 /* ============ Special Instructions ============ */
