@@ -1,3 +1,5 @@
+![Bramble RP2040 Emulator](assets/bramble-logo.jpg)
+
 # Bramble RP2040 Emulator
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 firmware with accurate memory mapping and peripheral emulation.
@@ -42,7 +44,7 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - Debug: BKPT, UDF
 
 - **Accurate Flag Handling**: N, Z, C, V flags with proper carry/overflow detection
-- **UART0 Emulation**: Character output via \`UART0_DR\` (0x40034000) with TX FIFO status
+- **UART0 Emulation**: Character output via `UART0_DR` (0x40034000) with TX FIFO status
 - **GPIO Emulation**: Complete 30-pin GPIO peripheral with:
   - SIO fast GPIO access (direct read/write, atomic operations)
   - IO_BANK0 per-pin configuration (function select, control)
@@ -102,8 +104,12 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 
 ### ⚠️ Known Limitations
 
+- **NVIC (Interrupt Controller)**: Core structure implemented but missing 3 key features:
+  - Memory bus routing (NVIC registers not accessible via MMIO)
+  - Priority scheduling (wrong interrupt executes when multiple pending)
+  - Exception return mechanism (ISRs cannot return cleanly)
+  - See [NVIC Audit Report](docs/NVIC_audit_report.md) for detailed analysis
 - **Limited Peripheral Emulation**: UART0, GPIO, and Timer implemented; other peripherals (DMA, USB, etc.) return stub values
-- **No NVIC**: Interrupt controller not implemented (timer alarms set interrupt bits but don't trigger CPU exceptions)
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
 - **Single Core Only**: Second Cortex-M0+ core not emulated
 
@@ -111,7 +117,7 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 
 ### Prerequisites
 
-- GCC cross-compiler: \`arm-none-eabi-gcc\`
+- GCC cross-compiler: `arm-none-eabi-gcc`
 - CMake 3.10+
 - Python 3 (for UF2 conversion)
 - Standard C library (host)
@@ -157,6 +163,7 @@ cd test-firmware
 cd test-firmware
 ./build.sh all
 ```
+
 ### Run
 
 **Hello World:**
@@ -179,9 +186,28 @@ cd test-firmware
 ./bramble alarm_test.uf2
 ```
 
-**Debug Mode** (verbose CPU and peripheral logging):
+### Debug Modes
+
+Bramble now supports flexible debug output modes:
+
+**CPU Step Tracing** (verbose CPU and peripheral logging):
 ```bash
 ./bramble -debug timer_test.uf2
+```
+
+**Assembly Instruction Tracing** (detailed POP/BX/branch operations):
+```bash
+./bramble -asm alarm_test.uf2
+```
+
+**Combined Debug + Assembly Tracing:**
+```bash
+./bramble -debug -asm alarm_test.uf2
+```
+
+**No Debug Output:**
+```bash
+./bramble hello_world.uf2
 ```
 
 Expected timer output:
@@ -211,25 +237,31 @@ Bramble/
 │   ├── instructions.c  # 60+ Thumb instruction implementations
 │   ├── membus.c        # Memory system: flash, RAM, peripherals
 │   ├── gpio.c          # GPIO peripheral emulation
-│   ├── timer.c         # Hardware timer emulation (NEW!)
+│   ├── timer.c         # Hardware timer emulation
+│   ├── nvic.c          # NVIC interrupt controller (core structure)
 │   └── uf2.c           # UF2 file loader
 ├── include/
 │   ├── emulator.h      # Core definitions and CPU state
 │   ├── instructions.h  # Instruction handler prototypes
 │   ├── gpio.h          # GPIO register definitions
-│   └── timer.h         # Timer register definitions (NEW!)
+│   ├── timer.h         # Timer register definitions
+│   └── nvic.h          # NVIC register definitions
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
-│   ├── timer_test.S    # Assembly timer test (NEW!)
-│   ├── alarm_test.S    # Assembly alarm test (NEW!)
+│   ├── timer_test.S    # Assembly timer test
+│   ├── alarm_test.S    # Assembly alarm test
 │   ├── linker.ld       # Memory layout definition
 │   ├── uf2conv.py      # UF2 conversion utility
 │   └── build.sh        # Firmware build script
 ├── docs/
-│   └── GPIO.md         # GPIO peripheral documentation
+│   ├── GPIO.md         # GPIO peripheral documentation
+│   └── NVIC_audit_report.md # NVIC audit findings and recommendations
+├── assets/
+│   └── bramble-logo.jpg    # Project logo
 ├── CMakeLists.txt      # Build configuration
 ├── build.sh            # Top-level build script
+├── CHANGELOG.md        # Version history and changes
 └── README.md           # This file
 ```
 
@@ -396,7 +428,10 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 ### High Priority
 - [x] **GPIO Emulation**: Basic pin state and direction registers ✅
 - [x] **Hardware Timer**: 64-bit counter with alarms ✅
-- [ ] **NVIC**: Interrupt controller for timer/GPIO interrupts
+- [ ] **NVIC Completion**: 3 outstanding fixes for full interrupt support
+  - [ ] Memory bus routing (CRITICAL)
+  - [ ] Priority scheduling (IMPORTANT)
+  - [ ] Exception return mechanism (IMPORTANT)
 - [ ] **GDB Stub**: Remote debugging protocol for source-level debugging
 
 ### Medium Priority
@@ -421,7 +456,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 ## Contributing
 
 Contributions welcome! Areas of particular interest:
-- **NVIC Implementation** (interrupt controller for timer/GPIO)
+- **NVIC Completion** (see [NVIC audit report](docs/NVIC_audit_report.md))
 - **Additional peripherals** (SPI, I2C, PWM)
 - **Test firmware** exercising different instruction patterns
 - **Bug reports** with reproducible test cases
@@ -444,4 +479,3 @@ MIT License - Feel free to use, modify, and learn from this project.
 **Bramble** demonstrates that accurate hardware emulation requires both correct implementation *and* proper testing. With 60+ instructions, accurate flag handling, full GPIO support, hardware timer with alarms, and clean halt detection, it's ready for real firmware development and debugging workflows.
 
 *Built from scratch with ☕ and debugging patience.*
-
