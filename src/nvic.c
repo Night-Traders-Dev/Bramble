@@ -4,7 +4,11 @@
 #include "emulator.h"
 
 /* Global NVIC state */
-nvic_state_t nvic_state = {0};
+nivc_state_t nvic_state = {0};
+
+/* Track last IRQ signal for duplicate detection */
+static uint32_t last_irq_signal = 0xFFFFFFFF;
+static uint32_t irq_signal_count = 0;
 
 /* Initialize NVIC */
 void nvic_init(void) {
@@ -22,15 +26,16 @@ void nvic_reset(void) {
     for (int i = 0; i < NUM_EXTERNAL_IRQS; i++) {
         nvic_state.priority[i] = 0;
     }
+    
+    last_irq_signal = 0xFFFFFFFF;
+    irq_signal_count = 0;
 }
 
 /* Enable an IRQ (set in ISER) */
 void nvic_enable_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state.enable |= (1 << irq);
-        if (cpu.debug_enabled) {
-            printf("[NVIC] Enabled IRQ %u\n", irq);
-        }
+        printf("[NVIC] Enabled IRQ %u (enable mask=0x%X)\n", irq, nvic_state.enable);
     }
 }
 
@@ -38,9 +43,7 @@ void nvic_enable_irq(uint32_t irq) {
 void nvic_disable_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state.enable &= ~(1 << irq);
-        if (cpu.debug_enabled) {
-            printf("[NVIC] Disabled IRQ %u\n", irq);
-        }
+        printf("[NVIC] Disabled IRQ %u (enable mask=0x%X)\n", irq, nvic_state.enable);
     }
 }
 
@@ -48,9 +51,8 @@ void nvic_disable_irq(uint32_t irq) {
 void nvic_set_pending(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state.pending |= (1 << irq);
-        if (cpu.debug_enabled) {
-            printf("[NVIC] Set pending for IRQ %u (pending mask=0x%X)\n", irq, nvic_state.pending);
-        }
+        printf("[NVIC] Set pending for IRQ %u (pending mask=0x%X, enable mask=0x%X)\n", 
+               irq, nvic_state.pending, nvic_state.enable);
     }
 }
 
@@ -58,9 +60,7 @@ void nvic_set_pending(uint32_t irq) {
 void nvic_clear_pending(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state.pending &= ~(1 << irq);
-        if (cpu.debug_enabled) {
-            printf("[NVIC] Cleared pending for IRQ %u (pending mask=0x%X)\n", irq, nvic_state.pending);
-        }
+        printf("[NVIC] Cleared pending for IRQ %u (pending mask now=0x%X)\n", irq, nvic_state.pending);
     }
 }
 
@@ -117,11 +117,6 @@ uint32_t nvic_get_pending_irq(void) {
                 }
             }
         }
-    }
-    
-    if (cpu.debug_enabled && highest_priority_irq != 0xFFFFFFFF) {
-        printf("[NVIC] Selected IRQ %u with priority 0x%02X\n", 
-               highest_priority_irq, highest_priority_value);
     }
     
     return highest_priority_irq;
@@ -189,33 +184,25 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
         case NVIC_ISER:
             /* Interrupt Set Enable Register - write 1 to enable */
             nvic_state.enable |= val;
-            if (cpu.debug_enabled && val) {
-                printf("[NVIC] Write ISER: 0x%X, enabled mask now=0x%X\n", val, nvic_state.enable);
-            }
+            printf("[NVIC] Write ISER: 0x%X, enabled mask now=0x%X\n", val, nvic_state.enable);
             break;
             
         case NVIC_ICER:
             /* Interrupt Clear Enable Register - write 1 to disable */
             nvic_state.enable &= ~val;
-            if (cpu.debug_enabled && val) {
-                printf("[NVIC] Write ICER: 0x%X\n", val);
-            }
+            printf("[NVIC] Write ICER: 0x%X, enabled mask now=0x%X\n", val, nvic_state.enable);
             break;
             
         case NVIC_ISPR:
             /* Interrupt Set Pending Register - write 1 to set pending */
             nvic_state.pending |= val;
-            if (cpu.debug_enabled && val) {
-                printf("[NVIC] Write ISPR: 0x%X, pending mask now=0x%X\n", val, nvic_state.pending);
-            }
+            printf("[NVIC] Write ISPR: 0x%X, pending mask now=0x%X\n", val, nvic_state.pending);
             break;
             
         case NVIC_ICPR:
             /* Interrupt Clear Pending Register - write 1 to clear pending */
             nvic_state.pending &= ~val;
-            if (cpu.debug_enabled && val) {
-                printf("[NVIC] Write ICPR: 0x%X, pending mask now=0x%X\n", val, nvic_state.pending);
-            }
+            printf("[NVIC] Write ICPR: 0x%X, pending mask now=0x%X\n", val, nvic_state.pending);
             break;
             
         case NVIC_IPR:
@@ -251,9 +238,18 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
 /* Called by peripherals (like timer) to signal that an interrupt occurred */
 void nvic_signal_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
-        if (cpu.debug_enabled) {
-            printf("[NVIC] Signal IRQ %u\n", irq);
+        irq_signal_count++;
+        
+        printf("[NVIC] *** SIGNAL IRQ %u (count=%u, pending before=0x%X, enable=0x%X) ***\n", 
+               irq, irq_signal_count, nvic_state.pending, nvic_state.enable);
+        
+        /* Check if this is a duplicate signal (same IRQ, still pending) */
+        if (last_irq_signal == irq && (nvic_state.pending & (1 << irq))) {
+            printf("[NVIC] WARNING: Duplicate signal for IRQ %u - still pending!\n", irq);
         }
+        
+        last_irq_signal = irq;
+        
         /* Just mark it as pending - the CPU will check on next cycle */
         nvic_set_pending(irq);
     }
