@@ -99,9 +99,8 @@ void cpu_exception_entry(uint32_t vector_num) {
 void cpu_exception_return(uint32_t lr_value) {
     uint32_t return_mode = lr_value & 0x0F;
     
-    if (cpu.debug_enabled) {
-        printf("[CPU] Exception return: LR=0x%08X mode=%u\n", lr_value, return_mode);
-    }
+    printf("[CPU] >>> EXCEPTION RETURN START: LR=0x%08X mode=0x%X SP=0x%08X\n", 
+           lr_value, return_mode, cpu.r[13]);
     
     /* Only support 0xFFFFFFF9 (return to thread mode) for Cortex-M0+ */
     if (return_mode == 0x9) {
@@ -118,6 +117,8 @@ void cpu_exception_return(uint32_t lr_value) {
          */
         uint32_t sp = cpu.r[13];
         
+        printf("[CPU]   Popping frame from SP=0x%08X\n", sp);
+        
         /* Pop in same order as push (LIFO) */
         uint32_t r0   = mem_read32(sp);      sp += 4;
         uint32_t r1   = mem_read32(sp);      sp += 4;
@@ -127,6 +128,11 @@ void cpu_exception_return(uint32_t lr_value) {
         uint32_t lr   = mem_read32(sp);      sp += 4;
         uint32_t pc   = mem_read32(sp);      sp += 4;
         uint32_t xpsr = mem_read32(sp);      sp += 4;
+        
+        printf("[CPU]   Popped: R0=0x%08X R1=0x%08X R2=0x%08X R3=0x%08X\n",
+               r0, r1, r2, r3);
+        printf("[CPU]   Popped: R12=0x%08X LR=0x%08X PC=0x%08X xPSR=0x%08X\n",
+               r12, lr, pc, xpsr);
         
         /* Restore registers */
         cpu.r[0]  = r0;
@@ -139,10 +145,8 @@ void cpu_exception_return(uint32_t lr_value) {
         cpu.r[15] = pc & ~1;      /* Restore PC, clear Thumb bit */
         cpu.xpsr  = xpsr;         /* Restore condition flags */
         
-        if (cpu.debug_enabled) {
-            printf("[CPU] Frame restored: PC=0x%08X SP=0x%08X XPSR=0x%08X\n",
-                   cpu.r[15], cpu.r[13], cpu.xpsr);
-        }
+        printf("[CPU]   RESTORED: PC now=0x%08X SP now=0x%08X\n",
+               cpu.r[15], cpu.r[13]);
         
         /* Clear active exception tracking */
         if (cpu.current_irq != 0xFFFFFFFF) {
@@ -156,13 +160,15 @@ void cpu_exception_return(uint32_t lr_value) {
             /* Clear active_exceptions bit */
             nvic_state.active_exceptions &= ~(1 << vector_num);
             
-            if (cpu.debug_enabled) {
-                printf("[CPU] Cleared active exception (vector %u), IABR=0x%X\n",
-                       vector_num, nvic_state.iabr);
-            }
+            printf("[CPU]   Cleared active exception (vector %u), IABR=0x%X\n",
+                   vector_num, nvic_state.iabr);
             
             cpu.current_irq = 0xFFFFFFFF;  /* Reset current IRQ tracker */
         }
+        
+        printf("[CPU] <<< EXCEPTION RETURN COMPLETE\n");
+    } else {
+        printf("[CPU] ERROR: Unsupported return mode 0x%X (expected 0x9)\n", return_mode);
     }
 }
 
