@@ -50,11 +50,14 @@ void mem_write16(uint32_t addr, uint16_t val);
 void instr_cmp_imm8(uint16_t instr);
 void instr_ldrb_reg_offset(uint16_t instr);
 
-
+/* CPU Control */
 void cpu_init(void);
 void cpu_step(void);
 int  cpu_is_halted(void);
+void cpu_exception_entry(uint32_t vector_num);
+void cpu_exception_return(uint32_t lr_value);
 
+/* Firmware Loader */
 int  load_uf2(const char *filename);
 
 #endif
