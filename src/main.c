@@ -8,18 +8,22 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s [-debug] <firmware.uf2>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [-debug] [-asm] <firmware.uf2>\n", argv[0]);
         fprintf(stderr, "  -debug    Enable verbose CPU step output\n");
+        fprintf(stderr, "  -asm      Enable instruction-level tracing (POP, BX, etc.)\n");
         return EXIT_FAILURE;
     }
 
     /* Parse command line arguments */
     int debug_mode = 0;
+    int asm_mode = 0;
     char *firmware_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-debug") == 0 || strcmp(argv[i], "--debug") == 0) {
             debug_mode = 1;
+        } else if (strcmp(argv[i], "-asm") == 0 || strcmp(argv[i], "--asm") == 0) {
+            asm_mode = 1;
         } else {
             firmware_path = argv[i];
         }
@@ -27,7 +31,7 @@ int main(int argc, char **argv) {
 
     if (!firmware_path) {
         fprintf(stderr, "Error: No firmware file specified\n");
-        fprintf(stderr, "Usage: %s [-debug] <firmware.uf2>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [-debug] [-asm] <firmware.uf2>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -36,8 +40,9 @@ int main(int argc, char **argv) {
     /* Initialize CPU state */
     cpu_init();
 
-    /* Set debug mode */
+    /* Set debug modes (independent flags) */
     cpu.debug_enabled = debug_mode;
+    cpu.debug_asm = asm_mode;
 
     /* Initialize peripherals */
     gpio_init();
@@ -80,7 +85,10 @@ int main(int argc, char **argv) {
     printf("[Boot] PC = 0x%08X\n", cpu.r[15]);
     
     if (debug_mode) {
-        printf("[Boot] Debug mode enabled\n");
+        printf("[Boot] Debug mode enabled (CPU step output)\n");
+    }
+    if (asm_mode) {
+        printf("[Boot] Assembly mode enabled (instruction tracing)\n");
     }
     
     printf("[Boot] Starting execution...\n");
