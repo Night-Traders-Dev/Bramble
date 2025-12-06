@@ -429,36 +429,39 @@ void instr_bl(uint16_t instr) {
 }
 
 
+/**
+ * BX Rm - Branch with Exchange (and optional exception return)
+ * 
+ * Standard behavior: Branch to address in Rm
+ * Special behavior: If LR contains magic value (0xFFFFFFF9), perform exception return
+ * 
+ * Exception Return (Cortex-M0+):
+ *   Magic LR values indicate return from ISR:
+ *   - 0xFFFFFFF9: Return to Thread mode (main interrupt return path)
+ *   - 0xFFFFFFF1: Return to Handler mode (nested exception)
+ * 
+ * When BX LR with magic value:
+ *   1. Call cpu_exception_return() to restore context frame
+ *   2. Pop register state from stack
+ *   3. Clear active exception bits
+ *   4. PC restored to point of interrupt
+ * 
+ * This is the standard ARM Cortex-M method for ISR return.
+ */
 void instr_bx(uint16_t instr) {
     uint8_t rm = (instr >> 3) & 0x0F;
     uint32_t target = cpu.r[rm];
 
     /* Check for Exception Return (Magic values like 0xFFFFFFF9) */
     if ((target & 0xFFFFFFF0) == 0xFFFFFFF0) {
-        /* If we are currently handling an IRQ, we need to clear it */
-        if (cpu.current_irq != 0xFFFFFFFF) {
-            
-            /* Clear IABR bit for external interrupts (Vector >= 16) */
-            if (cpu.current_irq >= 16) {
-                nvic_state.iabr &= ~(1 << (cpu.current_irq - 16));
-            }
-            
-            /* Clear internal active bit */
-            nvic_state.active_exceptions &= ~(1 << cpu.current_irq);
-            
-            /* Reset current IRQ tracker */
-            cpu.current_irq = 0xFFFFFFFF;
-            if (cpu.debug_enabled) {
-                printf("[IRQ] Returning from IRQ handler (IABR=0x%X)\n",
-                        nvic_state.iabr);
-        }
+        /* This is an exception return - call dedicated handler */
+        cpu_exception_return(target);
+        return;  /* PC already updated by cpu_exception_return() */
     }
 
     /* Standard BX behavior: Branch to target (clear Thumb bit) */
-    cpu.r[15] = target & ~1; 
-    }
+    cpu.r[15] = target & ~1;
 }
-
 
 
 void instr_blx(uint16_t instr) {
