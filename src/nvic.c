@@ -4,7 +4,7 @@
 #include "emulator.h"
 
 /* Global NVIC state */
-nivc_state_t nvic_state = {0};
+nvic_state_t nvic_state = {0};
 
 /* Track last IRQ signal for duplicate detection */
 static uint32_t last_irq_signal = 0xFFFFFFFF;
