@@ -107,6 +107,14 @@ case "$TARGET" in
         python3 ../uf2conv.py interrupt_test.bin -o ../../interrupt_test.uf2 -b 0x10000000 -f 0xE48BFF56
         echo "    ✓ interrupt_test.uf2"
 
+        echo "  - Building shell_loop.uf2..."
+        arm-none-eabi-gcc -mcpu=cortex-m0plus -mthumb -c ../shell_loop.S -o shell_loop.o
+        arm-none-eabi-ld -T ../linker.ld shell_loop.o -o shell_loop.elf
+        arm-none-eabi-objcopy -O binary shell_loop.elf shell_loop.bin
+        python3 ../uf2conv.py shell_loop.bin -o ../../shell_loop.uf2 -b 0x10000000 -f 0xE48BFF56
+        echo "    ✓ shell_loop.uf2"
+
+
         echo ""
         echo "✓ All firmware built successfully (5/5)"
         ;;
