@@ -704,120 +704,67 @@ void dual_core_init(void) {
  * Dual-Core CPU Execution
  * ======================================================================== */
 
-void cpu_step_core(int core_id) {
+
+
+/* 
+ * Helper: Context-switch a specific core into the single-core engine
+ * to execute one instruction using the full 'instructions.c' decoder.
+ */
+static void cpu_step_core_via_single(int core_id) {
     if (core_id >= NUM_CORES) return;
     if (cores[core_id].is_halted) return;
 
-    cpu_state_dual_t *cpu = &cores[core_id];
+    // 1. Activate the core (for shared peripheral logic)
     set_active_core(core_id);
 
-    uint32_t pc = cpu->r[15];
+    // 2. Backup the global single-core state (so we don't corrupt it)
+    cpu_state_t saved_cpu = cpu;
 
-    if (pc < FLASH_BASE || pc >= FLASH_BASE + FLASH_SIZE) {
-        printf("[CORE%d] PC out of bounds: 0x%08X\n", core_id, pc);
-        cpu->is_halted = 1;
-        return;
+    // 3. Load the target core's state into the global 'cpu' structure
+    memset(cpu.r, 0, sizeof(cpu.r));
+    memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
+    cpu.xpsr         = cores[core_id].xpsr;
+    cpu.vtor         = cores[core_id].vtor;
+    cpu.step_count   = cores[core_id].step_count;
+    cpu.debug_enabled= cores[core_id].debug_enabled;
+    cpu.current_irq  = cores[core_id].current_irq;
+    
+    // 4. Map memory contexts
+    //    - Flash is shared (copy from Core 0 storage)
+    //    - RAM is per-core
+    memcpy(cpu.flash, cores[0].flash, FLASH_SIZE);
+    memcpy(cpu.ram,   cores[core_id].ram, CORE_RAM_SIZE);
+
+    // 5. Execute ONE instruction using the single-core engine
+    //    This handles LDR, CMP, B, BL, PUSH/POP, etc. correctly.
+    cpu_step();
+
+    // 6. Save the updated state back to the target core
+    memcpy(cores[core_id].r, cpu.r, sizeof(cpu.r));
+    cores[core_id].xpsr         = cpu.xpsr;
+    cores[core_id].vtor         = cpu.vtor;
+    cores[core_id].step_count   = cpu.step_count;
+    cores[core_id].current_irq  = cpu.current_irq;
+    
+    //    Check if the instruction halted the CPU (PC=0xFFFFFFFF)
+    if (cpu.r[15] == 0xFFFFFFFF) {
+        cores[core_id].is_halted = 1;
     }
 
-    uint32_t flash_offset = pc - FLASH_BASE;
-    uint16_t instr = (cores[0].flash[flash_offset] |
-                      (cores[0].flash[flash_offset + 1] << 8));
+    // 7. Write back RAM (in case the instruction was STR or PUSH)
+    memcpy(cores[core_id].ram, cpu.ram, CORE_RAM_SIZE);
 
-    cpu->step_count++;
-
-    if (cpu->debug_enabled) {
-        printf("[CORE%d] Step %u: PC=0x%08X instr=0x%04X\n",
-               core_id, cpu->step_count, pc, instr);
-    }
-
-    uint32_t pending_irq = nvic_get_pending_irq();
-
-    if (pending_irq != 0xFFFFFFFF) {
-        uint32_t vector_num = pending_irq + 16;
-
-        if (cpu->debug_enabled) {
-            printf("[CORE%d] INTERRUPT: IRQ %u\n", core_id, pending_irq);
-        }
-
-        nvic_clear_pending(pending_irq);
-        cpu_exception_entry_dual(core_id, vector_num);
-        timer_tick(1);
-        return;
-    }
-
-    if (instr == 0x0000) {
-        cpu->r[15] = pc + 2;
-        timer_tick(1);
-        return;
-    }
-
-    if ((instr & 0xFF00) == 0xBE00) { /* BKPT */
-        printf("[CORE%d] BKPT hit at PC=0x%08X - Core halted\n", core_id, pc);
-        cpu->is_halted = 1;
-        timer_tick(1);
-        return;
-    }
-
-    if ((instr & 0xF800) == 0xE000) { /* B (unconditional branch) - CRITICAL for hello_world.S */
-        uint16_t imm11 = instr & 0x7FF;
-        int32_t offset = ((int32_t)(imm11 << 21)) >> 20; /* Sign extend to 12 bits */
-        cpu->r[15] = pc + 4 + offset;
-        timer_tick(1);
-        return;
-    }
-
-    if ((instr & 0xFF87) == 0x4700) { /* BX Rm */
-        uint8_t rm = (instr >> 3) & 0x0F;
-        cpu->r[15] = (cpu->r[rm] & ~1u);
-        timer_tick(1);
-        return;
-    }
-
-    if ((instr & 0xF800) == 0x2000) {
-        uint8_t rd = (instr >> 8) & 0x07;
-        uint8_t imm8 = instr & 0xFF;
-        cpu->r[rd] = imm8;
-        cpu->r[15] = pc + 2;
-        timer_tick(1);
-        return;
-    }
-
-    if ((instr & 0xF800) == 0x6800) {
-        uint8_t rd = instr & 0x07;
-        uint8_t rn = (instr >> 3) & 0x07;
-        uint8_t imm5 = ((instr >> 6) & 0x1F) << 2;
-        uint32_t addr = cpu->r[rn] + imm5;
-        cpu->r[rd] = mem_read32_dual(core_id, addr);
-        cpu->r[15] = pc + 2;
-        timer_tick(1);
-        return;
-    }
-
-    if ((instr & 0xF800) == 0x6000) {
-        uint8_t rd = instr & 0x07;
-        uint8_t rn = (instr >> 3) & 0x07;
-        uint8_t imm5 = ((instr >> 6) & 0x1F) << 2;
-        uint32_t addr = cpu->r[rn] + imm5;
-        mem_write32_dual(core_id, addr, cpu->r[rd]);
-        cpu->r[15] = pc + 2;
-        timer_tick(1);
-        return;
-    }
-
-    if ((instr & 0xFF00) == 0x4600) {
-        uint8_t rd = ((instr >> 4) & 0x08) | (instr & 0x07);
-        uint8_t rm = ((instr >> 3) & 0x0F);
-        cpu->r[rd] = cpu->r[rm];
-        cpu->r[15] = pc + 2;
-        timer_tick(1);
-        return;
-    }
-
-    printf("[CORE%d] Unimplemented instruction: 0x%04X at 0x%08X\n",
-           core_id, instr, pc);
-    cpu->is_halted = 1;
-    timer_tick(1);
+    // 8. Restore the original global single-core state
+    cpu = saved_cpu;
 }
+
+/* 
+ * Unified Dual-Core Stepper
+ */
+void cpu_step_core(int core_id) {
+    cpu_step_core_via_single(core_id);
+}
+
 
 void dual_core_step(void) {
     static int current = 0;
