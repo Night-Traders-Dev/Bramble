@@ -277,6 +277,7 @@ void cpu_exception_return(uint32_t lr_value) {
  * ======================================================================== */
 
 void cpu_step(void) {
+    
     uint32_t pc = cpu.r[15];
 
     /* Stop if PC already out of range */
