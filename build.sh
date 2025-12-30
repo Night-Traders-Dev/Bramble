@@ -1,5 +1,9 @@
 #!/bin/sh
 
+make clean
+git pull origin main
+git submodule update --init --recursive --remote
+
 echo "*==Bramble RP2040 Emulator==*\n"
 mkdir -p build && cd build
 echo "running cmake and make...bramble\n"

@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
     printf("[Boot] Initializing RP2040...\n");
 
     /* Read vector table from START OF FLASH (0x10000000) */
-    uint32_t vector_table = FLASH_BASE;
+    uint32_t vector_table = FLASH_BASE + 0x100;
     uint32_t initial_sp = mem_read32(vector_table);
     uint32_t reset_vector = mem_read32(vector_table + 4);
 
@@ -76,6 +76,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[Boot] FATAL: Invalid Reset Vector: 0x%08X\n", reset_vector);
         return EXIT_FAILURE;
     }
+
+    if ((reset_vector & 0x1) == 0) {
+        fprintf(stderr, "[Boot] ERROR: Reset vector 0x%08X missing Thumb bit\n", reset_vector);
+        return EXIT_FAILURE;
+    }
+
 
     /* Initialize CPU registers */
     cpu.r[13] = initial_sp;           /* Set stack pointer */
@@ -91,11 +97,17 @@ int main(int argc, char **argv) {
         printf("[Boot] Assembly mode enabled (instruction tracing)\n");
     }
     
+    cpu_reset_from_flash();
+
+
     printf("[Boot] Starting execution...\n");
 
     /* Run until halt */
     while (!cpu_is_halted()) {
         cpu_step();
+        if (debug_mode) {
+            printf("[Boot] CPU halted at PC=0x%08X\n", cpu.r[15]);
+        }
     }
 
     printf("[Boot] Execution complete. Total steps: %u\n", cpu.step_count);

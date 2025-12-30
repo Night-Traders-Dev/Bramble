@@ -29,6 +29,7 @@ typedef struct {
     uint8_t  ram[RAM_SIZE];
     uint32_t r[16];        /* R0-R15 (R13=SP, R14=LR, R15=PC) */
     uint32_t xpsr;         /* Application Program Status Register */
+    uint32_t vtor; 
     uint32_t step_count;
     int      debug_enabled; /* Enable verbose CPU step output (-debug flag) */
     int      debug_asm;     /* Enable instruction-level tracing (-asm flag) */
@@ -36,6 +37,8 @@ typedef struct {
 } cpu_state_t;
 
 extern cpu_state_t cpu;
+
+
 
 /* Function Prototypes */
 void     mem_write32(uint32_t addr, uint32_t val);
@@ -55,6 +58,7 @@ void instr_ldrb_reg_offset(uint16_t instr);
 void cpu_init(void);
 void cpu_step(void);
 int  cpu_is_halted(void);
+void cpu_reset_from_flash(void);
 void cpu_exception_entry(uint32_t vector_num);
 void cpu_exception_return(uint32_t lr_value);
 

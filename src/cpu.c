@@ -11,10 +11,61 @@ int pc_updated = 0;
 
 void cpu_init(void) {
     memset(cpu.r, 0, sizeof(cpu.r));
-    cpu.xpsr = 0;
+    cpu.xpsr = 0x01000000;  // Thumb bit
     cpu.step_count = 0;
     cpu.debug_enabled = 0; /* Default: debug off */
     cpu.current_irq = 0xFFFFFFFF; /* Initialize as "no IRQ active" */
+    cpu.vtor = 0x10000100; /* RP2040 vector table after 256-byte boot2 */
+}
+
+/**
+ * Reset CPU from flash after boot2 has executed.
+ * 
+ * On RP2040, the boot sequence is:
+ *   1. Bootrom validates and executes boot2 (first 256 bytes at 0x10000000)
+ *   2. Boot2 configures XIP flash and sets VTOR to 0x10000100
+ *   3. Boot2 loads SP from [0x10000100] and PC from [0x10000104]
+ *   4. Boot2 jumps to user application reset handler
+ * 
+ * This function simulates steps 2-4, skipping boot2 execution.
+ */
+void cpu_reset_from_flash(void) {
+    /* RP2040 vector table is at offset 0x100 (after 256-byte boot2) */
+    cpu.vtor = FLASH_BASE + 0x100;
+    
+    /* Load initial stack pointer from vector table offset 0 */
+    uint32_t initial_sp = mem_read32(cpu.vtor + 0x00);
+    
+    /* Load reset vector from vector table offset 4 */
+    uint32_t reset_vector = mem_read32(cpu.vtor + 0x04);
+    
+    /* Validate stack pointer is in valid RAM range */
+    if (initial_sp < RAM_BASE || initial_sp > RAM_BASE + RAM_SIZE) {
+        printf("[Boot] ERROR: Invalid SP 0x%08X (not in RAM 0x%08X-0x%08X)\n",
+               initial_sp, RAM_BASE, RAM_BASE + RAM_SIZE);
+        cpu.r[15] = 0xFFFFFFFF; /* Mark as halted */
+        return;
+    }
+    
+    /* Validate reset vector has Thumb bit set (LSB=1) */
+    if ((reset_vector & 0x1) == 0) {
+        printf("[Boot] ERROR: Invalid reset vector 0x%08X (Thumb bit not set)\n", 
+               reset_vector);
+        cpu.r[15] = 0xFFFFFFFF; /* Mark as halted */
+        return;
+    }
+    
+    /* Initialize CPU state */
+    cpu.r[13] = initial_sp;              /* Set stack pointer (R13/SP) */
+    cpu.r[15] = reset_vector & ~1u;      /* Set PC, clear Thumb bit */
+    cpu.r[14] = 0xFFFFFFFF;              /* Set LR to invalid address */
+    cpu.xpsr  = 0x01000000;              /* Set Thumb bit in xPSR */
+    
+    printf("[Boot] Reset complete:\n");
+    printf("[Boot]   VTOR = 0x%08X\n", cpu.vtor);
+    printf("[Boot]   SP   = 0x%08X\n", cpu.r[13]);
+    printf("[Boot]   PC   = 0x%08X\n", cpu.r[15]);
+    printf("[Boot]   xPSR = 0x%08X\n", cpu.xpsr);
 }
 
 /* Treat PC out of the flash code region or sentinel as halted */
@@ -34,38 +85,41 @@ int cpu_is_halted(void) {
 void cpu_exception_entry(uint32_t vector_num) {
     /* Vector number 16+ maps to IRQ 0+ */
     uint32_t vector_offset = vector_num * 4;
-    uint32_t vector_table_base = 0x10000000; /* Start of flash */
-    uint32_t handler_addr = mem_read32(vector_table_base + vector_offset);
     
+    /* Use VTOR (Vector Table Offset Register) to find vector table base */
+    uint32_t handler_addr = mem_read32(cpu.vtor + vector_offset);
+
     if (cpu.debug_enabled) {
-        printf("[CPU] Exception %u: PC=0x%08X -> Handler=0x%08X\n", 
-               vector_num, cpu.r[15], handler_addr);
+        printf("[CPU] Exception %u: PC=0x%08X VTOR=0x%08X -> Handler=0x%08X\n", 
+               vector_num, cpu.r[15], cpu.vtor, handler_addr);
     }
 
     /* Mark as active in NVIC and CPU state */
-    nvic_state.active_exceptions |= (1 << vector_num);
+    if (vector_num < 32) {
+        nvic_state.active_exceptions |= (1u << vector_num);
+    }
     cpu.current_irq = vector_num;
 
     /* Set IABR bit for external interrupts (Vector >= 16) */
-    if (vector_num >= 16) {
-        nvic_state.iabr |= (1 << (vector_num - 16));
+    if (vector_num >= 16 && (vector_num - 16) < 32) {
+        nvic_state.iabr |= (1u << (vector_num - 16));
     }
 
     /* Save context to stack (Cortex-M0+ automatic stacking frame)
-     * Pushes (in order): R0, R1, R2, R3, R12, LR, PC, xPSR
-     * Stack frame is 32 bytes, grows downward
-     * After push, SP points to xPSR (lowest address of frame)
+     * Hardware stacks (in this order, growing downward):
+     *   xPSR, PC, LR, R12, R3, R2, R1, R0
+     * Final SP points to R0 (lowest address of frame)
      */
     uint32_t sp = cpu.r[13]; /* Stack pointer */
-    sp -= 4; mem_write32(sp, cpu.xpsr);   /* [SP+28] Save xPSR */
-    sp -= 4; mem_write32(sp, cpu.r[15]);  /* [SP+24] Save PC (instruction address) */
-    sp -= 4; mem_write32(sp, cpu.r[14]);  /* [SP+20] Save LR (return address) */
-    sp -= 4; mem_write32(sp, cpu.r[12]);  /* [SP+16] Save R12 */
-    sp -= 4; mem_write32(sp, cpu.r[3]);   /* [SP+12] Save R3 */
-    sp -= 4; mem_write32(sp, cpu.r[2]);   /* [SP+8]  Save R2 */
-    sp -= 4; mem_write32(sp, cpu.r[1]);   /* [SP+4]  Save R1 */
-    sp -= 4; mem_write32(sp, cpu.r[0]);   /* [SP+0]  Save R0 */
-    cpu.r[13] = sp; /* Update SP to new position */
+    sp -= 4; mem_write32(sp, cpu.xpsr);   /* Save xPSR */
+    sp -= 4; mem_write32(sp, cpu.r[15]);  /* Save PC (return address) */
+    sp -= 4; mem_write32(sp, cpu.r[14]);  /* Save LR */
+    sp -= 4; mem_write32(sp, cpu.r[12]);  /* Save R12 */
+    sp -= 4; mem_write32(sp, cpu.r[3]);   /* Save R3 */
+    sp -= 4; mem_write32(sp, cpu.r[2]);   /* Save R2 */
+    sp -= 4; mem_write32(sp, cpu.r[1]);   /* Save R1 */
+    sp -= 4; mem_write32(sp, cpu.r[0]);   /* Save R0 */
+    cpu.r[13] = sp; /* Update SP to new position (pointing to R0) */
 
     if (cpu.debug_enabled) {
         printf("[CPU] Context saved, SP now=0x%08X\n", sp);
@@ -73,37 +127,39 @@ void cpu_exception_entry(uint32_t vector_num) {
 
     /* Set up for ISR execution:
      * - PC = handler address
-     * - LR = special return value (0xFFFFFFF9 for Thumb mode return)
-     * - R0-R3 preserved (already on stack)
+     * - LR = special return value (0xFFFFFFF9 for return to thread mode)
+     * - Thumb bit in handler_addr is ignored (cleared)
      */
-    cpu.r[15] = handler_addr & ~1; /* Clear Thumb bit if needed, set PC to handler */
-    cpu.r[14] = 0xFFFFFFF9;        /* Special return address (return to thread mode) */
+    cpu.r[15] = handler_addr & ~1u; /* Set PC to handler, clear Thumb bit */
+    cpu.r[14] = 0xFFFFFFF9;         /* EXC_RETURN: return to thread mode with MSP */
 }
 
 /**
  * Handle exception return from ISR via BX LR with magic LR values.
  * 
- * Magic LR values in ARM Cortex-M0+:
- *   - 0xFFFFFFF9: Return to Thread mode (normal ISR return)
+ * Magic EXC_RETURN values in ARM Cortex-M0+:
  *   - 0xFFFFFFF1: Return to Handler mode (nested exception)
- *   - 0xFFFFFFFD: Return with FPU context (Cortex-M4/M7, not M0+)
+ *   - 0xFFFFFFF9: Return to Thread mode using MSP
+ *   - 0xFFFFFFFD: Return to Thread mode using PSP
  * 
- * For Cortex-M0+ (no FPU), typically only 0xFFFFFFF9 is used.
+ * For Cortex-M0+, typically only 0xFFFFFFF9 is used (no PSP in simple cases).
  * 
  * When returning from ISR:
  *   1. Pop the 8-register stacking frame from stack
- *   2. Restore PC, xPSR, R0-R3, R12, LR, SP
+ *   2. Restore R0-R3, R12, LR, PC, xPSR
  *   3. Clear active exception bit
  *   4. Clear IABR bit for this IRQ
  */
 void cpu_exception_return(uint32_t lr_value) {
     uint32_t return_mode = lr_value & 0x0F;
-    
-    printf("[CPU] >>> EXCEPTION RETURN START: LR=0x%08X mode=0x%X SP=0x%08X\n", 
-           lr_value, return_mode, cpu.r[13]);
-    
-    /* Only support 0xFFFFFFF9 (return to thread mode) for Cortex-M0+ */
-    if (return_mode == 0x9) {
+
+    if (cpu.debug_enabled) {
+        printf("[CPU] >>> EXCEPTION RETURN START: LR=0x%08X mode=0x%X SP=0x%08X\n", 
+               lr_value, return_mode, cpu.r[13]);
+    }
+
+    /* Support 0xFFFFFFF9 (return to thread mode using MSP) */
+    if (return_mode == 0x9 || return_mode == 0x1) {
         /* Pop the 8-register context frame from stack
          * Stack layout (SP points to R0):
          *   [SP+0]  R0
@@ -116,10 +172,12 @@ void cpu_exception_return(uint32_t lr_value) {
          *   [SP+28] xPSR
          */
         uint32_t sp = cpu.r[13];
-        
-        printf("[CPU]   Popping frame from SP=0x%08X\n", sp);
-        
-        /* Pop in same order as push (LIFO) */
+
+        if (cpu.debug_enabled) {
+            printf("[CPU]   Popping frame from SP=0x%08X\n", sp);
+        }
+
+        /* Pop in reverse order of push */
         uint32_t r0   = mem_read32(sp);      sp += 4;
         uint32_t r1   = mem_read32(sp);      sp += 4;
         uint32_t r2   = mem_read32(sp);      sp += 4;
@@ -128,12 +186,14 @@ void cpu_exception_return(uint32_t lr_value) {
         uint32_t lr   = mem_read32(sp);      sp += 4;
         uint32_t pc   = mem_read32(sp);      sp += 4;
         uint32_t xpsr = mem_read32(sp);      sp += 4;
-        
-        printf("[CPU]   Popped: R0=0x%08X R1=0x%08X R2=0x%08X R3=0x%08X\n",
-               r0, r1, r2, r3);
-        printf("[CPU]   Popped: R12=0x%08X LR=0x%08X PC=0x%08X xPSR=0x%08X\n",
-               r12, lr, pc, xpsr);
-        
+
+        if (cpu.debug_enabled) {
+            printf("[CPU]   Popped: R0=0x%08X R1=0x%08X R2=0x%08X R3=0x%08X\n",
+                   r0, r1, r2, r3);
+            printf("[CPU]   Popped: R12=0x%08X LR=0x%08X PC=0x%08X xPSR=0x%08X\n",
+                   r12, lr, pc, xpsr);
+        }
+
         /* Restore registers */
         cpu.r[0]  = r0;
         cpu.r[1]  = r1;
@@ -142,39 +202,48 @@ void cpu_exception_return(uint32_t lr_value) {
         cpu.r[12] = r12;
         cpu.r[13] = sp;           /* Updated SP */
         cpu.r[14] = lr;           /* Restore LR */
-        cpu.r[15] = pc & ~1;      /* Restore PC, clear Thumb bit */
+        cpu.r[15] = pc & ~1u;     /* Restore PC, clear Thumb bit */
         cpu.xpsr  = xpsr;         /* Restore condition flags */
-        
-        printf("[CPU]   RESTORED: PC now=0x%08X SP now=0x%08X\n",
-               cpu.r[15], cpu.r[13]);
-        
+
+        if (cpu.debug_enabled) {
+            printf("[CPU]   RESTORED: PC now=0x%08X SP now=0x%08X\n",
+                   cpu.r[15], cpu.r[13]);
+        }
+
         /* Clear active exception tracking */
         if (cpu.current_irq != 0xFFFFFFFF) {
             uint32_t vector_num = cpu.current_irq;
-            
+
             /* Clear IABR bit for external interrupts (Vector >= 16) */
-            if (vector_num >= 16) {
-                nvic_state.iabr &= ~(1 << (vector_num - 16));
+            if (vector_num >= 16 && (vector_num - 16) < 32) {
+                nvic_state.iabr &= ~(1u << (vector_num - 16));
             }
-            
+
             /* Clear active_exceptions bit */
-            nvic_state.active_exceptions &= ~(1 << vector_num);
-            
-            printf("[CPU]   Cleared active exception (vector %u), IABR=0x%X\n",
-                   vector_num, nvic_state.iabr);
-            
+            if (vector_num < 32) {
+                nvic_state.active_exceptions &= ~(1u << vector_num);
+            }
+
+            if (cpu.debug_enabled) {
+                printf("[CPU]   Cleared active exception (vector %u), IABR=0x%X\n",
+                       vector_num, nvic_state.iabr);
+            }
+
             cpu.current_irq = 0xFFFFFFFF;  /* Reset current IRQ tracker */
         }
-        
-        printf("[CPU] <<< EXCEPTION RETURN COMPLETE\n");
+
+        if (cpu.debug_enabled) {
+            printf("[CPU] <<< EXCEPTION RETURN COMPLETE\n");
+        }
     } else {
-        printf("[CPU] ERROR: Unsupported return mode 0x%X (expected 0x9)\n", return_mode);
+        printf("[CPU] ERROR: Unsupported EXC_RETURN mode 0x%X (expected 0x9 or 0x1)\n", 
+               return_mode);
     }
 }
 
 void cpu_step(void) {
     uint32_t pc = cpu.r[15];
-    
+
     /* Stop if PC already out of range */
     if (pc < FLASH_BASE || pc >= FLASH_BASE + FLASH_SIZE) {
         printf("[CPU] ERROR: PC out of bounds (0x%08X)\n", pc);
@@ -197,17 +266,17 @@ void cpu_step(void) {
     if (pending_irq != 0xFFFFFFFF) {
         /* Convert IRQ number to vector number (IRQ 0 = vector 16) */
         uint32_t vector_num = pending_irq + 16;
-        
+
         if (cpu.debug_enabled) {
             printf("[CPU] *** INTERRUPT: IRQ %u detected ***\n", pending_irq);
         }
 
         /* Clear the pending bit */
         nvic_clear_pending(pending_irq);
-        
+
         /* Enter the exception handler (this sets Active bits) */
         cpu_exception_entry(vector_num);
-        
+
         /* Update timer and return without executing regular instruction */
         timer_tick(1);
         return;
@@ -323,7 +392,7 @@ void cpu_step(void) {
         instr_push(instr);
     }
     /* POP is handled above in control-flow section */
-    
+
     // ========================================================================
     // ESSENTIAL INSTRUCTIONS
     // ========================================================================

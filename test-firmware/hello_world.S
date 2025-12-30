@@ -1,44 +1,86 @@
-/* hello_world.S - Fixed with explicit labels */
+/*
+ * Hello World Test - Fixed memory addresses for Bramble
+ * 
+ * Memory Layout (RP2040):
+ *   Vector table:   0x10000100 - 0x10000140 (after boot2)
+ *   Flash code:     0x10000100 - 0x10200000
+ *   RAM:            0x20000000 - 0x20042000 (264 KB)
+ *   RAM_TOP:        0x20042000
+ *   UART0:          0x40034000
+ */
 
+.syntax unified
+.cpu cortex-m0plus
+.thumb
+
+/* Peripheral Addresses */
+.equ UART0_DR,          0x40034000   /* UART Data Register */
+.equ UART0_FR,          0x40034018   /* UART Flag Register */
+
+.equ RAM_TOP,           0x20042000   /* Top of RAM (264 KB) */
+
+/* Vector table (placed at flash offset 0x100 by linker script) */
 .section .vectors, "a", %progbits
 .align 2
-.global _start
+.global _vectors
 
-_start:
-    .word 0x20042000          /* Initial SP */
-    .word reset_handler + 1   /* Reset vector */
-    .rept 14
-    .word 0xFFFFFFFF
+_vectors:
+    .word RAM_TOP                      /* SP = top of RAM */
+    .word reset_handler + 1            /* PC = reset handler (Thumb bit set) */
+    .word 0xFFFFFFFF                   /* NMI handler */
+    .word 0xFFFFFFFF                   /* HardFault handler */
+    .rept 12
+    .word 0xFFFFFFFF                   /* Remaining system exceptions */
     .endr
 
+/* Code section */
 .section .text
+.align 2
+
 .thumb_func
+.global reset_handler
+
 reset_handler:
-    ldr r0, =message          /* Load message pointer */
-    ldr r1, =0x40034000       /* UART0 base */
-    ldr r2, =0x40034018       /* UART0_FR */
+    /* Initialize stack pointer using temp register (sp = R13 can't use = directly) */
+    ldr r7, =RAM_TOP
+    mov sp, r7
+    
+    /* Load message address */
+    ldr r0, =message
+    
+    /* Load UART data register address */
+    ldr r1, =UART0_DR
+    
+    /* Load UART flag register address */
+    ldr r2, =UART0_FR
 
 print_loop:
-    ldrb r3, [r0]             /* Load byte */
+    /* Load next character */
+    ldrb r3, [r0]
+    
+    /* Check for null terminator */
     cmp r3, #0
-    beq  print_done           /* If null, done */
+    beq done
+    
+    /* Write to UART */
+    str r3, [r1]
+    
+    /* Advance to next character */
+    adds r0, #1
+    
+    b print_loop
 
-wait_tx_ready:
-    ldr r4, [r2]              /* Read UART0_FR */
-    movs r5, #0x20
-    tst r4, r5                /* Check TXFF bit 5 */
-    bne  wait_tx_ready        /* Wait if FIFO full */
+done:
+    /* Halt with breakpoint */
+    bkpt #0
+    
+    /* Infinite loop as backup */
+    b done
 
-    str r3, [r1]              /* Write to UART0_DR */
-    add r0, #1                /* Advance pointer */
-    b    print_loop           /* Next character */
-
-print_done:
-    BKPT #0
-    B print_done
-
+/* String data (placed in flash after code) */
 .section .rodata
+.align 2
+
 message:
-    .ascii "Hello from ASM!"
-    .byte 0                   /* Null terminator */
+    .asciz "Hello from Bramble RP2040 Emulator!\n"
     .align 2
