@@ -277,7 +277,6 @@ void cpu_exception_return(uint32_t lr_value) {
  * ======================================================================== */
 
 void cpu_step(void) {
-    
     uint32_t pc = cpu.r[15];
 
     /* Stop if PC already out of range */
@@ -668,6 +667,14 @@ void dual_core_init(void) {
         printf("[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
     }
 
+    /* ✅ COPY FIRMWARE FROM SINGLE-CORE TO DUAL-CORE */
+    /* This ensures dual_core_step() can access the loaded firmware */
+    memcpy(cores[CORE0].flash, cpu.flash, FLASH_SIZE);
+    memcpy(cores[CORE0].ram, cpu.ram, CORE_RAM_SIZE);
+
+    printf("[Boot] Firmware copied to CORE0 (flash: %u bytes, ram: %u bytes)\n",
+           FLASH_SIZE, CORE_RAM_SIZE);
+
     /* ✅ READ VECTOR TABLE FROM FLASH (same as single-core) */
     /* This was missing in the original implementation */
     uint32_t vector_table = FLASH_BASE + 0x100;
@@ -744,14 +751,22 @@ void cpu_step_core(int core_id) {
         return;
     }
 
-    if ((instr & 0xFF00) == 0xBE00) {
-        printf("[CORE%d] BKPT hit\n", core_id);
+    if ((instr & 0xFF00) == 0xBE00) { /* BKPT */
+        printf("[CORE%d] BKPT hit at PC=0x%08X - Core halted\n", core_id, pc);
         cpu->is_halted = 1;
         timer_tick(1);
         return;
     }
 
-    if ((instr & 0xFF87) == 0x4700) {
+    if ((instr & 0xF800) == 0xE000) { /* B (unconditional branch) - CRITICAL for hello_world.S */
+        uint16_t imm11 = instr & 0x7FF;
+        int32_t offset = ((int32_t)(imm11 << 21)) >> 20; /* Sign extend to 12 bits */
+        cpu->r[15] = pc + 4 + offset;
+        timer_tick(1);
+        return;
+    }
+
+    if ((instr & 0xFF87) == 0x4700) { /* BX Rm */
         uint8_t rm = (instr >> 3) & 0x0F;
         cpu->r[15] = (cpu->r[rm] & ~1u);
         timer_tick(1);
