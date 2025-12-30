@@ -256,24 +256,42 @@ void sio_set_core1_stall(int stall) {
  * ======================================================================== */
 
 void dual_core_init(void) {
+// Initialize core structures
     for (int i = 0; i < NUM_CORES; i++) {
         memset(&cores[i], 0, sizeof(cpu_state_dual_t));
         memset(cores[i].ram, 0, CORE_RAM_SIZE);
-        
         cores[i].core_id = i;
         cores[i].is_halted = (i == CORE1) ? 1 : 0;
         cores[i].xpsr = 0x01000000;
         cores[i].vtor = 0x10000100;
         cores[i].current_irq = 0xFFFFFFFF;
-        
+    
         printf("[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
     }
-    
+
+
+    uint32_t vector_table = FLASH_BASE + 0x100;
+    uint32_t initial_sp = mem_read32(vector_table);
+    uint32_t reset_vector = mem_read32(vector_table + 4);
+
+    // Set Core 0 registers from vector table
+    cores[CORE0].r[13] = initial_sp;           // SP (R13)
+    cores[CORE0].r[15] = reset_vector & ~1;    // PC (R15), clear Thumb bit
+
+    if (initial_sp != 0 || reset_vector != 0) {
+        printf("[Boot] Vector table loaded: SP=0x%08X, PC=0x%08X\n", 
+               initial_sp, reset_vector & ~1);
+    }
+
+    // Core 1 stays in reset (no vector table init needed)
+
+    // Initialize FIFO channels
     for (int i = 0; i < NUM_CORES; i++) {
         fifo[i].count = 0;
         fifo[i].read_ptr = 0;
         fifo[i].write_ptr = 0;
     }
+
 }
 
 void cpu_reset_core(int core_id) {

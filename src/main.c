@@ -21,11 +21,12 @@
 #include "nvic.h"
 
 /* Dual-core declarations (if available) */
+/* Dual-core declarations (if available) */
 #ifdef DUAL_CORE_ENABLED
   #include "emulator_dual.h"
   int any_core_running(void);
-  extern cpu_core_t cores[2];
 #endif
+
 
 /* ============================================================================
  * Main Entry Point

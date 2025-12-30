@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+//#define SINGLE_CORE_ENABLED
+#define DUAL_CORE_ENABLED
+
+
 /* Memory Layout (RP2040) */
 #define FLASH_BASE  0x10000000
 #define FLASH_SIZE  (2 * 1024 * 1024)      /* 2 MB XIP flash on typical Pico boards */
