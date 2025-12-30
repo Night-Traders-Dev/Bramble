@@ -18,7 +18,6 @@ set(SOURCES
     src/main.c
     src/cpu.c
     src/multicore.c
-    src/cpu_dual.c
     src/instructions.c
     src/membus.c
     src/uf2.c
