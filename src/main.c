@@ -118,13 +118,7 @@ int main(int argc, char **argv) {
     uint32_t step_count = 0;
 
     while (any_core_running()) {
-        #define MAX_STEPS 1000000
-/*
-        if (cores[0].step_count > MAX_STEPS) {
-            printf("[EXEC] Step limit reached\n");
-            break;  // Exit execution loop
-        }
-*/
+
         dual_core_step();
         instruction_count += 2;
         step_count++;

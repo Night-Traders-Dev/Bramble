@@ -329,17 +329,31 @@ void cpu_step(void) {
     // FOUNDATIONAL INSTRUCTIONS
     // ========================================================================
 
-    /* -------- 32-bit instructions (must check first) -------- */
-    if ((instr & 0xF800) == 0xF000) { /* FIXED: Fetch both halfwords for 32-bit instruction */
-        uint16_t instr2 = mem_read16(pc + 2); /* Check if this is BL or BLX (0xD000 or 0x9000 pattern) */
-        if ((instr2 & 0xD000) == 0xD000) { 
-            instr_bl_32(instr, instr2); /* Pass BOTH halfwords */ 
-            timer_tick(1); 
-            return; 
-        } else {
-            instr_bl(instr);
+/* -------- 32-bit instructions (must check first) -------- */
+if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
+    uint16_t instr2 = mem_read16(pc + 2);
 
+    /* BL/BLX (immediate) lives in the 32-bit branch encodings.
+       Your current implementation has instr_bl_32(upper, lower),
+       so use that and ALWAYS return. */
+    if ((instr & 0xF800) == 0xF000 && (instr2 & 0xD000) == 0xD000) {
+        if (cpu.debug_enabled) {
+            printf("[CPU] BL32 upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
+                   instr, instr2, pc);
         }
+        instr_bl_32(instr, instr2);
+        timer_tick(1);
+        return;
+    }
+
+    /* If you *don't* implement other 32-bit instructions yet,
+       fail fast so you don't desync the instruction stream. */
+    printf("[CPU] Unhandled 32-bit Thumb instr: upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
+           instr, instr2, pc);
+    cpu.r[15] = 0xFFFFFFFF;
+    return;
+
+
 
     /* -------- Control-flow instructions (handle PC themselves) -------- */
     } else if ((instr & 0xFF00) == 0xBE00) { /* BKPT */

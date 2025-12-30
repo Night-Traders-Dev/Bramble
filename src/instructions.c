@@ -187,6 +187,7 @@ void instr_ldr_pc_imm8(uint16_t instr) {
     uint8_t imm = instr & 0xFF;
     uint32_t addr = (cpu.r[15] & ~3) + (imm * 4) + 4;
     cpu.r[reg] = mem_read32(addr);
+    //printf("ldr_pc 0x%08X\n", cpu.r[reg]);
 }
 
 void instr_ldr_sp_imm8(uint16_t instr) {
@@ -423,33 +424,34 @@ void instr_bl(uint16_t instr) {
 }
 
 
+// upper = first halfword at PC
+// lower = second halfword at PC+2
 void instr_bl_32(uint16_t upper, uint16_t lower) {
-    // Extract bit fields from both halfwords
-    uint32_t imm11 = upper & 0x07FF;              // 11 bits from upper
-    uint32_t s_bit = (lower >> 10) & 0x01;        // Sign bit from lower
-    uint32_t imm10 = lower & 0x03FF;              // 10 bits from lower
-    
-    // Reconstruct 22-bit signed offset: S:imm11:imm10:0
-    int32_t imm = (s_bit << 22) | (imm11 << 11) | (imm10 << 1);
-    
-    // Sign-extend from 23 bits to 32 bits
-    if (imm & 0x00400000) {
-        imm |= 0xFF800000;
-    }
-    
+    uint32_t S    = (upper >> 10) & 1;
+    uint32_t imm10 =  upper        & 0x03FF;
+    uint32_t J1   = (lower >> 13) & 1;
+    uint32_t J2   = (lower >> 11) & 1;
+    uint32_t imm11 =  lower        & 0x07FF;
+
+    uint32_t I1 = ~(J1 ^ S) & 1;
+    uint32_t I2 = ~(J2 ^ S) & 1;
+
+    int32_t offset =
+        (S    << 24) |
+        (I1   << 23) |
+        (I2   << 22) |
+        (imm10 << 12) |
+        (imm11 << 1);
+
+    // sign extend from bit 24
+    if (offset & (1u << 24)) offset |= 0xFE000000;
+
     uint32_t pc = cpu.r[15];
-    
-    // LR = address of next instruction (PC + 4) with Thumb bit set
-    cpu.r[14] = (pc + 4) | 1;
-    
-    // PC = PC + 4 + offset
-    cpu.r[15] = pc + 4 + imm;
-    
-    if (cpu.debug_enabled) {
-        printf("[BL32] PC: 0x%08X -> 0x%08X, LR: 0x%08X\n", 
-               pc, cpu.r[15], cpu.r[14]);
-    }
+
+    cpu.r[14] = (pc + 4) | 1u;
+    cpu.r[15] = (pc + 4 + offset) & ~1u; // keep PC aligned, clear Thumb bit storage
 }
+
 
 
 
@@ -495,7 +497,8 @@ void instr_bx(uint16_t instr) {
     if (cpu.debug_asm) {
         printf("[BX] Standard: jumping to 0x%08X\n", target);
     }
-    cpu.r[15] = target & ~1;
+    cpu.r[15] = target & ~1u;
+    
 }
 
 
