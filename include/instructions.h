@@ -44,7 +44,8 @@ void instr_bcond(uint16_t instr);                  // Bxx label [EXISTING]
 // Note: bcond handles BEQ, BNE, BCS, BCC, BMI, BPL, BVS, BVC, BHI, BLS, BGE, BLT, BGT, BLE
 
 // Branch and Link / Exchange
-void instr_bl(uint16_t instr);                     // BL label (32-bit) [EXISTING]
+void instr_bl_32(uint16_t instr, uint16_t instr2);
+void instr_bl(uint16_t instr);
 void instr_bx(uint16_t instr);                     // BX Rm [EXISTING]
 void instr_blx(uint16_t instr);                    // BLX Rm
 

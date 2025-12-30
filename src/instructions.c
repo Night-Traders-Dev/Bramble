@@ -391,6 +391,7 @@ void instr_bcond(uint16_t instr) {
     }
 }
 
+
 void instr_bl(uint16_t instr) {
     /* Read second halfword */
     uint16_t instr2 = mem_read16(cpu.r[15] + 2);
@@ -420,6 +421,36 @@ void instr_bl(uint16_t instr) {
 
     cpu.r[15] = target & ~1;
 }
+
+
+void instr_bl_32(uint16_t upper, uint16_t lower) {
+    // Extract bit fields from both halfwords
+    uint32_t imm11 = upper & 0x07FF;              // 11 bits from upper
+    uint32_t s_bit = (lower >> 10) & 0x01;        // Sign bit from lower
+    uint32_t imm10 = lower & 0x03FF;              // 10 bits from lower
+    
+    // Reconstruct 22-bit signed offset: S:imm11:imm10:0
+    int32_t imm = (s_bit << 22) | (imm11 << 11) | (imm10 << 1);
+    
+    // Sign-extend from 23 bits to 32 bits
+    if (imm & 0x00400000) {
+        imm |= 0xFF800000;
+    }
+    
+    uint32_t pc = cpu.r[15];
+    
+    // LR = address of next instruction (PC + 4) with Thumb bit set
+    cpu.r[14] = (pc + 4) | 1;
+    
+    // PC = PC + 4 + offset
+    cpu.r[15] = pc + 4 + imm;
+    
+    if (cpu.debug_enabled) {
+        printf("[BL32] PC: 0x%08X -> 0x%08X, LR: 0x%08X\n", 
+               pc, cpu.r[15], cpu.r[14]);
+    }
+}
+
 
 
 /**

@@ -330,10 +330,13 @@ void cpu_step(void) {
     // ========================================================================
 
     /* -------- 32-bit instructions (must check first) -------- */
-    if ((instr & 0xF800) == 0xF000) { /* BL (32-bit) */
-        instr_bl(instr);
-        timer_tick(1);
-        return;
+    if ((instr & 0xF800) == 0xF000) { /* FIXED: Fetch both halfwords for 32-bit instruction */
+        uint16_t instr2 = mem_read16(pc + 2); /* Check if this is BL or BLX (0xD000 or 0x9000 pattern) */
+        if ((instr2 & 0xD000) == 0xD000) { 
+            instr_bl_32(instr, instr2); /* Pass BOTH halfwords */ 
+            timer_tick(1); 
+            return; 
+        } 
 
     /* -------- Control-flow instructions (handle PC themselves) -------- */
     } else if ((instr & 0xFF00) == 0xBE00) { /* BKPT */
@@ -762,6 +765,14 @@ static void cpu_step_core_via_single(int core_id) {
  * Unified Dual-Core Stepper
  */
 void cpu_step_core(int core_id) {
+    #define CORE1_ENTRY_OFFSET 0x2C  /* Example - check your binary */
+    uint32_t core1_entry = mem_read32(FLASH_BASE + CORE1_ENTRY_OFFSET);
+
+    if ((core1_entry & 0x1) || (core1_entry >= FLASH_BASE)) {
+        cores[CORE1].is_halted = 0;
+        cores[CORE1].r[15] = core1_entry & ~1;
+        printf("[Boot] Core 1 entry: 0x%08X\n", core1_entry & ~1);
+    }
     cpu_step_core_via_single(core_id);
 }
 
