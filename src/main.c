@@ -65,9 +65,6 @@ int main(int argc, char **argv) {
     printf("║       Bramble RP2040 Emulator - Dual-Core Mode           ║\n");
     printf("╚════════════════════════════════════════════════════════════╝\n\n");
 
-    printf("[Init] Initializing dual-core RP2040 emulator...\n");
-    dual_core_init();
-
 
     printf("[Init] Loading firmware: %s\n", firmware_path);
 
@@ -81,6 +78,9 @@ int main(int argc, char **argv) {
     }
 
     printf("[Init] Firmware loaded successfully\n");
+
+    printf("[Init] Initializing dual-core RP2040 emulator...\n");
+    dual_core_init();
 
     /* ========================================================================
      * Boot Configuration
