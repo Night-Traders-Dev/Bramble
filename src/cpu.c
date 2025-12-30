@@ -336,7 +336,10 @@ void cpu_step(void) {
             instr_bl_32(instr, instr2); /* Pass BOTH halfwords */ 
             timer_tick(1); 
             return; 
-        } 
+        } else {
+            instr_bl(instr);
+
+        }
 
     /* -------- Control-flow instructions (handle PC themselves) -------- */
     } else if ((instr & 0xFF00) == 0xBE00) { /* BKPT */
