@@ -230,3 +230,96 @@ uint8_t mem_read8(uint32_t addr) {
 
     return 0xFF;  /* Unmapped reads return 0xFF */
 }
+
+void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+        printf("[MEM] WARNING: Attempt to write to flash at 0x%08X (read-only)\n", addr);
+        return;
+    }
+    
+    if (core_id == CORE0 && addr >= CORE0_RAM_START && addr < CORE0_RAM_END) {
+        uint32_t offset = addr - CORE0_RAM_START;
+        memcpy(&cores[CORE0].ram[offset], &val, 4);
+        return;
+    }
+    
+    if (core_id == CORE1 && addr >= CORE1_RAM_START && addr < CORE1_RAM_END) {
+        uint32_t offset = addr - CORE1_RAM_START;
+        memcpy(&cores[CORE1].ram[offset], &val, 4);
+        return;
+    }
+    
+    if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
+        uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
+        if (offset < (SHARED_RAM_SIZE / 4)) {
+            shared_ram[offset] = val;
+        }
+        return;
+    }
+}
+
+uint16_t mem_read16_dual(int core_id, uint32_t addr) {
+    uint32_t word = mem_read32_dual(core_id, addr & ~3);
+    if (addr & 2) {
+        return (word >> 16) & 0xFFFF;
+    } else {
+        return word & 0xFFFF;
+    }
+}
+
+void mem_write16_dual(int core_id, uint32_t addr, uint16_t val) {
+    uint32_t word = mem_read32_dual(core_id, addr & ~3);
+    if (addr & 2) {
+        word = (word & 0xFFFF) | ((uint32_t)val << 16);
+    } else {
+        word = (word & 0xFFFF0000) | val;
+    }
+    mem_write32_dual(core_id, addr & ~3, word);
+}
+
+uint8_t mem_read8_dual(int core_id, uint32_t addr) {
+    uint32_t word = mem_read32_dual(core_id, addr & ~3);
+    return (word >> ((addr & 3) * 8)) & 0xFF;
+}
+
+void mem_write8_dual(int core_id, uint32_t addr, uint8_t val) {
+    uint32_t word = mem_read32_dual(core_id, addr & ~3);
+    uint32_t shift = (addr & 3) * 8;
+    word = (word & ~(0xFF << shift)) | ((uint32_t)val << shift);
+    mem_write32_dual(core_id, addr & ~3, word);
+}
+
+uint32_t mem_read32_dual(int core_id, uint32_t addr) {
+    /* Flash is shared across all cores */
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+        uint32_t offset = addr - FLASH_BASE;
+        uint32_t val = 0;
+        memcpy(&val, &cores[0].flash[offset], 4);
+        return val;
+    }
+    
+    /* Per-core RAM regions */
+    if (core_id == CORE0 && addr >= CORE0_RAM_START && addr < CORE0_RAM_END) {
+        uint32_t offset = addr - CORE0_RAM_START;
+        uint32_t val = 0;
+        memcpy(&val, &cores[CORE0].ram[offset], 4);
+        return val;
+    }
+    
+    if (core_id == CORE1 && addr >= CORE1_RAM_START && addr < CORE1_RAM_END) {
+        uint32_t offset = addr - CORE1_RAM_START;
+        uint32_t val = 0;
+        memcpy(&val, &cores[CORE1].ram[offset], 4);
+        return val;
+    }
+    
+    /* Shared RAM (accessible by both cores) */
+    if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
+        uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
+        if (offset < (SHARED_RAM_SIZE / 4)) {
+            return shared_ram[offset];
+        }
+    }
+    
+    return 0;  /* Out of bounds */
+}

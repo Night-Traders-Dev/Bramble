@@ -20,13 +20,8 @@
 #include "timer.h"
 #include "nvic.h"
 
-/* Dual-core declarations (if available) */
-/* Dual-core declarations (if available) */
-#ifdef DUAL_CORE_ENABLED
-  #include "emulator_dual.h"
-  int any_core_running(void);
-#endif
 
+int any_core_running(void);
 
 /* ============================================================================
  * Main Entry Point
@@ -66,26 +61,13 @@ int main(int argc, char **argv) {
      * Initialization Phase
      * ======================================================================== */
 
-#ifdef DUAL_CORE_ENABLED
     printf("\n╔════════════════════════════════════════════════════════════╗\n");
     printf("║       Bramble RP2040 Emulator - Dual-Core Mode           ║\n");
     printf("╚════════════════════════════════════════════════════════════╝\n\n");
 
     printf("[Init] Initializing dual-core RP2040 emulator...\n");
     dual_core_init();
-#else
-    printf("=== Bramble RP2040 Emulator (Single-Core) ===\n\n");
 
-    printf("[Init] Initializing single-core RP2040 emulator...\n");
-    cpu_init();
-    gpio_init();
-    timer_init();
-    nvic_init();
-
-    /* Clear flash to erased state (0xFF) and RAM to 0 */
-    memset(cpu.flash, 0xFF, FLASH_SIZE);
-    memset(cpu.ram, 0, RAM_SIZE);
-#endif
 
     printf("[Init] Loading firmware: %s\n", firmware_path);
 
@@ -104,7 +86,6 @@ int main(int argc, char **argv) {
      * Boot Configuration
      * ======================================================================== */
 
-#ifdef DUAL_CORE_ENABLED
     /* Dual-core: dual_core_init() already handles vector table loading */
     if (debug_mode) {
         cpu_set_debug_core(CORE0, 1);
@@ -122,53 +103,6 @@ int main(int argc, char **argv) {
     printf("[Boot] Core 1 held in reset (waiting for Core 0 to start)\n");
     printf("\n");
 
-#else
-    /* Single-core: Manually load vector table */
-    printf("[Boot] Initializing RP2040...\n");
-
-    /* Read vector table from FLASH_BASE + 0x100 (after boot2)
-     * The actual vector table is at FLASH_BASE, but code starts at +0x100
-     * We read from where the code will place the vector info
-     */
-    uint32_t vector_table = FLASH_BASE + 0x100;
-    uint32_t initial_sp = mem_read32(vector_table);
-    uint32_t reset_vector = mem_read32(vector_table + 4);
-
-    /* Validate SP (should be top of RAM) */
-    if (initial_sp != RAM_TOP) {
-        fprintf(stderr, "[Boot] WARNING: Stack Pointer not at RAM_TOP: 0x%08X\n", initial_sp);
-    }
-
-    /* Validate reset vector (should be in flash range) */
-    if (reset_vector < FLASH_BASE || reset_vector >= FLASH_BASE + FLASH_SIZE) {
-        fprintf(stderr, "[Boot] FATAL: Invalid Reset Vector: 0x%08X\n", reset_vector);
-        return EXIT_FAILURE;
-    }
-
-    if ((reset_vector & 0x1) == 0) {
-        fprintf(stderr, "[Boot] ERROR: Reset vector 0x%08X missing Thumb bit\n", reset_vector);
-        return EXIT_FAILURE;
-    }
-
-    /* Initialize CPU registers */
-    cpu.r[13] = initial_sp;           /* Set stack pointer */
-    cpu.r[15] = reset_vector & ~1;    /* Set PC (clear thumb bit for emulator) */
-
-    printf("[Boot] SP = 0x%08X\n", cpu.r[13]);
-    printf("[Boot] PC = 0x%08X\n", cpu.r[15]);
-
-    if (debug_mode) {
-        cpu.debug_enabled = 1;
-        printf("[Boot] Debug mode enabled (CPU step output)\n");
-    }
-
-    if (asm_mode) {
-        cpu.debug_asm = 1;
-        printf("[Boot] Assembly mode enabled (instruction tracing)\n");
-    }
-
-    cpu_reset_from_flash();
-#endif
 
     /* ========================================================================
      * Execution Phase
@@ -179,7 +113,6 @@ int main(int argc, char **argv) {
     printf("Executing...\n");
     printf("═══════════════════════════════════════════════════════════\n\n");
 
-#ifdef DUAL_CORE_ENABLED
     /* Dual-core execution loop */
     uint32_t instruction_count = 0;
     uint32_t step_count = 0;
@@ -228,21 +161,6 @@ int main(int argc, char **argv) {
     printf(" Core 1 Steps: %u\n", cores[CORE1].step_count);
     printf("═══════════════════════════════════════════════════════════\n");
 
-#else
-    /* Single-core execution loop */
-    printf("[Boot] Starting execution...\n");
-
-    while (!cpu_is_halted()) {
-        cpu_step();
-    }
-
-    /* ========================================================================
-     * Completion Phase (Single-Core)
-     * ======================================================================== */
-
-    printf("[Boot] CPU halted at PC=0x%08X\n", cpu.r[15]);
-    printf("[Boot] Execution complete. Total steps: %u\n", cpu.step_count);
-#endif
 
     return EXIT_SUCCESS;
 }

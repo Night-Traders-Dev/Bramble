@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include "emulator_dual.h"
+#include "emulator.h"
 #include "instructions.h"
 #include "timer.h"
 #include "nvic.h"
