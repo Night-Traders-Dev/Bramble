@@ -16,7 +16,10 @@ include_directories(include)
 # Source files
 set(SOURCES
     src/main.c
+#    src/main_dual.c
     src/cpu.c
+    src/multicore.c
+    src/cpu_dual.c
     src/instructions.c
     src/membus.c
     src/uf2.c
