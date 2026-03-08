@@ -1,21 +1,16 @@
 #include <stdio.h>
+#include <string.h>
 #include "uart.h"
 
 /* Two UART instances */
 uart_state_t uart_state[2];
 
 void uart_init(void) {
+    memset(uart_state, 0, sizeof(uart_state));
     for (int i = 0; i < 2; i++) {
-        uart_state[i].dr    = 0;
-        uart_state[i].rsr   = 0;
-        uart_state[i].ibrd  = 0;
-        uart_state[i].fbrd  = 0;
-        uart_state[i].lcr_h = 0;
         uart_state[i].cr    = UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE;
         uart_state[i].ifls  = 0x12;  /* Default: 1/2 full */
-        uart_state[i].imsc  = 0;
         uart_state[i].ris   = UART_INT_TX;  /* TX FIFO empty from start */
-        uart_state[i].dmacr = 0;
         uart_state[i].enabled = 1;
     }
 }
@@ -30,20 +25,85 @@ int uart_match(uint32_t addr) {
     return -1;
 }
 
+/* ========================================================================
+ * RX FIFO helpers
+ * ======================================================================== */
+
+/* Get the RX FIFO trigger level based on IFLS register bits [5:3] */
+static uint32_t rx_trigger_level(uart_state_t *u) {
+    switch ((u->ifls >> 3) & 0x7) {
+    case 0: return 2;   /* 1/8 full  = 2 of 16 */
+    case 1: return 4;   /* 1/4 full  = 4 of 16 */
+    case 2: return 8;   /* 1/2 full  = 8 of 16 */
+    case 3: return 12;  /* 3/4 full  = 12 of 16 */
+    case 4: return 14;  /* 7/8 full  = 14 of 16 */
+    default: return 8;
+    }
+}
+
+/* Update RX interrupt status based on FIFO level */
+static void uart_rx_update_irq(uart_state_t *u) {
+    if (u->rx_count >= rx_trigger_level(u)) {
+        u->ris |= UART_INT_RX;
+    }
+}
+
+int uart_rx_push(int uart_num, uint8_t data) {
+    if (uart_num < 0 || uart_num > 1) return 0;
+    uart_state_t *u = &uart_state[uart_num];
+
+    if (u->rx_count >= UART_RX_FIFO_SIZE)
+        return 0;  /* FIFO full */
+
+    u->rx_fifo[u->rx_head] = data;
+    u->rx_head = (u->rx_head + 1) % UART_RX_FIFO_SIZE;
+    u->rx_count++;
+
+    uart_rx_update_irq(u);
+    return 1;
+}
+
+static uint8_t uart_rx_pop(uart_state_t *u) {
+    if (u->rx_count == 0)
+        return 0;
+
+    uint8_t data = u->rx_fifo[u->rx_tail];
+    u->rx_tail = (u->rx_tail + 1) % UART_RX_FIFO_SIZE;
+    u->rx_count--;
+
+    /* Clear RX interrupt if below trigger level */
+    if (u->rx_count < rx_trigger_level(u)) {
+        u->ris &= ~UART_INT_RX;
+    }
+    return data;
+}
+
+/* ========================================================================
+ * Register Access
+ * ======================================================================== */
+
 uint32_t uart_read32(int uart_num, uint32_t offset) {
     uart_state_t *u = &uart_state[uart_num];
 
     switch (offset) {
     case UART_DR:
-        /* No RX data available - return 0 */
-        return 0;
+        /* Read pops from RX FIFO; DR[7:0] = data, DR[11:8] = error flags */
+        if (u->rx_count > 0) {
+            return (uint32_t)uart_rx_pop(u);
+        }
+        return 0;  /* No data available */
 
     case UART_RSR:
         return u->rsr;
 
-    case UART_FR:
-        /* TX FIFO always empty (instant TX), RX FIFO always empty (no input) */
-        return UART_FR_TXFE | UART_FR_RXFE;
+    case UART_FR: {
+        uint32_t fr = UART_FR_TXFE;  /* TX FIFO always empty (instant TX) */
+        if (u->rx_count == 0)
+            fr |= UART_FR_RXFE;
+        if (u->rx_count >= UART_RX_FIFO_SIZE)
+            fr |= UART_FR_RXFF;
+        return fr;
+    }
 
     case UART_IBRD:
         return u->ibrd;

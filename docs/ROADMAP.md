@@ -1,12 +1,12 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.10.0
+## Current State: v0.11.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~70% | Flash + SRAM + ROM (4KB); no SRAM aliases |
-| Peripherals | ~75% | GPIO, Timer, NVIC+SysTick, UART, SPI, I2C, PWM, DMA, Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub; no PIO |
+| Peripherals | ~80% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx), SPI, I2C, PWM, DMA, Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub; no PIO |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
 | Boot | ~80% | Vector table + SDK boot peripherals + ROM function table |
 
@@ -111,6 +111,7 @@ on M0+. The original roadmap incorrectly listed these.
 - Both UART0 and UART1 with independent state
 - TX interrupt status, ICR write-1-to-clear, PL011 peripheral ID
 - Atomic register aliases (SET/CLR/XOR)
+- **Rx FIFO** (v0.11.0): 16-deep receive FIFO, `uart_rx_push()` API, FIFO-level interrupts
 
 ### 3.2 SPI Full (0x4003C000 / 0x40040000) [COMPLETE]
 ~~Data register read/write with simple FIFO~~
@@ -192,5 +193,5 @@ on M0+. The original roadmap incorrectly listed these.
 | ~~Watchdog~~ | ~~Maybe~~ | ~~Small~~ | ~~Medium~~ | DONE v0.7.0 |
 | ~~ADC~~ | ~~No~~ | ~~Small~~ | ~~Medium~~ | DONE v0.7.0 |
 | ~~ROM function table~~ | ~~Some programs~~ | ~~Medium~~ | ~~Medium~~ | DONE v0.8.0 |
-| UART Rx | No | Medium | Medium | Phase 3 |
+| ~~UART Rx~~ | ~~No~~ | ~~Medium~~ | ~~Medium~~ | DONE v0.11.0 |
 | ~~DMA controller~~ | ~~Some programs~~ | ~~Medium~~ | ~~Medium~~ | DONE v0.10.0 |

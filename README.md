@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.10.0 - Production Ready** ✅
+## Current Status: **v0.11.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **dual UART** output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **157-test verbose unit test suite** across 37+ categories.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **165-test verbose unit test suite** across 38+ categories.
 
 ### ✅ What Works
 
@@ -46,7 +46,7 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - Debug: BKPT, UDF
 
 - **Accurate Flag Handling**: N, Z, C, V flags with proper carry/overflow detection
-- **UART Emulation**: Dual PL011 UARTs (UART0 + UART1) with full register state (DR, RSR, IBRD, FBRD, LCR_H, CR, IFLS, IMSC, RIS, MIS, ICR), TX output, interrupt status, PL011 peripheral ID, and atomic aliases
+- **UART Emulation**: Dual PL011 UARTs (UART0 + UART1) with full register state (DR, RSR, IBRD, FBRD, LCR_H, CR, IFLS, IMSC, RIS, MIS, ICR), TX output via `putchar()`, **16-deep RX FIFO** with `uart_rx_push()` injection API, configurable FIFO-level RX interrupts, PL011 peripheral ID, and atomic aliases
 - **GPIO Emulation**: Complete 30-pin GPIO peripheral with:
   - SIO fast GPIO access (direct read/write, atomic operations)
   - IO_BANK0 per-pin configuration (function select, control)
@@ -108,7 +108,7 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - IRQ_QUIET, MULTI_CHAN_TRIGGER, interrupt status registers
   - Atomic register aliases (SET/CLR/XOR)
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 157 tests across 37+ categories with verbose per-category reporting, integrated with CTest
+- **✨ Unit Test Suite**: 165 tests across 38+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -158,7 +158,7 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 - **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (SDK falls back to UART)
 - **Missing Peripherals**: PIO not emulated; USB is stub-only (disconnected state)
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
-- **UART Tx Only**: No receive (Rx) emulation
+- **UART Rx**: Receive FIFO works via `uart_rx_push()` API; no automatic stdin polling yet
 - See [ROADMAP](docs/ROADMAP.md) for full status and next phases
 
 ## Building and Running
@@ -343,7 +343,7 @@ Bramble/
 │   ├── pwm.h           # PWM register definitions
 │   └── dma.h           # DMA controller register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (157 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (165 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -618,7 +618,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ### High Priority
 
-1. **UART Rx**: Implement receive path for bidirectional serial communication
+1. **UART Stdin Polling**: Non-blocking stdin read for interactive UART Rx input
 
 ### Medium Priority
 

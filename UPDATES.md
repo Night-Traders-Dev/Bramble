@@ -1,5 +1,27 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.11.0] - 2026-03-08
+
+### UART Receive Path
+
+1. **UART Rx FIFO** (`uart.c`, `uart.h`)
+   - 16-deep PL011-standard circular buffer per UART instance
+   - `uart_rx_push(uart_num, data)` API for external data injection
+   - DR read pops from FIFO in order; returns 0 when empty
+   - FR register: RXFE/RXFF flags reflect actual FIFO occupancy
+   - RX interrupt (RIS bit 4) set when FIFO reaches trigger level (IFLS bits [5:3])
+   - Interrupt auto-clears when DR reads drain FIFO below trigger
+   - Both UART0 and UART1 have independent RX FIFOs
+
+### Test Suite (165 tests, up from 157)
+
+1. **8 new UART Rx tests**:
+   - Push/pop via DR, FIFO empty flag, FIFO full flag (rejects on overflow)
+   - FIFO ordering (3-byte sequence), RX interrupt at trigger level
+   - Interrupt clear on read, UART1 independent Rx, masked interrupt (MIS)
+
+---
+
 ## [0.10.0] - 2026-03-08
 
 ### Phase 3.5: DMA Controller
@@ -452,6 +474,7 @@ All items below were fixed in v0.5.0:
 
 | Version | Date       | Highlights                                                                    |
 |---------|------------|-------------------------------------------------------------------------------|
+| 0.11.0  | 2026-03-08 | UART Rx FIFO (16-deep, trigger-level interrupts), 165 tests                    |
 | 0.10.0  | 2026-03-08 | DMA controller (12 channels, chaining, immediate transfers), 157 tests         |
 | 0.9.0   | 2026-03-08 | ROM function table, full UART/SPI/I2C/PWM peripherals, USB stub, 145 tests    |
 | 0.8.0   | 2026-03-08 | Audit bug fixes (bcond UB, timer, SysTick), 114 tests with verbose framework  |
@@ -467,6 +490,7 @@ All items below were fixed in v0.5.0:
 ## Git History Summary
 
 ```
+0.11.0 (2026-03-08)  UART Rx FIFO (16-deep, trigger-level interrupts), 165 tests
 0.10.0 (2026-03-08)  DMA controller (12 channels, chaining, immediate transfers), 157 tests
 0.9.0  (2026-03-08)  ROM function table, full peripherals (UART/SPI/I2C/PWM), USB stub, 145 tests
 0.8.0  (2026-03-08)  Audit bug fixes, 114-test verbose suite

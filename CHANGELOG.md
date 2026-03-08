@@ -1,5 +1,32 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.11.0] - 2026-03-08
+
+### Added - UART Receive Path
+
+**UART Rx FIFO**:
+
+- 16-deep PL011-standard receive FIFO for both UART0 and UART1
+- `uart_rx_push()` API for external data injection (test harness, stdin)
+- DR read pops from RX FIFO (FIFO order preserved)
+- FR register reflects actual FIFO state: RXFE (empty), RXFF (full)
+- RX interrupt (RIS bit 4) triggers at configurable FIFO level (IFLS bits [5:3])
+- RX interrupt auto-clears when FIFO drops below trigger level on DR reads
+- MIS = RIS & IMSC for masked interrupt status
+
+### Testing
+
+- **8 new tests** (165 total, up from 157)
+- UART Rx category: push/pop, FIFO empty flag, FIFO full flag, FIFO order, RX interrupt at trigger, interrupt clear on read, UART1 independent Rx, masked interrupt
+
+### Files Modified
+
+- `include/uart.h` - RX FIFO fields in `uart_state_t`, `uart_rx_push()` API, `UART_INT_RT` define
+- `src/uart.c` - RX FIFO implementation, DR read from FIFO, FR flags, trigger-level interrupts
+- `tests/test_suite.c` - 8 new UART Rx tests
+
+---
+
 ## [0.10.0] - 2026-03-08
 
 ### Added - DMA Controller

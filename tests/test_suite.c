@@ -852,6 +852,122 @@ TEST(test_uart_periph_id) {
 }
 
 /* ========================================================================
+ * UART Rx Tests (NEW - v0.11.0)
+ * ======================================================================== */
+
+TEST(test_uart_rx_push_pop) {
+    reset_cpu();
+    /* Push a byte and read it back via DR */
+    int ok = uart_rx_push(0, 'H');
+    ASSERT_EQ(1, ok, "uart_rx_push returns 1");
+    uint32_t dr = mem_read32(UART0_BASE + UART_DR);
+    ASSERT_EQ('H', dr & 0xFF, "DR read returns pushed byte");
+    PASS();
+}
+
+TEST(test_uart_rx_fifo_empty_flag) {
+    reset_cpu();
+    /* Initially RX FIFO should be empty */
+    uint32_t fr = mem_read32(UART0_BASE + UART_FR);
+    ASSERT_TRUE(fr & UART_FR_RXFE, "RXFE set when empty");
+    ASSERT_TRUE(!(fr & UART_FR_RXFF), "RXFF clear when empty");
+    /* Push a byte - no longer empty */
+    uart_rx_push(0, 'A');
+    fr = mem_read32(UART0_BASE + UART_FR);
+    ASSERT_TRUE(!(fr & UART_FR_RXFE), "RXFE clear after push");
+    /* Pop it - empty again */
+    mem_read32(UART0_BASE + UART_DR);
+    fr = mem_read32(UART0_BASE + UART_FR);
+    ASSERT_TRUE(fr & UART_FR_RXFE, "RXFE set after pop");
+    PASS();
+}
+
+TEST(test_uart_rx_fifo_full_flag) {
+    reset_cpu();
+    /* Fill the FIFO */
+    for (int i = 0; i < UART_RX_FIFO_SIZE; i++) {
+        ASSERT_EQ(1, uart_rx_push(0, (uint8_t)i), "push succeeds");
+    }
+    /* Next push should fail */
+    ASSERT_EQ(0, uart_rx_push(0, 0xFF), "push fails when full");
+    /* RXFF should be set */
+    uint32_t fr = mem_read32(UART0_BASE + UART_FR);
+    ASSERT_TRUE(fr & UART_FR_RXFF, "RXFF set when full");
+    PASS();
+}
+
+TEST(test_uart_rx_fifo_order) {
+    reset_cpu();
+    /* Push 3 bytes, read them back in FIFO order */
+    uart_rx_push(0, 'X');
+    uart_rx_push(0, 'Y');
+    uart_rx_push(0, 'Z');
+    ASSERT_EQ('X', mem_read32(UART0_BASE + UART_DR) & 0xFF, "FIFO order [0]");
+    ASSERT_EQ('Y', mem_read32(UART0_BASE + UART_DR) & 0xFF, "FIFO order [1]");
+    ASSERT_EQ('Z', mem_read32(UART0_BASE + UART_DR) & 0xFF, "FIFO order [2]");
+    PASS();
+}
+
+TEST(test_uart_rx_interrupt) {
+    reset_cpu();
+    /* Default IFLS RX trigger = 1/2 full = 8 bytes */
+    /* Push 7 bytes - below trigger, RX interrupt should not be set */
+    for (int i = 0; i < 7; i++) {
+        uart_rx_push(0, (uint8_t)('A' + i));
+    }
+    ASSERT_EQ(0, uart_state[0].ris & UART_INT_RX, "RX IRQ not set below trigger");
+    /* Push 8th byte - at trigger level, RX interrupt should be set */
+    uart_rx_push(0, 'H');
+    ASSERT_TRUE(uart_state[0].ris & UART_INT_RX, "RX IRQ set at trigger level");
+    PASS();
+}
+
+TEST(test_uart_rx_interrupt_clear) {
+    reset_cpu();
+    /* Fill to trigger level and verify interrupt */
+    for (int i = 0; i < 8; i++) {
+        uart_rx_push(0, (uint8_t)i);
+    }
+    ASSERT_TRUE(uart_state[0].ris & UART_INT_RX, "RX IRQ set");
+    /* Read enough to go below trigger */
+    for (int i = 0; i < 2; i++) {
+        mem_read32(UART0_BASE + UART_DR);
+    }
+    ASSERT_EQ(0, uart_state[0].ris & UART_INT_RX, "RX IRQ cleared after reads");
+    PASS();
+}
+
+TEST(test_uart1_rx_independent) {
+    reset_cpu();
+    /* Push to UART1, read from UART1 */
+    uart_rx_push(1, 'Q');
+    uint32_t dr = mem_read32(UART1_BASE + UART_DR);
+    ASSERT_EQ('Q', dr & 0xFF, "UART1 RX returns pushed byte");
+    /* UART0 should still be empty */
+    uint32_t fr0 = mem_read32(UART0_BASE + UART_FR);
+    ASSERT_TRUE(fr0 & UART_FR_RXFE, "UART0 RX FIFO still empty");
+    PASS();
+}
+
+TEST(test_uart_rx_masked_interrupt) {
+    reset_cpu();
+    /* Enable RX interrupt mask */
+    mem_write32(UART0_BASE + UART_IMSC, UART_INT_RX);
+    /* Fill to trigger level */
+    for (int i = 0; i < 8; i++) {
+        uart_rx_push(0, (uint8_t)i);
+    }
+    /* MIS should show RX interrupt */
+    uint32_t mis = mem_read32(UART0_BASE + UART_MIS);
+    ASSERT_TRUE(mis & UART_INT_RX, "MIS shows RX when IMSC enabled");
+    /* Disable mask, MIS should be clear */
+    mem_write32(UART0_BASE + UART_IMSC, 0);
+    mis = mem_read32(UART0_BASE + UART_MIS);
+    ASSERT_EQ(0, mis & UART_INT_RX, "MIS clear when IMSC disabled");
+    PASS();
+}
+
+/* ========================================================================
  * SPI Tests
  * ======================================================================== */
 
@@ -2069,6 +2185,17 @@ int main(void) {
     RUN_TEST(test_uart_atomic_set_clr);
     RUN_TEST(test_uart_periph_id);
     END_CATEGORY("UART Peripheral");
+
+    BEGIN_CATEGORY("UART Rx");
+    RUN_TEST(test_uart_rx_push_pop);
+    RUN_TEST(test_uart_rx_fifo_empty_flag);
+    RUN_TEST(test_uart_rx_fifo_full_flag);
+    RUN_TEST(test_uart_rx_fifo_order);
+    RUN_TEST(test_uart_rx_interrupt);
+    RUN_TEST(test_uart_rx_interrupt_clear);
+    RUN_TEST(test_uart1_rx_independent);
+    RUN_TEST(test_uart_rx_masked_interrupt);
+    END_CATEGORY("UART Rx");
 
     BEGIN_CATEGORY("SPI Peripheral");
     RUN_TEST(test_spi0_status);

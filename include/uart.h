@@ -47,6 +47,10 @@
 /* Interrupt bits */
 #define UART_INT_TX     (1u << 5)   /* TX interrupt */
 #define UART_INT_RX     (1u << 4)   /* RX interrupt */
+#define UART_INT_RT     (1u << 6)   /* RX timeout interrupt */
+
+/* RX FIFO */
+#define UART_RX_FIFO_SIZE  16  /* PL011 standard 16-deep FIFO */
 
 /* Per-UART state */
 typedef struct {
@@ -61,6 +65,12 @@ typedef struct {
     uint32_t ris;       /* Raw interrupt status */
     uint32_t dmacr;     /* DMA control */
     int enabled;        /* Derived from CR.UARTEN */
+
+    /* RX FIFO */
+    uint8_t rx_fifo[UART_RX_FIFO_SIZE];
+    uint32_t rx_head;   /* Next write position */
+    uint32_t rx_tail;   /* Next read position */
+    uint32_t rx_count;  /* Number of bytes in FIFO */
 } uart_state_t;
 
 extern uart_state_t uart_state[2];
@@ -74,5 +84,9 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val);
 
 /* Check if address is in UART space, returns 0 or 1 for uart_num, -1 if not */
 int uart_match(uint32_t addr);
+
+/* Push a byte into the UART RX FIFO (for external input injection).
+ * Returns 1 on success, 0 if FIFO is full. */
+int uart_rx_push(int uart_num, uint8_t data);
 
 #endif /* UART_H */
