@@ -2125,6 +2125,312 @@ TEST(test_rom_flash_functions_in_table) {
 }
 
 /* ========================================================================
+ * PIO Execution Tests
+ * ======================================================================== */
+
+/* Helper: encode PIO instruction */
+static uint16_t pio_enc(uint8_t opcode, uint8_t delay_sideset, uint8_t arg) {
+    return (uint16_t)((opcode << 13) | (delay_sideset << 8) | arg);
+}
+
+TEST(test_pio_set_x) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* SET X, 15 (opcode=7, dest=5 for X, data=15) */
+    uint16_t instr = pio_enc(PIO_OP_SET, 0, (5 << 5) | 15);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(15, s->x, "SET X, 15");
+    PASS();
+}
+
+TEST(test_pio_set_y) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+
+    uint16_t instr = pio_enc(PIO_OP_SET, 0, (6 << 5) | 23);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(23, s->y, "SET Y, 23");
+    PASS();
+}
+
+TEST(test_pio_mov_x_to_y) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+
+    s->x = 0xDEADBEEF;
+    /* MOV Y, X: opcode=5, dest=2(Y), op=0(none), source=1(X) */
+    uint16_t instr = pio_enc(PIO_OP_MOV, 0, (2 << 5) | (0 << 3) | 1);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(0xDEADBEEF, s->y, "MOV Y, X");
+    PASS();
+}
+
+TEST(test_pio_mov_invert) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+
+    s->x = 0x00000000;
+    /* MOV Y, ~X: opcode=5, dest=2(Y), op=1(invert), source=1(X) */
+    uint16_t instr = pio_enc(PIO_OP_MOV, 0, (2 << 5) | (1 << 3) | 1);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(0xFFFFFFFF, s->y, "MOV Y, ~X (invert)");
+    PASS();
+}
+
+TEST(test_pio_jmp_always) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+    s->pc = 0;
+
+    /* JMP 10: opcode=0, cond=0(always), addr=10 */
+    uint16_t instr = pio_enc(PIO_OP_JMP, 0, (0 << 5) | 10);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(10, s->pc, "JMP always to addr 10");
+    PASS();
+}
+
+TEST(test_pio_jmp_x_zero) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+    s->pc = 0;
+    s->x = 0;
+
+    /* JMP !X, 5: opcode=0, cond=1(!X), addr=5 */
+    uint16_t instr = pio_enc(PIO_OP_JMP, 0, (1 << 5) | 5);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(5, s->pc, "JMP !X (X=0) should jump to 5");
+
+    /* Now X != 0, should NOT jump */
+    s->pc = 0;
+    s->x = 42;
+    s->execctrl = (31u << 12);  /* wrap_top=31 */
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(1, s->pc, "JMP !X (X!=0) should advance PC to 1");
+    PASS();
+}
+
+TEST(test_pio_jmp_x_dec) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+    s->pc = 0;
+    s->x = 3;
+    s->execctrl = (31u << 12);
+
+    /* JMP X--, 10: opcode=0, cond=2(X--), addr=10 */
+    uint16_t instr = pio_enc(PIO_OP_JMP, 0, (2 << 5) | 10);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(10, s->pc, "JMP X-- (X=3) should jump");
+    ASSERT_EQ(2, s->x, "X should be decremented to 2");
+
+    /* X=0: should not jump, X wraps to 0xFFFFFFFF */
+    s->pc = 0;
+    s->x = 0;
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(1, s->pc, "JMP X-- (X=0) should not jump");
+    PASS();
+}
+
+TEST(test_pio_tx_fifo_push_pull) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* CPU pushes value into TX FIFO */
+    pio_write32(0, PIO_TXF0, 0x12345678);
+    ASSERT_EQ(1, s->tx_fifo.count, "TX FIFO should have 1 entry");
+
+    /* PULL (non-blocking): opcode=4, arg = (1<<7) | (0<<6) | (0<<5) = PULL, no-ife, no-block */
+    uint16_t pull = pio_enc(PIO_OP_PUSH_PULL, 0, (1 << 7) | (0 << 6) | (0 << 5));
+    pio_sm_exec(0, 0, pull);
+    ASSERT_EQ(0x12345678, s->osr, "PULL should load TX FIFO value into OSR");
+    ASSERT_EQ(0, s->tx_fifo.count, "TX FIFO should be empty after PULL");
+    PASS();
+}
+
+TEST(test_pio_rx_fifo_push_read) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    s->isr = 0xCAFEBABE;
+    s->isr_count = 32;
+
+    /* PUSH: opcode=4, arg = (0<<7) | (0<<6) | (0<<5) = PUSH, no-iff, no-block */
+    uint16_t push = pio_enc(PIO_OP_PUSH_PULL, 0, (0 << 7) | (0 << 6) | (0 << 5));
+    pio_sm_exec(0, 0, push);
+    ASSERT_EQ(1, s->rx_fifo.count, "RX FIFO should have 1 entry after PUSH");
+    ASSERT_EQ(0, s->isr, "ISR should be cleared after PUSH");
+
+    /* CPU reads from RX FIFO */
+    uint32_t val = pio_read32(0, PIO_RXF0);
+    ASSERT_EQ(0xCAFEBABE, val, "RX FIFO read should return pushed value");
+    ASSERT_EQ(0, s->rx_fifo.count, "RX FIFO should be empty after read");
+    PASS();
+}
+
+TEST(test_pio_pull_blocking_stalls) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+
+    /* PULL blocking with empty TX FIFO */
+    uint16_t pull_block = pio_enc(PIO_OP_PUSH_PULL, 0, (1 << 7) | (0 << 6) | (1 << 5));
+    pio_sm_exec(0, 0, pull_block);
+    ASSERT_EQ(1, s->stalled, "PULL blocking on empty FIFO should stall");
+    PASS();
+}
+
+TEST(test_pio_fstat_reflects_fifo) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+
+    /* Initially all FIFOs empty */
+    uint32_t fstat = pio_read32(0, PIO_FSTAT);
+    ASSERT_EQ(0x0F, (fstat >> PIO_FSTAT_TXEMPTY_SHIFT) & 0x0F, "All TX empty initially");
+    ASSERT_EQ(0x0F, (fstat >> PIO_FSTAT_RXEMPTY_SHIFT) & 0x0F, "All RX empty initially");
+
+    /* Push into SM0 TX FIFO */
+    pio_write32(0, PIO_TXF0, 0x1234);
+    fstat = pio_read32(0, PIO_FSTAT);
+    ASSERT_EQ(0x0E, (fstat >> PIO_FSTAT_TXEMPTY_SHIFT) & 0x0F, "SM0 TX no longer empty");
+
+    /* Push ISR into SM0 RX FIFO */
+    p->sm[0].isr = 0xABCD;
+    p->sm[0].isr_count = 32;
+    uint16_t push = pio_enc(PIO_OP_PUSH_PULL, 0, 0);
+    pio_sm_exec(0, 0, push);
+    fstat = pio_read32(0, PIO_FSTAT);
+    ASSERT_EQ(0x0E, (fstat >> PIO_FSTAT_RXEMPTY_SHIFT) & 0x0F, "SM0 RX no longer empty");
+    PASS();
+}
+
+TEST(test_pio_wrap) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* Set wrap: bottom=2, top=5 */
+    s->execctrl = (5u << 12) | (2u << 7);
+    s->pc = 5;
+
+    /* Execute NOP (SET X, 0) to trigger PC advance with wrap */
+    uint16_t nop = pio_enc(PIO_OP_SET, 0, (5 << 5) | 0);
+    pio_sm_exec(0, 0, nop);
+    ASSERT_EQ(2, s->pc, "PC should wrap from 5 back to 2");
+    PASS();
+}
+
+TEST(test_pio_out_x) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+
+    s->osr = 0xFF;
+    s->osr_count = 0;
+    /* Default SHIFTCTRL: shift right */
+    s->shiftctrl = (1u << 19);  /* OUT shift right */
+
+    /* OUT X, 8: opcode=3, dest=1(X), bit_count=8 */
+    uint16_t instr = pio_enc(PIO_OP_OUT, 0, (1 << 5) | 8);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(0xFF, s->x, "OUT X, 8 should put lower 8 bits of OSR into X");
+    PASS();
+}
+
+TEST(test_pio_in_x_push) {
+    reset_cpu();
+    pio_sm_t *s = &pio_state[0].sm[0];
+
+    s->x = 0xAB;
+    s->isr = 0;
+    s->isr_count = 0;
+    s->shiftctrl = (1u << 18);  /* IN shift right */
+
+    /* IN X, 8: opcode=2, source=1(X), bit_count=8 */
+    uint16_t instr = pio_enc(PIO_OP_IN, 0, (1 << 5) | 8);
+    pio_sm_exec(0, 0, instr);
+    ASSERT_EQ(8, s->isr_count, "ISR count should be 8 after IN X,8");
+    ASSERT_TRUE(s->isr != 0, "ISR should contain data after IN");
+    PASS();
+}
+
+TEST(test_pio_irq_set_clear) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+
+    /* IRQ SET 3: opcode=6, clr=0, wait=0, index=3 */
+    uint16_t set_irq = pio_enc(PIO_OP_IRQ, 0, (0 << 6) | (0 << 5) | 3);
+    pio_sm_exec(0, 0, set_irq);
+    ASSERT_EQ(0x08, p->irq & 0x08, "IRQ 3 should be set");
+
+    /* IRQ CLEAR 3: opcode=6, clr=1, wait=0, index=3 */
+    uint16_t clr_irq = pio_enc(PIO_OP_IRQ, 0, (1 << 6) | (0 << 5) | 3);
+    pio_sm_exec(0, 0, clr_irq);
+    ASSERT_EQ(0, p->irq & 0x08, "IRQ 3 should be cleared");
+    PASS();
+}
+
+TEST(test_pio_sm_enable_step) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* Load a simple program: SET X, 7 at addr 0 */
+    p->instr_mem[0] = pio_enc(PIO_OP_SET, 0, (5 << 5) | 7);
+    /* SET Y, 3 at addr 1 */
+    p->instr_mem[1] = pio_enc(PIO_OP_SET, 0, (6 << 5) | 3);
+
+    s->pc = 0;
+    s->execctrl = (31u << 12);  /* wrap_top=31 */
+
+    /* Enable SM0 */
+    pio_write32(0, PIO_CTRL, 0x01);
+
+    /* Step PIO */
+    pio_step();
+    ASSERT_EQ(7, s->x, "After step, X should be 7 (from SET X, 7)");
+    ASSERT_EQ(1, s->pc, "PC should advance to 1");
+
+    pio_step();
+    ASSERT_EQ(3, s->y, "After second step, Y should be 3 (from SET Y, 3)");
+    PASS();
+}
+
+TEST(test_pio_sm_restart_clears_state) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    s->x = 42;
+    s->y = 99;
+    s->pc = 15;
+    s->isr = 0xFFFF;
+
+    /* Write CTRL with SM_RESTART bit for SM0 (bit 4) */
+    pio_write32(0, PIO_CTRL, (1u << 4));
+
+    ASSERT_EQ(0, s->x, "X should be 0 after restart");
+    ASSERT_EQ(0, s->y, "Y should be 0 after restart");
+    ASSERT_EQ(0, s->pc, "PC should be 0 after restart");
+    ASSERT_EQ(0, s->isr, "ISR should be 0 after restart");
+    PASS();
+}
+
+TEST(test_pio_flevel_reflects_fifo) {
+    reset_cpu();
+
+    /* Push 2 items into SM0 TX FIFO */
+    pio_write32(0, PIO_TXF0, 0x1111);
+    pio_write32(0, PIO_TXF0, 0x2222);
+
+    uint32_t flevel = pio_read32(0, PIO_FLEVEL);
+    /* SM0: TX bits [3:0], RX bits [7:4]; TX count should be 2 */
+    uint32_t sm0_tx = flevel & 0x0F;
+    ASSERT_EQ(2, sm0_tx, "FLEVEL SM0 TX should be 2");
+    PASS();
+}
+
+/* ========================================================================
  * Cycle Timing Tests
  * ======================================================================== */
 
@@ -2587,6 +2893,27 @@ int main(void) {
     RUN_TEST(test_pio_tx_rx_fifo_stubs);
     RUN_TEST(test_pio_atomic_set_clr);
     END_CATEGORY("PIO Peripheral");
+
+    BEGIN_CATEGORY("PIO Execution");
+    RUN_TEST(test_pio_set_x);
+    RUN_TEST(test_pio_set_y);
+    RUN_TEST(test_pio_mov_x_to_y);
+    RUN_TEST(test_pio_mov_invert);
+    RUN_TEST(test_pio_jmp_always);
+    RUN_TEST(test_pio_jmp_x_zero);
+    RUN_TEST(test_pio_jmp_x_dec);
+    RUN_TEST(test_pio_tx_fifo_push_pull);
+    RUN_TEST(test_pio_rx_fifo_push_read);
+    RUN_TEST(test_pio_pull_blocking_stalls);
+    RUN_TEST(test_pio_fstat_reflects_fifo);
+    RUN_TEST(test_pio_wrap);
+    RUN_TEST(test_pio_out_x);
+    RUN_TEST(test_pio_in_x_push);
+    RUN_TEST(test_pio_irq_set_clear);
+    RUN_TEST(test_pio_sm_enable_step);
+    RUN_TEST(test_pio_sm_restart_clears_state);
+    RUN_TEST(test_pio_flevel_reflects_fifo);
+    END_CATEGORY("PIO Execution");
 
     BEGIN_CATEGORY("SRAM Aliasing");
     RUN_TEST(test_sram_alias_write_read);

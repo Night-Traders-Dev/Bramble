@@ -1,5 +1,48 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.16.0] - 2026-03-08
+
+### Phase 3.7: PIO Instruction Execution
+
+1. **PIO Instruction Engine** (`pio.c`)
+   - `pio_sm_exec(int pio_num, int sm_num, uint16_t instr)` — full decoder for all 9 PIO opcodes
+   - Instruction encoding: `[15:13]` opcode, `[12:8]` delay/side-set, `[7:0]` operand
+   - `pio_step()` — steps all enabled SMs in all PIO blocks (called from main loop)
+   - Force-exec support: writing SM_INSTR triggers immediate execution
+   - Stall re-execution: stalled SMs re-try their instruction each step
+
+2. **FIFO Implementation** (`pio.c`)
+   - `fifo_push()`, `fifo_pop()`, `fifo_empty()`, `fifo_full()` helpers
+   - 4-deep circular buffer per TX/RX FIFO per SM
+   - FSTAT register dynamically reflects actual FIFO empty/full state
+   - FLEVEL register shows actual FIFO counts (4 bits per SM per direction)
+   - RXF reads pop from RX FIFO, TXF writes push into TX FIFO
+
+3. **Instruction Details**
+   - **JMP**: 8 conditions (always, !X, X--, !Y, Y--, X!=Y, PIN, !OSRE)
+   - **WAIT**: GPIO, PIN, IRQ sources; stalls SM until condition met
+   - **IN**: Shift from source (PINS, X, Y, NULL, ISR, OSR) into ISR; autopush when threshold reached
+   - **OUT**: Shift from OSR to destination (PINS, X, Y, NULL, PINDIRS, PC, ISR, EXEC); autopull when empty
+   - **PUSH**: ISR → RX FIFO; blocking (stalls if full) or non-blocking; if_full conditional
+   - **PULL**: TX FIFO → OSR; blocking (stalls if empty) or non-blocking; if_empty conditional
+   - **MOV**: Move between PINS, X, Y, NULL, STATUS, ISR, OSR; with optional invert or bit-reverse
+   - **IRQ**: Set or clear IRQ flags; relative index adds SM number (mod 4)
+   - **SET**: Write immediate to PINS, PINDIRS, X, Y (5-bit value)
+
+4. **SM Runtime State** (`pio.h`)
+   - Scratch registers X, Y; ISR/OSR with bit counters
+   - PC with wrap control via EXECCTRL wrap_bottom/wrap_top
+   - Stall flag, force-exec pending flag
+   - Clock divider fractional accumulator (placeholder)
+
+5. **GPIO Integration** (`pio.c`)
+   - `read_pins()`: reads GPIO input via `sm_in_base` from PINCTRL
+   - `write_pins()`: writes GPIO output via base/count from PINCTRL
+   - `write_pindirs()`: writes GPIO direction via base/count from PINCTRL
+   - SM_RESTART clears FIFOs, shift registers, scratch regs, and PC
+
+---
+
 ## [0.15.0] - 2026-03-08
 
 ### Phase 4.4: Cycle-Accurate Timing

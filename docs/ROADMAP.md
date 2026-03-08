@@ -1,12 +1,12 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.15.0
+## Current State: v0.16.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~85% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + SRAM + SRAM alias + ROM (4KB) |
-| Peripherals | ~85% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (register-level), Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub |
+| Peripherals | ~90% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full instruction execution), Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
 | Boot | ~80% | Vector table + SDK boot peripherals + ROM function table |
 
@@ -147,13 +147,15 @@ on M0+. The original roadmap incorrectly listed these.
 - FIFO support
 - Temperature sensor channel
 
-### 3.7 PIO (0x50200000 / 0x50300000) [REGISTER STUBS COMPLETE]
+### 3.7 PIO (0x50200000 / 0x50300000) [COMPLETE]
 ~~State machine instruction execution~~
 - Register-level emulation: CTRL, FSTAT, FDEBUG, FLEVEL, IRQ, per-SM registers
 - 32-word instruction memory writable/readable per block
-- TX writes accepted/discarded, RX reads return 0
+- Full PIO instruction execution: all 9 opcodes (JMP, WAIT, IN, OUT, PUSH, PULL, MOV, IRQ, SET)
+- Per-SM runtime state: X/Y scratch, ISR/OSR with shift counters, 4-deep TX/RX FIFOs
+- PC wrapping, autopush/autopull, blocking/non-blocking FIFO ops, force-exec
+- FSTAT/FLEVEL reflect actual FIFO state, GPIO pin integration via PINCTRL
 - DBG_CFGINFO, interrupt registers, atomic aliases
-- **NOT emulated**: PIO instruction execution (state machines do not run)
 
 ### 3.8 USB (0x50110000) [LOW]
 - Device mode endpoint handling

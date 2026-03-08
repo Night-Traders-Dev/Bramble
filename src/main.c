@@ -245,6 +245,7 @@ int main(int argc, char **argv) {
         }
 
         dual_core_step();
+        pio_step();
         instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
         step_count++;
 

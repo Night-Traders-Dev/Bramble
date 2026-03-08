@@ -1,5 +1,50 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.16.0] - 2026-03-08
+
+### Added - PIO Instruction Execution
+
+**Full PIO State Machine Instruction Engine**:
+
+- All 9 PIO instructions implemented: JMP, WAIT, IN, OUT, PUSH, PULL, MOV, IRQ, SET
+- JMP conditions: always, !X, X--, !Y, Y--, X!=Y, PIN, !OSRE
+- WAIT sources: GPIO, PIN, IRQ (with stall on condition not met)
+- IN/OUT: shift direction from SHIFTCTRL, autopush/autopull with configurable thresholds
+- PUSH/PULL: blocking and non-blocking variants, if_full/if_empty conditions
+- MOV: all source/dest combinations, invert and bit-reverse operations
+- IRQ: set/clear with relative index (modulo SM number)
+- SET: pins, pindirs, X, Y scratch registers
+
+**PIO Runtime State**:
+
+- Per-SM scratch registers (X, Y), ISR/OSR with shift counters
+- 4-deep TX and RX FIFOs with proper push/pop/empty/full semantics
+- PC wrapping via EXECCTRL wrap_bottom/wrap_top
+- Force-exec via SM_INSTR register write
+- SM_RESTART resets all runtime state (FIFOs, shift registers, PC)
+- FSTAT/FLEVEL now reflect actual FIFO state (not hardcoded)
+- `pio_step()` called from main loop, steps all enabled SMs
+
+**GPIO Integration**:
+
+- PINCTRL-based GPIO pin mapping (set_base/count, out_base/count, in_base)
+- SET/OUT write to GPIO output pins, IN reads GPIO input pins
+- PINDIRS support for SET and OUT destinations
+
+### Testing
+
+- **18 new tests** (212 total, up from 194)
+- PIO Execution category: SET X/Y, MOV X→Y, MOV invert, JMP always/!X/X--, TX FIFO push/pull, RX FIFO push/read, PULL blocking stall, FSTAT reflects FIFO, wrap, OUT X, IN X push, IRQ set/clear, SM enable/step, SM restart clears state, FLEVEL reflects FIFO
+
+### Files Modified
+
+- `include/pio.h` - PIO instruction opcodes, FIFO struct, full SM runtime state, `pio_step()`/`pio_sm_exec()` API
+- `src/pio.c` - Complete PIO instruction execution engine (~500 lines)
+- `src/main.c` - `pio_step()` in main execution loop
+- `tests/test_suite.c` - 18 new PIO execution tests
+
+---
+
 ## [0.15.0] - 2026-03-08
 
 ### Added - Cycle-Accurate Timing

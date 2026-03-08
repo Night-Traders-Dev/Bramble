@@ -89,16 +89,63 @@
 #define PIO_FSTAT_RXEMPTY_SHIFT 8
 
 /* ========================================================================
+ * PIO Instruction Encoding
+ * ======================================================================== */
+
+/* Opcodes (bits [15:13]) */
+#define PIO_OP_JMP   0
+#define PIO_OP_WAIT  1
+#define PIO_OP_IN    2
+#define PIO_OP_OUT   3
+#define PIO_OP_PUSH_PULL 4
+#define PIO_OP_MOV   5
+#define PIO_OP_IRQ   6
+#define PIO_OP_SET   7
+
+/* FIFO depth per SM */
+#define PIO_FIFO_DEPTH  4
+
+/* ========================================================================
+ * Per-SM FIFO
+ * ======================================================================== */
+
+typedef struct {
+    uint32_t data[PIO_FIFO_DEPTH];
+    uint8_t  rd;
+    uint8_t  wr;
+    uint8_t  count;
+} pio_fifo_t;
+
+/* ========================================================================
  * Per-SM State
  * ======================================================================== */
 
 typedef struct {
+    /* Configuration registers (written by CPU) */
     uint32_t clkdiv;
     uint32_t execctrl;
     uint32_t shiftctrl;
-    uint32_t addr;
-    uint32_t instr;
+    uint32_t addr;          /* Current PC (read-only to CPU) */
+    uint32_t instr;         /* SM_INSTR register (force-exec) */
     uint32_t pinctrl;
+
+    /* Runtime state (PIO execution engine) */
+    uint32_t x;             /* Scratch register X */
+    uint32_t y;             /* Scratch register Y */
+    uint32_t isr;           /* Input shift register */
+    uint32_t osr;           /* Output shift register */
+    uint8_t  isr_count;     /* Bits shifted into ISR */
+    uint8_t  osr_count;     /* Bits remaining in OSR */
+    uint8_t  pc;            /* Program counter (0-31) */
+    uint8_t  stalled;       /* SM is stalled (waiting) */
+    uint8_t  exec_pending;  /* Force-exec instruction pending */
+
+    /* FIFOs */
+    pio_fifo_t tx_fifo;     /* TX: CPU writes, SM pulls */
+    pio_fifo_t rx_fifo;     /* RX: SM pushes, CPU reads */
+
+    /* Clock divider fractional accumulator */
+    uint16_t clk_frac_acc;
 } pio_sm_t;
 
 /* ========================================================================
@@ -135,5 +182,11 @@ void     pio_init(void);
 int      pio_match(uint32_t addr);  /* Returns 0/1 for PIO block, -1 if not */
 uint32_t pio_read32(int pio_num, uint32_t offset);
 void     pio_write32(int pio_num, uint32_t offset, uint32_t val);
+
+/* Step all enabled state machines in all PIO blocks (call from main loop) */
+void     pio_step(void);
+
+/* Execute one PIO instruction on a specific SM */
+void     pio_sm_exec(int pio_num, int sm_num, uint16_t instr);
 
 #endif /* PIO_H */
