@@ -5,15 +5,57 @@
 #include "timer.h"
 #include "nvic.h"
 
+/* ========================================================================
+ * Active RAM pointer for zero-copy dual-core context switching
+ *
+ * In single-core mode: points to cpu.ram (full 264KB)
+ * In dual-core mode: points to cores[active_core].ram (per-core 132KB)
+ * ======================================================================== */
+
+static uint8_t *active_ram = NULL;
+static uint32_t active_ram_base = RAM_BASE;
+static uint32_t active_ram_size = RAM_SIZE;
+
+void mem_set_ram_ptr(uint8_t *ram, uint32_t base, uint32_t size) {
+    active_ram = ram;
+    active_ram_base = base;
+    active_ram_size = size;
+}
+
+/* Lazy init: ensure active_ram is set before first use */
+static inline uint8_t *get_ram(void) {
+    if (!active_ram) active_ram = cpu.ram;
+    return active_ram;
+}
+
+/* ========================================================================
+ * SPI Peripheral Stub
+ * ======================================================================== */
+
+static uint32_t spi_read32(uint32_t addr) {
+    uint32_t offset = addr & 0xFFF; /* Offset within SPI block */
+    switch (offset) {
+        case SPI_SSPSR: /* Status register */
+            /* TFE=1 (TX empty), TNF=1 (TX not full), BSY=0 */
+            return 0x03;
+        default:
+            return 0;
+    }
+}
+
+/* ========================================================================
+ * Single-Core Memory Access Functions
+ * ======================================================================== */
+
 void mem_write32(uint32_t addr, uint32_t val) {
     /* Writes to XIP flash are ignored: in real hardware this is external QSPI flash. */
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return;
     }
 
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        uint32_t offset = addr - RAM_BASE;
-        memcpy(&cpu.ram[offset], &val, 4);
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
+        memcpy(&get_ram()[offset], &val, 4);
         return;
     }
 
@@ -37,9 +79,8 @@ void mem_write32(uint32_t addr, uint32_t val) {
 
     /* GPIO registers - UPDATED to include all PADSBANK0 alias regions */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
-//        printf("[GPIO_WRITE] addr=0x%08X val=0x%08X\n", addr, val);
         gpio_write32(addr, val);
         return;
     }
@@ -57,9 +98,9 @@ void mem_write16(uint32_t addr, uint16_t val) {
         return;
     }
 
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        uint32_t offset = addr - RAM_BASE;
-        memcpy(&cpu.ram[offset], &val, 2);
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
+        memcpy(&get_ram()[offset], &val, 2);
         return;
     }
 
@@ -74,19 +115,17 @@ void mem_write16(uint32_t addr, uint16_t val) {
         return;
     }
 
-    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
+    /* GPIO */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
-        gpio_write32(addr & ~0x3, val);  /* Align to 32-bit boundary */
+        gpio_write32(addr & ~0x3, val);
         return;
     }
 
     /* Stub out peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
     if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
-
-    /* Any other region is currently treated as unmapped/no-op. */
 }
 
 void mem_write8(uint32_t addr, uint8_t val) {
@@ -94,8 +133,8 @@ void mem_write8(uint32_t addr, uint8_t val) {
         return;  /* Flash writes ignored */
     }
 
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        cpu.ram[addr - RAM_BASE] = val;
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        get_ram()[addr - active_ram_base] = val;
         return;
     }
 
@@ -110,11 +149,11 @@ void mem_write8(uint32_t addr, uint8_t val) {
         return;
     }
 
-    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
+    /* GPIO */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
-        gpio_write32(addr & ~0x3, val);  /* Align to 32-bit boundary */
+        gpio_write32(addr & ~0x3, val);
         return;
     }
 
@@ -131,10 +170,10 @@ uint32_t mem_read32(uint32_t addr) {
         return val;
     }
 
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        uint32_t offset = addr - RAM_BASE;
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
         uint32_t val;
-        memcpy(&val, &cpu.ram[offset], 4);
+        memcpy(&val, &get_ram()[offset], 4);
         return val;
     }
 
@@ -152,18 +191,35 @@ uint32_t mem_read32(uint32_t addr) {
         return timer_read32(addr);
     }
 
-    /* GPIO registers - UPDATED to include all PADSBANK0 alias regions */
+    /* GPIO registers */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         return gpio_read32(addr);
+    }
+
+    /* SPI peripheral stubs */
+    if ((addr >= SPI0_BASE && addr < SPI0_BASE + 0x1000) ||
+        (addr >= SPI1_BASE && addr < SPI1_BASE + 0x1000)) {
+        return spi_read32(addr);
+    }
+
+    /* I2C peripheral stubs - return 0 (idle/ready) */
+    if ((addr >= I2C0_BASE && addr < I2C0_BASE + 0x1000) ||
+        (addr >= I2C1_BASE && addr < I2C1_BASE + 0x1000)) {
+        return 0;
+    }
+
+    /* PWM peripheral stub */
+    if (addr >= PWM_BASE && addr < PWM_BASE + 0x1000) {
+        return 0;
     }
 
     /* Stub peripheral reads: return 0 for now. */
     if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000)   return 0x00000000;
     if (addr >= 0x40000000   && addr < 0x50000000)          return 0x00000000;
 
-    /* Unmapped address space -> 0 (or you could model a bus fault in the CPU core). */
+    /* Unmapped address space -> 0 */
     return 0;
 }
 
@@ -175,10 +231,10 @@ uint16_t mem_read16(uint32_t addr) {
         return val;
     }
 
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        uint32_t offset = addr - RAM_BASE;
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
         uint16_t val;
-        memcpy(&val, &cpu.ram[offset], 2);
+        memcpy(&val, &get_ram()[offset], 2);
         return val;
     }
 
@@ -190,9 +246,9 @@ uint16_t mem_read16(uint32_t addr) {
         return (uint16_t)((val32 >> (offset * 8)) & 0xFFFF);
     }
 
-    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
+    /* GPIO */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         return (uint16_t)(val32 & 0xFFFF);
@@ -206,8 +262,8 @@ uint8_t mem_read8(uint32_t addr) {
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return cpu.flash[addr - FLASH_BASE];
     }
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        return cpu.ram[addr - RAM_BASE];
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        return get_ram()[addr - active_ram_base];
     }
 
     /* NVIC registers - align to 32-bit boundary for byte access */
@@ -218,9 +274,9 @@ uint8_t mem_read8(uint32_t addr) {
         return (uint8_t)((val32 >> (offset * 8)) & 0xFF);
     }
 
-    /* GPIO - UPDATED to include all PADSBANK0 alias regions */
+    /* GPIO */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||  /* FIXED: Extended range */
+        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         uint8_t byte_offset = addr & 0x3;
@@ -229,6 +285,10 @@ uint8_t mem_read8(uint32_t addr) {
 
     return 0xFF;  /* Unmapped reads return 0xFF */
 }
+
+/* ========================================================================
+ * Dual-Core Memory Access Functions
+ * ======================================================================== */
 
 void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
@@ -291,11 +351,11 @@ void mem_write8_dual(int core_id, uint32_t addr, uint8_t val) {
 }
 
 uint32_t mem_read32_dual(int core_id, uint32_t addr) {
-    /* Flash is shared across all cores */
+    /* Flash is shared across all cores (stored in cpu.flash) */
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
         uint32_t val = 0;
-        memcpy(&val, &cores[0].flash[offset], 4);
+        memcpy(&val, &cpu.flash[offset], 4);
         return val;
     }
 

@@ -1,15 +1,16 @@
 # Bramble RP2040 Emulator
 
-A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 firmware with accurate memory mapping and peripheral emulation.
+A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **Production Ready** ✅
+## Current Status: **v0.5.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, and **dual-core support**! The emulator cleanly executes test programs with proper halting via BKPT instructions.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, SPI/I2C/PWM peripheral stubs, PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a 36-test unit test suite.
 
 ### ✅ What Works
 
 - **Complete RP2040 Memory Map**: Flash (0x10000000), SRAM (0x20000000), SIO (0xD0000000), and APB peripherals
-- **UF2 Firmware Loading**: Parses and loads UF2 blocks into flash with proper address validation
+- **UF2 & ELF Firmware Loading**: Parses UF2 blocks or ELF32 ARM binaries into flash/RAM with proper address validation
+- **O(1) Instruction Dispatch**: 256-entry lookup table indexed by `instr >> 8` with secondary dispatchers for ALU/misc blocks
 - **Full ARM Cortex-M0+ Thumb Instruction Set**: 60+ instructions across 4 phases:
 
   **Phase 1 - Foundational (Bootloader Essential):**
@@ -26,12 +27,14 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - Shifts: LSLS, LSRS, ASRS, RORS (immediate and register)
   - Logical: ANDS, EORS, ORRS, BICS, MVNS
   - Multiplication: MULS
+  - Carry arithmetic: ADCS, SBCS, RSBS (negate)
   - Multiple load/store: LDMIA, STMIA
 
   **Phase 3 - Important (Advanced Features):**
   - Special comparison: CMN, TST
-  - System: SVC, MSR, MRS
+  - System: SVC (triggers SVCall exception), MSR, MRS
   - High register operations
+  - PRIMASK support: CPSID/CPSIE control interrupt delivery
 
   **Phase 4 - Optional (Optimization & Polish):**
   - Hints: NOP, YIELD, WFE, WFI, SEV, IT
@@ -58,12 +61,16 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - Cycle-accurate timing simulation
 - **✨ Dual-Core Support**: Full second Cortex-M0+ core emulation with:
   - Independent Core 0 and Core 1 state machines
-  - Shared flash memory (2 MB)
-  - Separate core-local RAM (128 KB each)
+  - Zero-copy context switching via pointer-based memory bus routing
+  - Shared flash memory (2 MB, single copy)
+  - Separate core-local RAM (132 KB each)
   - Shared RAM (64 KB for inter-core communication)
   - Dual FIFO channels for core-to-core messaging
   - Spinlock support for synchronization
   - SIO (Single-cycle I/O) for atomic operations
+- **Peripheral Stubs**: SPI0/SPI1 (PL022 idle status), I2C0/I2C1, PWM return sensible defaults so SDK firmware doesn't crash during init
+- **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
+- **✨ Unit Test Suite**: 36 tests covering all major features, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -110,14 +117,11 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 
 ### ⚠️ Known Limitations
 
-- **NVIC (Interrupt Controller)**: Core structure implemented but missing 3 key features:
-  - Memory bus routing (NVIC registers not accessible via MMIO)
-  - Priority scheduling (wrong interrupt executes when multiple pending)
-  - Exception return mechanism (ISRs cannot return cleanly)
-  - See [NVIC Audit Report](docs/NVIC_audit_report.md) for detailed analysis
-- **Limited Peripheral Emulation**: UART0, GPIO, and Timer implemented; other peripherals (DMA, USB, etc.) return stub values
+- **Shared RAM Overlap**: Addresses 0x20040000-0x20041FFF resolve to Core 1's per-core RAM instead of shared RAM due to range overlap in the memory map
+- **Limited Peripheral Emulation**: UART0, GPIO, Timer, SPI/I2C/PWM stubs implemented; DMA, USB, PIO not emulated
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
-- **Limited Multi-Core Testing**: Dual-core framework implemented; extensive testing pending
+- **UART Tx Only**: No receive (Rx) emulation
+- See [NVIC Audit Report](docs/NVIC_audit_report.md) for interrupt controller details
 
 ## Building and Running
 
@@ -190,24 +194,27 @@ cd test-firmware
 
 ### Run
 
-**Hello World:**
+**UF2 Firmware:**
+
 ```bash
 ./bramble hello_world.uf2
-```
-
-**GPIO Test:**
-```bash
 ./bramble gpio_test.uf2
-```
-
-**Timer Test:**
-```bash
 ./bramble timer_test.uf2
+./bramble alarm_test.uf2
 ```
 
-**Alarm Test:**
+**ELF Firmware** (auto-detected by extension):
+
 ```bash
-./bramble alarm_test.uf2
+./bramble firmware.elf
+```
+
+### Run Tests
+
+```bash
+cd build
+cmake .. && make bramble_tests
+ctest --output-on-failure
 ```
 
 ### Debug Modes
@@ -267,38 +274,38 @@ Executing...
 Bramble/
 ├── src/
 │   ├── main.c          # Unified entry point, boot, execution (single & dual)
-│   ├── cpu.c           # Cortex-M0+ core: fetch, decode, dispatch
-│   ├── cpu_dual.c      # Dual-core CPU with FIFO and spinlock support
+│   ├── cpu.c           # Cortex-M0+ core: O(1) dispatch, dual-core, exceptions
 │   ├── instructions.c  # 60+ Thumb instruction implementations
-│   ├── membus.c        # Memory system: flash, RAM, peripherals
-│   ├── multicore.c     # Dual-core coordination and SIO
+│   ├── membus.c        # Memory bus: pointer-based routing, peripheral stubs
+│   ├── elf.c           # ELF32 ARM binary loader
+│   ├── uf2.c           # UF2 file loader
 │   ├── gpio.c          # GPIO peripheral emulation
 │   ├── timer.c         # Hardware timer emulation
-│   ├── nvic.c          # NVIC interrupt controller (core structure)
-│   └── uf2.c           # UF2 file loader
+│   └── nvic.c          # NVIC interrupt controller
 ├── include/
-│   ├── emulator.h      # Core definitions and single-core CPU state
-│   ├── emulator_dual.h # Dual-core definitions and state structures
+│   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
 │   ├── gpio.h          # GPIO register definitions
 │   ├── timer.h         # Timer register definitions
 │   └── nvic.h          # NVIC register definitions
+├── tests/
+│   └── test_suite.c    # Unit test suite (36 tests, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
 │   ├── timer_test.S    # Assembly timer test
 │   ├── alarm_test.S    # Assembly alarm test
+│   ├── interrupt_test.S # Assembly interrupt test
 │   ├── linker.ld       # Memory layout definition
 │   ├── uf2conv.py      # UF2 conversion utility
 │   └── build.sh        # Firmware build script
 ├── docs/
 │   ├── GPIO.md         # GPIO peripheral documentation
 │   └── NVIC_audit_report.md # NVIC audit findings and recommendations
-├── assets/
-│   └── bramble-logo.jpg    # Project logo
 ├── CMakeLists.txt      # Build configuration
 ├── build.sh            # Top-level build script
 ├── CHANGELOG.md        # Version history and changes
+├── UPDATES.md          # Detailed per-version update notes
 └── README.md           # This file
 ```
 
@@ -480,16 +487,14 @@ if (timer_low_32bits >= alarm_value) {
 }
 ```
 
-### Instruction Decoding
+### Instruction Dispatch
 
-Thumb instructions are decoded using a priority-ordered bitmask dispatch system in `cpu_step()`:
+Instructions are dispatched via a 256-entry O(1) lookup table indexed by `instr >> 8`:
 
-1. **32-bit instructions checked first** (BL, extended operations)
-2. **Control-flow instructions** (branches, BKPT) handle PC directly and return
-3. **Data processing** (ALU, shifts, logical ops) execute and fall through
-4. **PC increment** (+2 bytes) happens automatically for non-branch instructions
-
-Critical insight: The dispatcher must check more-specific masks before less-specific ones to avoid false matches.
+1. **32-bit instructions** (BL/BLX, MSR/MRS) detected by top-5-bit check and handled before table lookup
+2. **16-bit instructions** dispatched via `dispatch_table[instr >> 8](instr)` in constant time
+3. **Secondary dispatchers** handle entries where multiple instructions share the same top byte (ALU block 0x40-0x43, hints 0xBF, etc.)
+4. **`pc_updated` flag**: Handlers that modify PC set this flag; `cpu_step()` auto-advances PC by 2 only if unset
 
 ### Flag Management
 
@@ -555,64 +560,31 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ### High Priority
 
-1. **Complete NVIC Integration** (estimated 3 hours)
-   - Implement MMIO access to NVIC registers (0xE000E000)
-   - Fix interrupt priority scheduling
-   - Implement exception return mechanism
-   - Enable full interrupt support
-
-2. **Enhanced Dual-Core Features**
-   - Comprehensive dual-core test suite
-   - Core reset/halt control registers
-   - Improved FIFO status reporting
-   - Spinlock timeout support
-
-3. **Additional Peripherals**
-   - UART Rx (currently Tx only)
-   - SPI interface
-   - I2C interface
-   - PWM generators
-   - PIO state machines
+1. **Fix Shared RAM Overlap**: Reorder memory checks so shared RAM (0x20040000+) resolves correctly for both cores
+2. **UART Rx**: Implement receive path for bidirectional serial communication
+3. **Full Peripheral Emulation**: DMA controller, USB, PIO state machines
 
 ### Medium Priority
 
-4. **Performance Optimization**
-   - JIT compilation for hot loops
-   - Instruction caching
-   - Optimized memory access patterns
-   - Cycle-accurate timing
-
-5. **Debugging Features**
-   - Hardware breakpoints
-   - Watchpoints on memory locations
-   - Instruction-level stepping
-   - Register inspection utilities
-   - GDB integration
-
-6. **Extended Test Coverage**
-   - Interrupt-driven firmware examples
-   - Multi-peripheral test suites
-   - Edge case handling
-   - Performance benchmarks
+1. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
+2. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
+3. **NVIC Priority Scheduling**: Highest-priority-first when multiple interrupts pending
 
 ### Low Priority
 
-7. **Quality of Life**
-   - Web-based visualization
-   - Real-time register display
-   - Memory map explorer
-   - Instruction statistics
+1. **Performance**: JIT compilation for hot loops, instruction caching
+2. **Visualization**: Web-based register display, memory map explorer
 
 ## Contributing
 
 The Bramble project is open for contributions! Areas that need help:
 
-1. **NVIC Completion**: Three clearly-defined issues ready for implementation
-2. **Peripheral Emulation**: UART Rx, SPI, I2C, PWM
-3. **Testing**: New test firmware, edge cases, performance benchmarks
+1. **Peripheral Emulation**: DMA, USB, PIO state machines, UART Rx
+2. **Testing**: New test firmware, edge cases, performance benchmarks
+3. **Debugging**: GDB remote stub, hardware breakpoints
 4. **Documentation**: Register descriptions, usage examples, architecture guides
 
-See [CHANGELOG.md](CHANGELOG.md) for recent updates and [docs/](docs/) for detailed technical documentation.
+Run `ctest` to verify changes don't break existing tests. See [CHANGELOG.md](CHANGELOG.md) for recent updates and [docs/](docs/) for detailed technical documentation.
 
 ## License
 

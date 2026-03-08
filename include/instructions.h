@@ -86,8 +86,11 @@ void instr_bitwise_eor(uint16_t instr);            // EORS Rd, Rm [EXISTING]
 void instr_bitwise_bic(uint16_t instr);            // BICS Rd, Rm [EXISTING]
 void instr_bitwise_mvn(uint16_t instr);            // MVNS Rd, Rm [EXISTING]
 
-// Multiplication
+// Multiplication & Carry Arithmetic
 void instr_muls(uint16_t instr);                   // MULS Rd, Rm
+void instr_adcs(uint16_t instr);                   // ADCS Rd, Rm (add with carry)
+void instr_sbcs(uint16_t instr);                   // SBCS Rd, Rm (subtract with carry)
+void instr_rsbs(uint16_t instr);                   // RSBS Rd, Rm, #0 (negate)
 
 // Multiple Load/Store
 void instr_stmia(uint16_t instr);                  // STMIA Rn!, {reglist} [EXISTING]

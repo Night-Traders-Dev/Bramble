@@ -20,6 +20,7 @@ set(SOURCES
     src/instructions.c
     src/membus.c
     src/uf2.c
+    src/elf.c
     src/gpio.c
     src/timer.c
     src/nvic.c
@@ -30,6 +31,22 @@ add_executable(bramble ${SOURCES})
 
 # Optional: Enable testing
 enable_testing()
+
+# Library of emulator sources (shared between main executable and tests)
+set(LIB_SOURCES
+    src/cpu.c
+    src/instructions.c
+    src/membus.c
+    src/uf2.c
+    src/elf.c
+    src/gpio.c
+    src/timer.c
+    src/nvic.c
+)
+
+# Test executable
+add_executable(bramble_tests tests/test_suite.c ${LIB_SOURCES})
+add_test(NAME bramble_tests COMMAND bramble_tests)
 
 # Install target
 install(TARGETS bramble DESTINATION bin)

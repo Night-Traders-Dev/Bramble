@@ -69,11 +69,24 @@ int main(int argc, char **argv) {
     printf("[Init] Loading firmware: %s\n", firmware_path);
 
     /* ========================================================================
-     * Firmware Loading
+     * Firmware Loading (auto-detect UF2 or ELF format)
      * ======================================================================== */
 
-    if (!load_uf2(firmware_path)) {
-        fprintf(stderr, "[Error] FATAL: Failed to load UF2 firmware\n");
+    /* Initialize CPU first (sets up memory bus pointers) */
+    cpu_init();
+
+    int loaded = 0;
+    size_t path_len = strlen(firmware_path);
+
+    /* Try ELF if filename ends with .elf */
+    if (path_len > 4 && strcmp(firmware_path + path_len - 4, ".elf") == 0) {
+        loaded = load_elf(firmware_path);
+    } else {
+        loaded = load_uf2(firmware_path);
+    }
+
+    if (!loaded) {
+        fprintf(stderr, "[Error] FATAL: Failed to load firmware\n");
         return EXIT_FAILURE;
     }
 

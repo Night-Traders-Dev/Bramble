@@ -2,11 +2,10 @@
  * RP2040 Emulator CPU Engine (Unified Single & Dual-Core)
  *
  * Consolidated implementation providing:
- * - Single-core CPU execution (cpu_step)
- * - Dual-core CPU execution (cpu_step_core, dual_core_step)
+ * - Single-core CPU execution (cpu_step) with O(1) dispatch table
+ * - Dual-core CPU execution with zero-copy context switching
  * - Exception handling for both cores
- * - Unified instruction dispatch
- * - Memory access with core context awareness
+ * - PRIMASK-aware interrupt delivery
  */
 
 #include <stdint.h>
@@ -26,6 +25,262 @@ cpu_state_t cpu = {0};
 int pc_updated = 0;
 
 /* ========================================================================
+ * Instruction Dispatch Table
+ *
+ * 256-entry table indexed by bits [15:8] of 16-bit Thumb instruction.
+ * Secondary dispatchers handle entries where multiple instructions
+ * share the same top byte.
+ * ======================================================================== */
+
+typedef void (*thumb_handler_t)(uint16_t);
+static thumb_handler_t dispatch_table[256];
+static int dispatch_initialized = 0;
+
+/* Secondary dispatchers for ALU block (0x40-0x43) */
+static void dispatch_alu_40(uint16_t instr) {
+    switch ((instr >> 6) & 0x3) {
+        case 0: instr_bitwise_and(instr); break;
+        case 1: instr_bitwise_eor(instr); break;
+        case 2: instr_lsls_reg(instr); break;
+        case 3: instr_lsrs_reg(instr); break;
+    }
+}
+
+static void dispatch_alu_41(uint16_t instr) {
+    switch ((instr >> 6) & 0x3) {
+        case 0: instr_asrs_reg(instr); break;
+        case 1: instr_adcs(instr); break;
+        case 2: instr_sbcs(instr); break;
+        case 3: instr_rors_reg(instr); break;
+    }
+}
+
+static void dispatch_alu_42(uint16_t instr) {
+    switch ((instr >> 6) & 0x3) {
+        case 0: instr_tst_reg_reg(instr); break;
+        case 1: instr_rsbs(instr); break;
+        case 2: instr_cmp_reg_reg(instr); break;
+        case 3: instr_cmn_reg(instr); break;
+    }
+}
+
+static void dispatch_alu_43(uint16_t instr) {
+    switch ((instr >> 6) & 0x3) {
+        case 0: instr_bitwise_orr(instr); break;
+        case 1: instr_muls(instr); break;
+        case 2: instr_bitwise_bic(instr); break;
+        case 3: instr_bitwise_mvn(instr); break;
+    }
+}
+
+/* Special data processing / branch exchange (0x44-0x47) */
+static void dispatch_special_47(uint16_t instr) {
+    if (instr & 0x80) {
+        instr_blx(instr);
+    } else {
+        instr_bx(instr);
+    }
+}
+
+/* Misc 16-bit: ADD/SUB SP (0xB0) */
+static void dispatch_sp_b0(uint16_t instr) {
+    if (instr & 0x80) {
+        instr_sub_sp_imm7(instr);
+    } else {
+        instr_add_sp_imm7(instr);
+    }
+}
+
+/* Sign/zero extend (0xB2) */
+static void dispatch_extend_b2(uint16_t instr) {
+    switch ((instr >> 6) & 0x3) {
+        case 0: instr_sxth(instr); break;
+        case 1: instr_sxtb(instr); break;
+        case 2: instr_uxth(instr); break;
+        case 3: instr_uxtb(instr); break;
+    }
+}
+
+/* CPS instructions (0xB6) */
+static void dispatch_cps_b6(uint16_t instr) {
+    if (instr & 0x10) {
+        instr_cpsid(instr);
+    } else {
+        instr_cpsie(instr);
+    }
+}
+
+/* REV instructions (0xBA) */
+static void dispatch_rev_ba(uint16_t instr) {
+    switch ((instr >> 6) & 0x3) {
+        case 0: instr_rev(instr); break;
+        case 1: instr_rev16(instr); break;
+        case 3: instr_revsh(instr); break;
+        default: instr_unimplemented(instr); break;
+    }
+}
+
+/* Hints (0xBF) */
+static void dispatch_hints_bf(uint16_t instr) {
+    uint8_t op = (instr >> 4) & 0xF;
+    switch (op) {
+        case 0x0: instr_nop(instr); break;
+        case 0x1: instr_yield(instr); break;
+        case 0x2: instr_wfe(instr); break;
+        case 0x3: instr_wfi(instr); break;
+        case 0x4: instr_sev(instr); break;
+        default:  instr_it(instr); break;
+    }
+}
+
+/* ADD Rd, SP, #imm8 (0xA8-0xAF) */
+static void dispatch_add_sp_rd(uint16_t instr) {
+    uint8_t rd = (instr >> 8) & 0x07;
+    uint8_t imm8 = instr & 0xFF;
+    cpu.r[rd] = cpu.r[13] + (imm8 << 2);
+}
+
+static void init_dispatch_table(void) {
+    /* Default all to unimplemented */
+    for (int i = 0; i < 256; i++) {
+        dispatch_table[i] = instr_unimplemented;
+    }
+
+    /* LSLS Rd, Rm, #imm5: 000 00xxx */
+    for (int i = 0x00; i <= 0x07; i++) dispatch_table[i] = instr_shift_logical_left;
+
+    /* LSRS Rd, Rm, #imm5: 000 01xxx */
+    for (int i = 0x08; i <= 0x0F; i++) dispatch_table[i] = instr_shift_logical_right;
+
+    /* ASRS Rd, Rm, #imm5: 000 10xxx */
+    for (int i = 0x10; i <= 0x17; i++) dispatch_table[i] = instr_shift_arithmetic_right;
+
+    /* ADDS Rd, Rn, Rm: 000 110xx */
+    dispatch_table[0x18] = instr_adds_reg_reg;
+    dispatch_table[0x19] = instr_adds_reg_reg;
+
+    /* SUBS Rd, Rn, Rm: 000 111xx (actually 0x1A-0x1B) */
+    dispatch_table[0x1A] = instr_sub_reg_reg;
+    dispatch_table[0x1B] = instr_sub_reg_reg;
+
+    /* ADDS Rd, Rn, #imm3: 000 11100-11101 -> 0x1C-0x1D */
+    dispatch_table[0x1C] = instr_adds_imm3;
+    dispatch_table[0x1D] = instr_adds_imm3;
+
+    /* SUBS Rd, Rn, #imm3: 0x1E-0x1F */
+    dispatch_table[0x1E] = instr_subs_imm3;
+    dispatch_table[0x1F] = instr_subs_imm3;
+
+    /* MOVS Rd, #imm8: 001 00xxx */
+    for (int i = 0x20; i <= 0x27; i++) dispatch_table[i] = instr_movs_imm8;
+
+    /* CMP Rn, #imm8: 001 01xxx */
+    for (int i = 0x28; i <= 0x2F; i++) dispatch_table[i] = instr_cmp_imm8;
+
+    /* ADDS Rd, #imm8: 001 10xxx */
+    for (int i = 0x30; i <= 0x37; i++) dispatch_table[i] = instr_adds_imm8;
+
+    /* SUBS Rd, #imm8: 001 11xxx */
+    for (int i = 0x38; i <= 0x3F; i++) dispatch_table[i] = instr_subs_imm8;
+
+    /* ALU operations: 010000xx */
+    dispatch_table[0x40] = dispatch_alu_40;
+    dispatch_table[0x41] = dispatch_alu_41;
+    dispatch_table[0x42] = dispatch_alu_42;
+    dispatch_table[0x43] = dispatch_alu_43;
+
+    /* Special data / branch exchange: 010001xx */
+    dispatch_table[0x44] = instr_add_reg_high;
+    dispatch_table[0x45] = instr_cmp_reg_reg;
+    dispatch_table[0x46] = instr_mov_reg;
+    dispatch_table[0x47] = dispatch_special_47;
+
+    /* LDR Rd, [PC, #imm8]: 01001xxx */
+    for (int i = 0x48; i <= 0x4F; i++) dispatch_table[i] = instr_ldr_pc_imm8;
+
+    /* Register-offset load/store: 0101 xxx */
+    dispatch_table[0x50] = instr_str_reg_offset;
+    dispatch_table[0x51] = instr_str_reg_offset;
+    dispatch_table[0x52] = instr_strh_reg_offset;
+    dispatch_table[0x53] = instr_strh_reg_offset;
+    dispatch_table[0x54] = instr_strb_reg_offset;
+    dispatch_table[0x55] = instr_strb_reg_offset;
+    dispatch_table[0x56] = instr_ldrsb_reg_offset;
+    dispatch_table[0x57] = instr_ldrsb_reg_offset;
+    dispatch_table[0x58] = instr_ldr_reg_offset;
+    dispatch_table[0x59] = instr_ldr_reg_offset;
+    dispatch_table[0x5A] = instr_ldrh_reg_offset;
+    dispatch_table[0x5B] = instr_ldrh_reg_offset;
+    dispatch_table[0x5C] = instr_ldrb_reg_offset;
+    dispatch_table[0x5D] = instr_ldrb_reg_offset;
+    dispatch_table[0x5E] = instr_ldrsh_reg_offset;
+    dispatch_table[0x5F] = instr_ldrsh_reg_offset;
+
+    /* STR Rd, [Rn, #imm5]: 0110 0xxx */
+    for (int i = 0x60; i <= 0x67; i++) dispatch_table[i] = instr_str_imm5;
+
+    /* LDR Rd, [Rn, #imm5]: 0110 1xxx */
+    for (int i = 0x68; i <= 0x6F; i++) dispatch_table[i] = instr_ldr_imm5;
+
+    /* STRB Rd, [Rn, #imm5]: 0111 0xxx */
+    for (int i = 0x70; i <= 0x77; i++) dispatch_table[i] = instr_strb_imm5;
+
+    /* LDRB Rd, [Rn, #imm5]: 0111 1xxx */
+    for (int i = 0x78; i <= 0x7F; i++) dispatch_table[i] = instr_ldrb_imm5;
+
+    /* STRH Rd, [Rn, #imm5]: 1000 0xxx */
+    for (int i = 0x80; i <= 0x87; i++) dispatch_table[i] = instr_strh_imm5;
+
+    /* LDRH Rd, [Rn, #imm5]: 1000 1xxx */
+    for (int i = 0x88; i <= 0x8F; i++) dispatch_table[i] = instr_ldrh_imm5;
+
+    /* STR Rd, [SP, #imm8]: 1001 0xxx */
+    for (int i = 0x90; i <= 0x97; i++) dispatch_table[i] = instr_str_sp_imm8;
+
+    /* LDR Rd, [SP, #imm8]: 1001 1xxx */
+    for (int i = 0x98; i <= 0x9F; i++) dispatch_table[i] = instr_ldr_sp_imm8;
+
+    /* ADR Rd, label: 1010 0xxx */
+    for (int i = 0xA0; i <= 0xA7; i++) dispatch_table[i] = instr_adr;
+
+    /* ADD Rd, SP, #imm8: 1010 1xxx */
+    for (int i = 0xA8; i <= 0xAF; i++) dispatch_table[i] = dispatch_add_sp_rd;
+
+    /* Miscellaneous 16-bit instructions: 1011 xxxx */
+    dispatch_table[0xB0] = dispatch_sp_b0;
+    /* 0xB1: CBZ (not supported on M0+) */
+    dispatch_table[0xB2] = dispatch_extend_b2;
+    /* 0xB3: CBZ (not supported on M0+) */
+    dispatch_table[0xB4] = instr_push;
+    dispatch_table[0xB5] = instr_push;
+    dispatch_table[0xB6] = dispatch_cps_b6;
+    dispatch_table[0xBA] = dispatch_rev_ba;
+    dispatch_table[0xBC] = instr_pop;
+    dispatch_table[0xBD] = instr_pop;
+    dispatch_table[0xBE] = instr_bkpt;
+    dispatch_table[0xBF] = dispatch_hints_bf;
+
+    /* STMIA Rn!, {reglist}: 1100 0xxx */
+    for (int i = 0xC0; i <= 0xC7; i++) dispatch_table[i] = instr_stmia;
+
+    /* LDMIA Rn!, {reglist}: 1100 1xxx */
+    for (int i = 0xC8; i <= 0xCF; i++) dispatch_table[i] = instr_ldmia;
+
+    /* B{cond}: 1101 cccc (conditions 0-13) */
+    for (int i = 0xD0; i <= 0xDD; i++) dispatch_table[i] = instr_bcond;
+    /* 0xDE: UDF (permanently undefined) */
+    dispatch_table[0xDE] = instr_udf;
+    /* 0xDF: SVC */
+    dispatch_table[0xDF] = instr_svc;
+
+    /* B (unconditional): 1110 0xxx */
+    for (int i = 0xE0; i <= 0xE7; i++) dispatch_table[i] = instr_b_uncond;
+
+    /* 32-bit instruction prefixes (0xE8-0xEF, 0xF0-0xFF) are handled
+     * separately in cpu_step before the dispatch table lookup */
+}
+
+/* ========================================================================
  * Single-Core Initialization & Reset
  * ======================================================================== */
 
@@ -33,53 +288,45 @@ void cpu_init(void) {
     memset(cpu.r, 0, sizeof(cpu.r));
     cpu.xpsr = 0x01000000; /* Thumb bit */
     cpu.step_count = 0;
-    cpu.debug_enabled = 0; /* Default: debug off */
-    cpu.current_irq = 0xFFFFFFFF; /* Initialize as "no IRQ active" */
-    cpu.vtor = 0x10000100; /* RP2040 vector table after 256-byte boot2 */
+    cpu.debug_enabled = 0;
+    cpu.current_irq = 0xFFFFFFFF;
+    cpu.primask = 0;
+    cpu.vtor = 0x10000100;
+
+    /* Initialize memory bus to use cpu.ram */
+    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
+
+    /* Initialize dispatch table */
+    if (!dispatch_initialized) {
+        init_dispatch_table();
+        dispatch_initialized = 1;
+    }
 }
 
-/**
- * Reset CPU from flash after boot2 has executed.
- *
- * On RP2040, the boot sequence is:
- * 1. Bootrom validates and executes boot2 (first 256 bytes at 0x10000000)
- * 2. Boot2 configures XIP flash and sets VTOR to 0x10000100
- * 3. Boot2 loads SP from [0x10000100] and PC from [0x10000104]
- * 4. Boot2 jumps to user application reset handler
- *
- * This function simulates steps 2-4, skipping boot2 execution.
- */
 void cpu_reset_from_flash(void) {
-    /* RP2040 vector table is at offset 0x100 (after 256-byte boot2) */
     cpu.vtor = FLASH_BASE + 0x100;
 
-    /* Load initial stack pointer from vector table offset 0 */
     uint32_t initial_sp = mem_read32(cpu.vtor + 0x00);
-
-    /* Load reset vector from vector table offset 4 */
     uint32_t reset_vector = mem_read32(cpu.vtor + 0x04);
 
-    /* Validate stack pointer is in valid RAM range */
     if (initial_sp < RAM_BASE || initial_sp > RAM_BASE + RAM_SIZE) {
         printf("[Boot] ERROR: Invalid SP 0x%08X (not in RAM 0x%08X-0x%08X)\n",
                initial_sp, RAM_BASE, RAM_BASE + RAM_SIZE);
-        cpu.r[15] = 0xFFFFFFFF; /* Mark as halted */
+        cpu.r[15] = 0xFFFFFFFF;
         return;
     }
 
-    /* Validate reset vector has Thumb bit set (LSB=1) */
     if ((reset_vector & 0x1) == 0) {
         printf("[Boot] ERROR: Invalid reset vector 0x%08X (Thumb bit not set)\n",
                reset_vector);
-        cpu.r[15] = 0xFFFFFFFF; /* Mark as halted */
+        cpu.r[15] = 0xFFFFFFFF;
         return;
     }
 
-    /* Initialize CPU state */
-    cpu.r[13] = initial_sp; /* Set stack pointer (R13/SP) */
-    cpu.r[15] = reset_vector & ~1u; /* Set PC, clear Thumb bit */
-    cpu.r[14] = 0xFFFFFFFF; /* Set LR to invalid address */
-    cpu.xpsr = 0x01000000; /* Set Thumb bit in xPSR */
+    cpu.r[13] = initial_sp;
+    cpu.r[15] = reset_vector & ~1u;
+    cpu.r[14] = 0xFFFFFFFF;
+    cpu.xpsr = 0x01000000;
 
     printf("[Boot] Reset complete:\n");
     printf("[Boot] VTOR = 0x%08X\n", cpu.vtor);
@@ -88,7 +335,7 @@ void cpu_reset_from_flash(void) {
     printf("[Boot] xPSR = 0x%08X\n", cpu.xpsr);
 }
 
-/* Treat PC out of the flash code region or sentinel as halted */
+/* Allow execution from both flash and RAM */
 int cpu_is_halted(void) {
     uint32_t pc = cpu.r[15];
 
@@ -96,24 +343,25 @@ int cpu_is_halted(void) {
         return 1;
     }
 
-    /* For now, execute only from FLASH; later you can allow RAM as well */
-    if (pc < FLASH_BASE || pc >= FLASH_BASE + FLASH_SIZE) {
-        return 1;
+    /* Execute from flash */
+    if (pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) {
+        return 0;
     }
 
-    return 0;
+    /* Execute from RAM */
+    if (pc >= RAM_BASE && pc < RAM_TOP) {
+        return 0;
+    }
+
+    return 1;
 }
 
 /* ========================================================================
  * Single-Core Exception Handling
  * ======================================================================== */
 
-/* CPU exception entry - saves processor context and jumps to ISR */
 void cpu_exception_entry(uint32_t vector_num) {
-    /* Vector number 16+ maps to IRQ 0+ */
     uint32_t vector_offset = vector_num * 4;
-
-    /* Use VTOR (Vector Table Offset Register) to find vector table base */
     uint32_t handler_addr = mem_read32(cpu.vtor + vector_offset);
 
     if (cpu.debug_enabled) {
@@ -121,65 +369,37 @@ void cpu_exception_entry(uint32_t vector_num) {
                vector_num, cpu.r[15], cpu.vtor, handler_addr);
     }
 
-    /* Mark as active in NVIC and CPU state */
     if (vector_num < 32) {
         nvic_state.active_exceptions |= (1u << vector_num);
     }
 
     cpu.current_irq = vector_num;
 
-    /* Set IABR bit for external interrupts (Vector >= 16) */
     if (vector_num >= 16 && (vector_num - 16) < 32) {
         nvic_state.iabr |= (1u << (vector_num - 16));
     }
 
-    /* Save context to stack (Cortex-M0+ automatic stacking frame)
-     * Hardware stacks (in this order, growing downward):
-     * xPSR, PC, LR, R12, R3, R2, R1, R0
-     * Final SP points to R0 (lowest address of frame)
-     */
-    uint32_t sp = cpu.r[13]; /* Stack pointer */
+    uint32_t sp = cpu.r[13];
 
-    sp -= 4; mem_write32(sp, cpu.xpsr); /* Save xPSR */
-    sp -= 4; mem_write32(sp, cpu.r[15]); /* Save PC (return address) */
-    sp -= 4; mem_write32(sp, cpu.r[14]); /* Save LR */
-    sp -= 4; mem_write32(sp, cpu.r[12]); /* Save R12 */
-    sp -= 4; mem_write32(sp, cpu.r[3]); /* Save R3 */
-    sp -= 4; mem_write32(sp, cpu.r[2]); /* Save R2 */
-    sp -= 4; mem_write32(sp, cpu.r[1]); /* Save R1 */
-    sp -= 4; mem_write32(sp, cpu.r[0]); /* Save R0 */
+    sp -= 4; mem_write32(sp, cpu.xpsr);
+    sp -= 4; mem_write32(sp, cpu.r[15]);
+    sp -= 4; mem_write32(sp, cpu.r[14]);
+    sp -= 4; mem_write32(sp, cpu.r[12]);
+    sp -= 4; mem_write32(sp, cpu.r[3]);
+    sp -= 4; mem_write32(sp, cpu.r[2]);
+    sp -= 4; mem_write32(sp, cpu.r[1]);
+    sp -= 4; mem_write32(sp, cpu.r[0]);
 
-    cpu.r[13] = sp; /* Update SP to new position (pointing to R0) */
+    cpu.r[13] = sp;
 
     if (cpu.debug_enabled) {
         printf("[CPU] Context saved, SP now=0x%08X\n", sp);
     }
 
-    /* Set up for ISR execution:
-     * - PC = handler address
-     * - LR = special return value (0xFFFFFFF9 for return to thread mode)
-     * - Thumb bit in handler_addr is ignored (cleared)
-     */
-    cpu.r[15] = handler_addr & ~1u; /* Set PC to handler, clear Thumb bit */
-    cpu.r[14] = 0xFFFFFFF9; /* EXC_RETURN: return to thread mode with MSP */
+    cpu.r[15] = handler_addr & ~1u;
+    cpu.r[14] = 0xFFFFFFF9;
 }
 
-/**
- * Handle exception return from ISR via BX LR with magic LR values.
- *
- * Magic EXC_RETURN values in ARM Cortex-M0+:
- * - 0xFFFFFFF1: Return to Handler mode (nested exception)
- * - 0xFFFFFFF9: Return to Thread mode using MSP
- * - 0xFFFFFFFD: Return to Thread mode using PSP
- *
- * For Cortex-M0+, typically only 0xFFFFFFF9 is used (no PSP in simple cases).
- *
- * When returning from ISR:
- * 1. Pop the 8-register stacking frame from stack
- * 2. Restore R0-R3, R12, LR, PC, xPSR
- * 3. Clear active exception bit
- * 4. Clear IABR bit for this IRQ
- */
 void cpu_exception_return(uint32_t lr_value) {
     uint32_t return_mode = lr_value & 0x0F;
 
@@ -188,26 +408,13 @@ void cpu_exception_return(uint32_t lr_value) {
                lr_value, return_mode, cpu.r[13]);
     }
 
-    /* Support 0xFFFFFFF9 (return to thread mode using MSP) */
     if (return_mode == 0x9 || return_mode == 0x1) {
-        /* Pop the 8-register context frame from stack
-         * Stack layout (SP points to R0):
-         * [SP+0] R0
-         * [SP+4] R1
-         * [SP+8] R2
-         * [SP+12] R3
-         * [SP+16] R12
-         * [SP+20] LR
-         * [SP+24] PC
-         * [SP+28] xPSR
-         */
         uint32_t sp = cpu.r[13];
 
         if (cpu.debug_enabled) {
             printf("[CPU] Popping frame from SP=0x%08X\n", sp);
         }
 
-        /* Pop in reverse order of push */
         uint32_t r0 = mem_read32(sp); sp += 4;
         uint32_t r1 = mem_read32(sp); sp += 4;
         uint32_t r2 = mem_read32(sp); sp += 4;
@@ -224,32 +431,28 @@ void cpu_exception_return(uint32_t lr_value) {
                    r12, lr, pc, xpsr);
         }
 
-        /* Restore registers */
         cpu.r[0] = r0;
         cpu.r[1] = r1;
         cpu.r[2] = r2;
         cpu.r[3] = r3;
         cpu.r[12] = r12;
-        cpu.r[13] = sp; /* Updated SP */
-        cpu.r[14] = lr; /* Restore LR */
-        cpu.r[15] = pc & ~1u; /* Restore PC, clear Thumb bit */
-        cpu.xpsr = xpsr; /* Restore condition flags */
+        cpu.r[13] = sp;
+        cpu.r[14] = lr;
+        cpu.r[15] = pc & ~1u;
+        cpu.xpsr = xpsr;
 
         if (cpu.debug_enabled) {
             printf("[CPU] RESTORED: PC now=0x%08X SP now=0x%08X\n",
                    cpu.r[15], cpu.r[13]);
         }
 
-        /* Clear active exception tracking */
         if (cpu.current_irq != 0xFFFFFFFF) {
             uint32_t vector_num = cpu.current_irq;
 
-            /* Clear IABR bit for external interrupts (Vector >= 16) */
             if (vector_num >= 16 && (vector_num - 16) < 32) {
                 nvic_state.iabr &= ~(1u << (vector_num - 16));
             }
 
-            /* Clear active_exceptions bit */
             if (vector_num < 32) {
                 nvic_state.active_exceptions &= ~(1u << vector_num);
             }
@@ -259,7 +462,7 @@ void cpu_exception_return(uint32_t lr_value) {
                        vector_num, nvic_state.iabr);
             }
 
-            cpu.current_irq = 0xFFFFFFFF; /* Reset current IRQ tracker */
+            cpu.current_irq = 0xFFFFFFFF;
         }
 
         if (cpu.debug_enabled) {
@@ -273,369 +476,90 @@ void cpu_exception_return(uint32_t lr_value) {
 }
 
 /* ========================================================================
- * Single-Core CPU Execution (Main Loop)
+ * Single-Core CPU Execution (Dispatch Table)
  * ======================================================================== */
 
 void cpu_step(void) {
     uint32_t pc = cpu.r[15];
 
     /* Stop if PC already out of range */
-    if (pc < FLASH_BASE || pc >= FLASH_BASE + FLASH_SIZE) {
+    if (pc == 0xFFFFFFFF) {
+        return;
+    }
+
+    /* Allow execution from flash or RAM */
+    if (!((pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) ||
+          (pc >= RAM_BASE && pc < RAM_TOP))) {
         printf("[CPU] ERROR: PC out of bounds (0x%08X)\n", pc);
-        cpu.r[15] = 0xFFFFFFFF; /* Mark halted */
+        cpu.r[15] = 0xFFFFFFFF;
         return;
     }
 
     uint16_t instr = mem_read16(pc);
     cpu.step_count++;
 
-    /* Only print debug output if debug mode is enabled */
     if (cpu.debug_enabled) {
         printf("[CPU] Step %3u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
     }
 
     timer_tick(1);
 
-    /* Check for pending interrupts BEFORE executing instruction */
-    uint32_t pending_irq = nvic_get_pending_irq();
+    /* Check for pending interrupts (only if PRIMASK allows) */
+    if (!cpu.primask) {
+        uint32_t pending_irq = nvic_get_pending_irq();
 
-    if (pending_irq != 0xFFFFFFFF) {
-        /* Convert IRQ number to vector number (IRQ 0 = vector 16) */
-        uint32_t vector_num = pending_irq + 16;
+        if (pending_irq != 0xFFFFFFFF) {
+            uint32_t vector_num = pending_irq + 16;
 
-        if (cpu.debug_enabled) {
-            printf("[CPU] *** INTERRUPT: IRQ %u detected ***\n", pending_irq);
+            if (cpu.debug_enabled) {
+                printf("[CPU] *** INTERRUPT: IRQ %u detected ***\n", pending_irq);
+            }
+
+            nvic_clear_pending(pending_irq);
+            cpu_exception_entry(vector_num);
+            return;
         }
-
-        /* Clear the pending bit */
-        nvic_clear_pending(pending_irq);
-
-        /* Enter the exception handler (this sets Active bits) */
-        cpu_exception_entry(vector_num);
-        return;
     }
 
-    /* Treat all-zero halfword as NOP */
+    /* NOP: all-zero halfword */
     if (instr == 0x0000) {
         cpu.r[15] = pc + 2;
         return;
     }
 
-    // ========================================================================
-    // FOUNDATIONAL INSTRUCTIONS
-    // ========================================================================
+    /* 32-bit instructions: top 5 bits = 11101/11110/11111 */
+    uint8_t top5 = instr >> 11;
+    if (top5 >= 0x1D) {  /* 0xE800+ could be 32-bit */
+        if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
+            uint16_t instr2 = mem_read16(pc + 2);
 
-/* -------- 32-bit instructions (must check first) -------- */
-if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
-    uint16_t instr2 = mem_read16(pc + 2);
+            /* BL/BLX immediate */
+            if ((instr & 0xF800) == 0xF000 && (instr2 & 0xD000) == 0xD000) {
+                if (cpu.debug_enabled) {
+                    printf("[CPU] BL32 upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
+                           instr, instr2, pc);
+                }
+                pc_updated = 0;
+                instr_bl_32(instr, instr2);
+                /* pc_updated is set inside instr_bl_32 */
+                return;
+            }
 
-    /* BL/BLX (immediate) lives in the 32-bit branch encodings.
-       Your current implementation has instr_bl_32(upper, lower),
-       so use that and ALWAYS return. */
-    if ((instr & 0xF800) == 0xF000 && (instr2 & 0xD000) == 0xD000) {
-        if (cpu.debug_enabled) {
-            printf("[CPU] BL32 upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
+            /* Unhandled 32-bit instruction */
+            printf("[CPU] Unhandled 32-bit Thumb instr: upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
                    instr, instr2, pc);
+            cpu.r[15] = 0xFFFFFFFF;
+            return;
         }
-        instr_bl_32(instr, instr2);
-        return;
     }
 
-    /* If you *don't* implement other 32-bit instructions yet,
-       fail fast so you don't desync the instruction stream. */
-    printf("[CPU] Unhandled 32-bit Thumb instr: upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
-           instr, instr2, pc);
-    cpu.r[15] = 0xFFFFFFFF;
-    return;
-
-
-
-    /* -------- Control-flow instructions (handle PC themselves) -------- */
-    } else if ((instr & 0xFF00) == 0xBE00) { /* BKPT */
-        instr_bkpt(instr);
-        return;
-
-    } else if ((instr & 0xFF87) == 0x4700) { /* BX Rm */
-        instr_bx(instr);
-        return;
-
-    } else if ((instr & 0xFF87) == 0x4780) { /* BLX Rm */
-        instr_blx(instr);
-        return;
-
-    } else if ((instr & 0xF800) == 0xE000) { /* B (unconditional) */
-        instr_b_uncond(instr);
-        return;
-
-    } else if ((instr & 0xF000) == 0xD000) { /* B{cond} */
-        instr_bcond(instr);
-        return;
-
-    } else if ((instr & 0xFE00) == 0xBC00) { /* POP (includes R15) */
-        instr_pop(instr);
-        /* If P bit (bit 8) set, POP loaded PC - don't increment */
-        if ((instr & 0x0100) != 0) {
-            return; /* PC was loaded, don't increment */
-        }
-
-    } else if (instr == 0xE7FD) { /* UDF */
-        instr_udf(instr);
-        return;
-
-    /* -------- Data Movement -------- */
-    } else if ((instr & 0xF800) == 0x2000) { /* MOVS Rd, #imm8 */
-        instr_movs_imm8(instr);
-
-    } else if ((instr & 0xFF00) == 0x4600) { /* MOV Rd, Rm (high regs) */
-        instr_mov_reg(instr);
-
-    /* -------- Arithmetic - Immediate -------- */
-    } else if ((instr & 0xFE00) == 0x1C00) { /* ADDS Rd, Rn, #imm3 */
-        instr_adds_imm3(instr);
-
-    } else if ((instr & 0xF800) == 0x3000) { /* ADDS Rd, #imm8 */
-        instr_adds_imm8(instr);
-
-    } else if ((instr & 0xFE00) == 0x1E00) { /* SUBS Rd, Rn, #imm3 */
-        instr_subs_imm3(instr);
-
-    } else if ((instr & 0xF800) == 0x3800) { /* SUBS Rd, #imm8 */
-        instr_subs_imm8(instr);
-
-    /* -------- Arithmetic - Register -------- */
-    } else if ((instr & 0xFE00) == 0x1800) { /* ADDS Rd, Rn, Rm */
-        instr_adds_reg_reg(instr);
-
-    } else if ((instr & 0xFF00) == 0x4400) { /* ADD Rd, Rm (high regs) */
-        instr_add_reg_high(instr);
-
-    } else if ((instr & 0xFE00) == 0x1A00) { /* SUBS Rd, Rn, Rm */
-        instr_sub_reg_reg(instr);
-
-    /* -------- Comparison -------- */
-    } else if ((instr & 0xF800) == 0x2800) { /* CMP Rn, #imm8 */
-        instr_cmp_imm8(instr);
-
-    } else if ((instr & 0xFF00) == 0x4500) { /* CMP Rn, Rm (high regs) */
-        instr_cmp_reg_reg(instr);
-
-    } else if ((instr & 0xFFC0) == 0x4280) { /* CMP Rn, Rm (low regs) */
-        instr_cmp_reg_reg(instr);
-
-    /* -------- Load/Store - Word -------- */
-    } else if ((instr & 0xF800) == 0x6800) { /* LDR Rd, [Rn, #imm5] */
-        instr_ldr_imm5(instr);
-
-    } else if ((instr & 0xF800) == 0x5800) { /* LDR Rd, [Rn, Rm] */
-        instr_ldr_reg_offset(instr);
-
-    } else if ((instr & 0xF800) == 0x4800) { /* LDR Rd, [PC, #imm8] */
-        instr_ldr_pc_imm8(instr);
-
-    } else if ((instr & 0xF800) == 0x9800) { /* LDR Rd, [SP, #imm8] */
-        instr_ldr_sp_imm8(instr);
-
-    } else if ((instr & 0xF800) == 0x6000) { /* STR Rd, [Rn, #imm5] */
-        instr_str_imm5(instr);
-
-    } else if ((instr & 0xF800) == 0x5000) { /* STR Rd, [Rn, Rm] */
-        instr_str_reg_offset(instr);
-
-    } else if ((instr & 0xF800) == 0x9000) { /* STR Rd, [SP, #imm8] */
-        instr_str_sp_imm8(instr);
-
-    /* -------- Stack Operations -------- */
-    } else if ((instr & 0xFE00) == 0xB400) { /* PUSH {reglist, lr} */
-        instr_push(instr);
-
-    /* POP is handled above in control-flow section */
-
-    // ========================================================================
-    // ESSENTIAL INSTRUCTIONS
-    // ========================================================================
-
-    /* -------- Load/Store - Byte -------- */
-    } else if ((instr & 0xF800) == 0x7800) { /* LDRB Rd, [Rn, #imm5] */
-        instr_ldrb_imm5(instr);
-
-    } else if ((instr & 0xFE00) == 0x5C00) { /* LDRB Rd, [Rn, Rm] */
-        instr_ldrb_reg_offset(instr);
-
-    } else if ((instr & 0xFE00) == 0x5600) { /* LDRSB Rd, [Rn, Rm] */
-        instr_ldrsb_reg_offset(instr);
-
-    } else if ((instr & 0xF800) == 0x7000) { /* STRB Rd, [Rn, #imm5] */
-        instr_strb_imm5(instr);
-
-    } else if ((instr & 0xFE00) == 0x5400) { /* STRB Rd, [Rn, Rm] */
-        instr_strb_reg_offset(instr);
-
-    /* -------- Load/Store - Halfword -------- */
-    } else if ((instr & 0xF800) == 0x8800) { /* LDRH Rd, [Rn, #imm5] */
-        instr_ldrh_imm5(instr);
-
-    } else if ((instr & 0xFE00) == 0x5A00) { /* LDRH Rd, [Rn, Rm] */
-        instr_ldrh_reg_offset(instr);
-
-    } else if ((instr & 0xFE00) == 0x5E00) { /* LDRSH Rd, [Rn, Rm] */
-        instr_ldrsh_reg_offset(instr);
-
-    } else if ((instr & 0xF800) == 0x8000) { /* STRH Rd, [Rn, #imm5] */
-        instr_strh_imm5(instr);
-
-    } else if ((instr & 0xFE00) == 0x5200) { /* STRH Rd, [Rn, Rm] */
-        instr_strh_reg_offset(instr);
-
-    /* -------- Shift Operations - Immediate -------- */
-    } else if ((instr & 0xF800) == 0x0000) { /* LSLS Rd, Rm, #imm5 */
-        if (instr != 0x0000) { /* Not NOP */
-            instr_shift_logical_left(instr);
-        }
-
-    } else if ((instr & 0xF800) == 0x0800) { /* LSRS Rd, Rm, #imm5 */
-        instr_shift_logical_right(instr);
-
-    } else if ((instr & 0xF800) == 0x1000) { /* ASRS Rd, Rm, #imm5 */
-        instr_shift_arithmetic_right(instr);
-
-    /* -------- Shift Operations - Register -------- */
-    } else if ((instr & 0xFFC0) == 0x4080) { /* LSLS Rd, Rs */
-        instr_lsls_reg(instr);
-
-    } else if ((instr & 0xFFC0) == 0x40C0) { /* LSRS Rd, Rs */
-        instr_lsrs_reg(instr);
-
-    } else if ((instr & 0xFFC0) == 0x4100) { /* ASRS Rd, Rs */
-        instr_asrs_reg(instr);
-
-    } else if ((instr & 0xFFC0) == 0x41C0) { /* RORS Rd, Rs */
-        instr_rors_reg(instr);
-
-    /* -------- Logical Operations -------- */
-    } else if ((instr & 0xFFC0) == 0x4000) { /* ANDS Rd, Rm */
-        instr_bitwise_and(instr);
-
-    } else if ((instr & 0xFFC0) == 0x4040) { /* EORS Rd, Rm */
-        instr_bitwise_eor(instr);
-
-    } else if ((instr & 0xFFC0) == 0x4300) { /* ORRS Rd, Rm */
-        instr_bitwise_orr(instr);
-
-    } else if ((instr & 0xFFC0) == 0x4380) { /* BICS Rd, Rm */
-        instr_bitwise_bic(instr);
-
-    } else if ((instr & 0xFFC0) == 0x43C0) { /* MVNS Rd, Rm */
-        instr_bitwise_mvn(instr);
-
-    /* -------- Multiplication -------- */
-    } else if ((instr & 0xFFC0) == 0x4340) { /* MULS Rd, Rm */
-        instr_muls(instr);
-
-    /* -------- Multiple Load/Store -------- */
-    } else if ((instr & 0xF800) == 0xC000) { /* STMIA Rn!, {reglist} */
-        instr_stmia(instr);
-
-    } else if ((instr & 0xF800) == 0xC800) { /* LDMIA Rn!, {reglist} */
-        instr_ldmia(instr);
-
-    // ========================================================================
-    // IMPORTANT INSTRUCTIONS
-    // ========================================================================
-
-    /* -------- Special Comparison -------- */
-    } else if ((instr & 0xFFC0) == 0x42C0) { /* CMN Rn, Rm */
-        instr_cmn_reg(instr);
-
-    } else if ((instr & 0xFFC0) == 0x4200) { /* TST Rn, Rm */
-        instr_tst_reg_reg(instr);
-
-    /* -------- System Operations -------- */
-    } else if ((instr & 0xFF00) == 0xDF00) { /* SVC #imm8 */
-        instr_svc(instr);
-
-    // ========================================================================
-    // OPTIONAL INSTRUCTIONS
-    // ========================================================================
-
-    /* -------- Hints and Special -------- */
-    } else if (instr == 0xBF00) { /* NOP */
-        instr_nop(instr);
-
-    } else if ((instr & 0xFF00) == 0xBF00) { /* IT and hints */
-        uint8_t firstcond = (instr >> 4) & 0xF;
-        if (firstcond == 0x0) {
-            instr_nop(instr); /* NOP */
-        } else if (firstcond == 0x1) {
-            instr_yield(instr); /* YIELD */
-        } else if (firstcond == 0x2) {
-            instr_wfe(instr); /* WFE */
-        } else if (firstcond == 0x3) {
-            instr_wfi(instr); /* WFI */
-        } else if (firstcond == 0x4) {
-            instr_sev(instr); /* SEV */
-        } else {
-            instr_it(instr); /* IT */
-        }
-
-    /* -------- Sign/Zero Extend -------- */
-    } else if ((instr & 0xFFC0) == 0xB240) { /* SXTB Rd, Rm */
-        instr_sxtb(instr);
-
-    } else if ((instr & 0xFFC0) == 0xB200) { /* SXTH Rd, Rm */
-        instr_sxth(instr);
-
-    } else if ((instr & 0xFFC0) == 0xB2C0) { /* UXTB Rd, Rm */
-        instr_uxtb(instr);
-
-    } else if ((instr & 0xFFC0) == 0xB280) { /* UXTH Rd, Rm */
-        instr_uxth(instr);
-
-    /* -------- Byte Reverse -------- */
-    } else if ((instr & 0xFFC0) == 0xBA00) { /* REV Rd, Rm */
-        instr_rev(instr);
-
-    } else if ((instr & 0xFFC0) == 0xBA40) { /* REV16 Rd, Rm */
-        instr_rev16(instr);
-
-    } else if ((instr & 0xFFC0) == 0xBAC0) { /* REVSH Rd, Rm */
-        instr_revsh(instr);
-
-    /* -------- Stack Pointer Adjustment -------- */
-    } else if ((instr & 0xFF80) == 0xB000) { /* ADD SP, #imm7 */
-        instr_add_sp_imm7(instr);
-
-    } else if ((instr & 0xFF80) == 0xB080) { /* SUB SP, #imm7 */
-        instr_sub_sp_imm7(instr);
-
-    /* -------- Address Generation -------- */
-    } else if ((instr & 0xF800) == 0xA000) { /* ADR Rd, label */
-        instr_adr(instr);
-
-    } else if ((instr & 0xF800) == 0xA800) { /* ADD Rd, SP, #imm8 */
-        /* Use existing logic or create wrapper */
-        uint8_t rd = (instr >> 8) & 0x07;
-        uint8_t imm8 = instr & 0xFF;
-        cpu.r[rd] = cpu.r[13] + (imm8 << 2);
-
-    /* -------- Interrupt Control -------- */
-    } else if ((instr & 0xFFEF) == 0xB662) { /* CPSID i */
-        instr_cpsid(instr);
-
-    } else if ((instr & 0xFFEF) == 0xB660) { /* CPSIE i */
-        instr_cpsie(instr);
-
-    // ========================================================================
-    // UNKNOWN/UNIMPLEMENTED
-    // ========================================================================
-
-    } else {
-        /* Unknown / unimplemented instruction: log and halt */
-        instr_unimplemented(instr);
-        return;
+    /* 16-bit instruction dispatch via table */
+    pc_updated = 0;
+    dispatch_table[instr >> 8](instr);
+
+    if (!pc_updated) {
+        cpu.r[15] = pc + 2;
     }
-
-    /* Advance to next 16-bit instruction (if not already handled) */
-    cpu.r[15] = pc + 2;
 }
 
 /* ========================================================================
@@ -663,41 +587,35 @@ void dual_core_init(void) {
     /* Initialize core structures */
     for (int i = 0; i < NUM_CORES; i++) {
         memset(&cores[i], 0, sizeof(cpu_state_dual_t));
-        memset(cores[i].ram, 0, CORE_RAM_SIZE);
 
         cores[i].core_id = i;
         cores[i].is_halted = (i == CORE1) ? 1 : 0;
         cores[i].xpsr = 0x01000000;
         cores[i].vtor = 0x10000100;
         cores[i].current_irq = 0xFFFFFFFF;
+        cores[i].primask = 0;
 
         printf("[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
     }
 
-    /* ✅ COPY FIRMWARE FROM SINGLE-CORE TO DUAL-CORE */
-    /* This ensures dual_core_step() can access the loaded firmware */
-    memcpy(cores[CORE0].flash, cpu.flash, FLASH_SIZE);
+    /* Copy RAM from single-core to core 0 (flash is shared via cpu.flash) */
     memcpy(cores[CORE0].ram, cpu.ram, CORE_RAM_SIZE);
 
-    printf("[Boot] Firmware copied to CORE0 (flash: %u bytes, ram: %u bytes)\n",
+    printf("[Boot] Firmware in shared flash (%u bytes), RAM copied to CORE0 (%u bytes)\n",
            FLASH_SIZE, CORE_RAM_SIZE);
 
-    /* ✅ READ VECTOR TABLE FROM FLASH (same as single-core) */
-    /* This was missing in the original implementation */
+    /* Read vector table from flash */
     uint32_t vector_table = FLASH_BASE + 0x100;
     uint32_t initial_sp = mem_read32(vector_table);
     uint32_t reset_vector = mem_read32(vector_table + 4);
 
-    /* Set Core 0 registers from vector table */
-    cores[CORE0].r[13] = initial_sp;           /* SP (R13) */
-    cores[CORE0].r[15] = reset_vector & ~1;    /* PC (R15), clear Thumb bit */
+    cores[CORE0].r[13] = initial_sp;
+    cores[CORE0].r[15] = reset_vector & ~1;
 
     if (initial_sp != 0 || reset_vector != 0) {
         printf("[Boot] Vector table loaded: SP=0x%08X, PC=0x%08X\n",
                initial_sp, reset_vector & ~1);
     }
-
-    /* Core 1 stays in reset (no vector table init needed) */
 
     /* Initialize FIFO channels */
     for (int i = 0; i < NUM_CORES; i++) {
@@ -705,30 +623,30 @@ void dual_core_init(void) {
         fifo[i].read_ptr = 0;
         fifo[i].write_ptr = 0;
     }
+
+    /* Initialize dispatch table if needed */
+    if (!dispatch_initialized) {
+        init_dispatch_table();
+        dispatch_initialized = 1;
+    }
 }
 
 /* ========================================================================
- * Dual-Core CPU Execution
+ * Dual-Core CPU Execution (Zero-Copy Context Switch)
  * ======================================================================== */
 
-
-
 /*
- * Helper: Context-switch a specific core into the single-core engine
- * to execute one instruction using the full 'instructions.c' decoder.
+ * Context-switch a specific core into the single-core engine.
  *
- * Uses lightweight register swap instead of copying 2MB+ flash/RAM.
- * Flash and RAM are accessed via the memory bus which routes to the
- * correct core's storage based on active_core.
+ * Zero-copy approach: Instead of copying 132KB RAM, we just redirect
+ * the memory bus pointer to the core's RAM array. Only lightweight
+ * register state (64 bytes) is swapped.
  */
 static void cpu_step_core_via_single(int core_id) {
     if (core_id >= NUM_CORES) return;
     if (cores[core_id].is_halted) return;
 
-    /* 1. Activate the core (for memory bus routing) */
-    set_active_core(core_id);
-
-    /* 2. Save only the lightweight register state (64 bytes, not 2MB+) */
+    /* 1. Save current register state */
     uint32_t saved_r[16];
     memcpy(saved_r, cpu.r, sizeof(saved_r));
     uint32_t saved_xpsr = cpu.xpsr;
@@ -737,8 +655,9 @@ static void cpu_step_core_via_single(int core_id) {
     int saved_debug = cpu.debug_enabled;
     int saved_debug_asm = cpu.debug_asm;
     uint32_t saved_irq = cpu.current_irq;
+    uint32_t saved_primask = cpu.primask;
 
-    /* 3. Load core registers into global cpu */
+    /* 2. Load core registers into global cpu */
     memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
     cpu.xpsr         = cores[core_id].xpsr;
     cpu.vtor         = cores[core_id].vtor;
@@ -746,56 +665,31 @@ static void cpu_step_core_via_single(int core_id) {
     cpu.debug_enabled= cores[core_id].debug_enabled;
     cpu.debug_asm    = cores[core_id].debug_asm;
     cpu.current_irq  = cores[core_id].current_irq;
+    cpu.primask      = cores[core_id].primask;
 
-    /* 4. Point cpu flash/ram at the core's storage (pointer swap) */
-    /* Note: cpu.flash and cpu.ram are arrays (not pointers), so we must
-     * ensure the memory bus reads from cores[].flash/ram directly.
-     * The mem_read/write functions already handle this via the
-     * single-core path which accesses cpu.flash/ram, so we need to
-     * make cpu.flash/ram point to the right data.
-     * For flash (shared), use core 0's copy.
-     * For RAM, use the active core's copy. */
-    uint8_t *saved_flash_ptr = NULL;
-    uint8_t *saved_ram_ptr = NULL;
+    /* 3. Redirect memory bus to this core's RAM (zero-copy!) */
+    uint32_t ram_base = (core_id == CORE0) ? CORE0_RAM_START : CORE1_RAM_START;
+    mem_set_ram_ptr(cores[core_id].ram, ram_base, CORE_RAM_SIZE);
 
-    /* Swap flash: point to core 0's flash (shared) */
-    /* Since cpu.flash is a fixed array, we swap contents by pointer trick:
-     * We'll memcpy only if the pointers differ, but since instructions
-     * only read flash (not write), we can just copy the core's flash
-     * pointer into cpu's flash for the duration of the step.
-     *
-     * OPTIMIZATION: The cpu struct's flash/ram are used by mem_read/write.
-     * Instead of copying 2MB, we note that in dual-core mode the memory
-     * bus should route through cores[] arrays. For now, we do a minimal
-     * swap of just the RAM that might be modified. */
-
-    /* Only swap RAM (not flash - flash is read-only during execution) */
-    /* Use a stack buffer to avoid 2MB copy - just swap pointers conceptually.
-     * Since C arrays can't be reassigned, we swap the RAM content only. */
-    memcpy(cpu.ram, cores[core_id].ram, CORE_RAM_SIZE);
-
-    /* Flash: only copy if this is the first step or if needed.
-     * Since flash is read-only during execution and shared, we copy once
-     * during init and keep it in sync. */
+    /* 4. Set active core for SIO routing */
+    set_active_core(core_id);
 
     /* 5. Execute ONE instruction */
     cpu_step();
 
-    /* 6. Save updated state back */
+    /* 6. Save updated state back to core */
     memcpy(cores[core_id].r, cpu.r, sizeof(cpu.r));
     cores[core_id].xpsr         = cpu.xpsr;
     cores[core_id].vtor         = cpu.vtor;
     cores[core_id].step_count   = cpu.step_count;
     cores[core_id].current_irq  = cpu.current_irq;
+    cores[core_id].primask      = cpu.primask;
 
     if (cpu.r[15] == 0xFFFFFFFF) {
         cores[core_id].is_halted = 1;
     }
 
-    /* 7. Write back RAM (only the per-core portion) */
-    memcpy(cores[core_id].ram, cpu.ram, CORE_RAM_SIZE);
-
-    /* 8. Restore saved register state */
+    /* 7. Restore saved register state */
     memcpy(cpu.r, saved_r, sizeof(saved_r));
     cpu.xpsr = saved_xpsr;
     cpu.vtor = saved_vtor;
@@ -803,18 +697,15 @@ static void cpu_step_core_via_single(int core_id) {
     cpu.debug_enabled = saved_debug;
     cpu.debug_asm = saved_debug_asm;
     cpu.current_irq = saved_irq;
+    cpu.primask = saved_primask;
 
-    (void)saved_flash_ptr;
-    (void)saved_ram_ptr;
+    /* 8. Restore memory bus to default */
+    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
 }
 
-/* 
- * Unified Dual-Core Stepper
- */
 void cpu_step_core(int core_id) {
     cpu_step_core_via_single(core_id);
 }
-
 
 void dual_core_step(void) {
     static int current = 0;
@@ -833,26 +724,27 @@ int cpu_is_halted_core(int core_id) {
 void cpu_reset_core(int core_id) {
     if (core_id >= NUM_CORES) return;
 
-    cpu_state_dual_t *cpu = &cores[core_id];
+    cpu_state_dual_t *c = &cores[core_id];
     set_active_core(core_id);
 
-    memset(cpu->r, 0, sizeof(cpu->r));
-    cpu->xpsr = 0x01000000;
-    cpu->step_count = 0;
-    cpu->is_halted = (core_id == CORE1) ? 1 : 0;
-    cpu->vtor = 0x10000100;
+    memset(c->r, 0, sizeof(c->r));
+    c->xpsr = 0x01000000;
+    c->step_count = 0;
+    c->is_halted = (core_id == CORE1) ? 1 : 0;
+    c->vtor = 0x10000100;
+    c->primask = 0;
 
     if (core_id == CORE0) {
         uint32_t vector_table = FLASH_BASE + 0x100;
         uint32_t initial_sp = mem_read32(vector_table);
         uint32_t reset_vector = mem_read32(vector_table + 4);
 
-        cpu->r[13] = initial_sp;
-        cpu->r[15] = reset_vector & ~1;
+        c->r[13] = initial_sp;
+        c->r[15] = reset_vector & ~1;
 
-        if (cpu->debug_enabled) {
+        if (c->debug_enabled) {
             printf("[CORE%d] Reset to PC=0x%08X SP=0x%08X\n",
-                   core_id, cpu->r[15], cpu->r[13]);
+                   core_id, c->r[15], c->r[13]);
         }
     }
 }
@@ -864,43 +756,43 @@ void cpu_reset_core(int core_id) {
 void cpu_exception_entry_dual(int core_id, uint32_t vector_num) {
     if (core_id >= NUM_CORES) return;
 
-    cpu_state_dual_t *cpu = &cores[core_id];
+    cpu_state_dual_t *c = &cores[core_id];
     set_active_core(core_id);
 
     uint32_t vector_offset = vector_num * 4;
-    uint32_t handler_addr = mem_read32_dual(core_id, cpu->vtor + vector_offset);
+    uint32_t handler_addr = mem_read32_dual(core_id, c->vtor + vector_offset);
 
-    if (cpu->debug_enabled) {
+    if (c->debug_enabled) {
         printf("[CORE%d] Exception %u -> Handler 0x%08X\n",
                core_id, vector_num, handler_addr);
     }
 
-    uint32_t sp = cpu->r[13];
+    uint32_t sp = c->r[13];
 
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->xpsr);
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->r[15]);
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->r[14]);
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->r[12]);
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->r[3]);
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->r[2]);
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->r[1]);
-    sp -= 4; mem_write32_dual(core_id, sp, cpu->r[0]);
+    sp -= 4; mem_write32_dual(core_id, sp, c->xpsr);
+    sp -= 4; mem_write32_dual(core_id, sp, c->r[15]);
+    sp -= 4; mem_write32_dual(core_id, sp, c->r[14]);
+    sp -= 4; mem_write32_dual(core_id, sp, c->r[12]);
+    sp -= 4; mem_write32_dual(core_id, sp, c->r[3]);
+    sp -= 4; mem_write32_dual(core_id, sp, c->r[2]);
+    sp -= 4; mem_write32_dual(core_id, sp, c->r[1]);
+    sp -= 4; mem_write32_dual(core_id, sp, c->r[0]);
 
-    cpu->r[13] = sp;
-    cpu->r[15] = handler_addr & ~1u;
-    cpu->r[14] = 0xFFFFFFF9;
-    cpu->in_handler_mode = 1;
+    c->r[13] = sp;
+    c->r[15] = handler_addr & ~1u;
+    c->r[14] = 0xFFFFFFF9;
+    c->in_handler_mode = 1;
 }
 
 void cpu_exception_return_dual(int core_id, uint32_t lr_value) {
-    (void)lr_value; /* Mark as intentionally unused */
+    (void)lr_value;
 
     if (core_id >= NUM_CORES) return;
 
-    cpu_state_dual_t *cpu = &cores[core_id];
+    cpu_state_dual_t *c = &cores[core_id];
     set_active_core(core_id);
 
-    uint32_t sp = cpu->r[13];
+    uint32_t sp = c->r[13];
 
     uint32_t r0 = mem_read32_dual(core_id, sp); sp += 4;
     uint32_t r1 = mem_read32_dual(core_id, sp); sp += 4;
@@ -911,19 +803,19 @@ void cpu_exception_return_dual(int core_id, uint32_t lr_value) {
     uint32_t pc = mem_read32_dual(core_id, sp); sp += 4;
     uint32_t xpsr = mem_read32_dual(core_id, sp); sp += 4;
 
-    cpu->r[0] = r0;
-    cpu->r[1] = r1;
-    cpu->r[2] = r2;
-    cpu->r[3] = r3;
-    cpu->r[12] = r12;
-    cpu->r[13] = sp;
-    cpu->r[14] = lr;
-    cpu->r[15] = pc & ~1u;
-    cpu->xpsr = xpsr;
-    cpu->in_handler_mode = 0;
+    c->r[0] = r0;
+    c->r[1] = r1;
+    c->r[2] = r2;
+    c->r[3] = r3;
+    c->r[12] = r12;
+    c->r[13] = sp;
+    c->r[14] = lr;
+    c->r[15] = pc & ~1u;
+    c->xpsr = xpsr;
+    c->in_handler_mode = 0;
 
-    if (cpu->debug_enabled) {
-        printf("[CORE%d] Exception return to PC=0x%08X\n", core_id, cpu->r[15]);
+    if (c->debug_enabled) {
+        printf("[CORE%d] Exception return to PC=0x%08X\n", core_id, c->r[15]);
     }
 }
 
@@ -936,7 +828,6 @@ int any_core_running(void) {
     return 0;
 }
 
-/* Dual-core status reporting */
 void dual_core_status(void) {
     printf("[DUAL-CORE STATUS]\n");
     for (int i = 0; i < NUM_CORES; i++) {
@@ -968,7 +859,7 @@ void sio_set_core1_reset(int assert_reset) {
 }
 
 void sio_set_core1_stall(int stall) {
-    (void)stall; /* Not fully implemented */
+    (void)stall;
 }
 
 /* ========================================================================
@@ -978,15 +869,12 @@ void sio_set_core1_stall(int stall) {
 uint32_t spinlock_acquire(uint32_t lock_num) {
     if (lock_num >= SPINLOCK_SIZE) return 0;
 
-    /* RP2040 hardware semantics: reading the spinlock register is atomic.
-     * Returns 0 if lock was already held (failed to acquire).
-     * Returns nonzero if lock was free and is now acquired. */
     if (spinlocks[lock_num] & SPINLOCK_LOCKED) {
-        return 0;  /* Already locked - acquisition failed */
+        return 0;
     }
 
     spinlocks[lock_num] = SPINLOCK_VALID | SPINLOCK_LOCKED;
-    return spinlocks[lock_num];  /* Success */
+    return spinlocks[lock_num];
 }
 
 void spinlock_release(uint32_t lock_num) {
@@ -1040,26 +928,26 @@ int fifo_try_pop(int core_id, uint32_t *val) {
     if (core_id >= NUM_CORES) return 0;
 
     if (fifo[core_id].count == 0) {
-        return 0; /* No data available */
+        return 0;
     }
 
     *val = fifo[core_id].messages[fifo[core_id].read_ptr];
     fifo[core_id].read_ptr = (fifo[core_id].read_ptr + 1) % FIFO_DEPTH;
     fifo[core_id].count--;
 
-    return 1; /* Success */
+    return 1;
 }
 
 int fifo_try_push(int core_id, uint32_t val) {
     if (core_id >= NUM_CORES) return 0;
 
     if (fifo[core_id].count >= FIFO_DEPTH) {
-        return 0; /* FIFO full */
+        return 0;
     }
 
     fifo[core_id].messages[fifo[core_id].write_ptr] = val;
     fifo[core_id].write_ptr = (fifo[core_id].write_ptr + 1) % FIFO_DEPTH;
     fifo[core_id].count++;
 
-    return 1; /* Success */
+    return 1;
 }

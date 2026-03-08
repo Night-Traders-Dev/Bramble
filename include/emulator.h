@@ -48,6 +48,21 @@
 #define UART0_DR        (UART0_BASE + 0x000)  /* Data Register */
 #define UART0_FR        (UART0_BASE + 0x018)  /* Flag Register */
 
+/* SPI (PL022-style) */
+#define SPI0_BASE       0x4003C000
+#define SPI1_BASE       0x40040000
+#define SPI_SSPCR0      0x000   /* Control register 0 */
+#define SPI_SSPCR1      0x004   /* Control register 1 */
+#define SPI_SSPDR       0x008   /* Data register */
+#define SPI_SSPSR       0x00C   /* Status register */
+
+/* I2C */
+#define I2C0_BASE       0x40044000
+#define I2C1_BASE       0x40048000
+
+/* PWM */
+#define PWM_BASE        0x40050000
+
 /* ========================================================================
  * Single-Core CPU State (Base)
  * ======================================================================== */
@@ -67,6 +82,7 @@ typedef struct {
     int debug_enabled;              /* Verbose CPU step output (-debug) */
     int debug_asm;                  /* Instruction-level tracing (-asm) */
     uint32_t current_irq;           /* Active interrupt number */
+    uint32_t primask;               /* PRIMASK register (1=interrupts disabled) */
 
 } cpu_state_t;
 
@@ -105,8 +121,7 @@ extern cpu_state_t cpu;
  * ======================================================================== */
 
 typedef struct {
-    /* Original CPU state */
-    uint8_t flash[FLASH_SIZE];      /* Shared flash across cores */
+    /* Per-core private RAM (flash is shared via cpu.flash) */
     uint8_t ram[CORE_RAM_SIZE];     /* Per-core private RAM */
     uint32_t r[16];                 /* R0-R15 */
     uint32_t xpsr;                  /* APSR */
@@ -115,6 +130,7 @@ typedef struct {
     int debug_enabled;
     int debug_asm;
     uint32_t current_irq;
+    uint32_t primask;               /* PRIMASK register (1=interrupts disabled) */
 
     /* Dual-core extensions */
     int core_id;                    /* 0 or 1 */
@@ -146,6 +162,16 @@ extern multicore_fifo_t fifo[NUM_CORES];
 #define FIFO0_RD        0xD0000058
 #define FIFO1_WR        0xD0000054  /* Core 1 write, Core 0 reads */
 #define FIFO1_RD        0xD000005C
+
+/* ========================================================================
+ * Memory Bus Configuration
+ * ======================================================================== */
+
+/* Set active RAM pointer for memory bus routing (eliminates per-step memcpy) */
+void mem_set_ram_ptr(uint8_t *ram, uint32_t base, uint32_t size);
+
+/* pc_updated flag: set by instruction handlers that modify PC */
+extern int pc_updated;
 
 /* ========================================================================
  * Memory Access Functions (Single-Core)
@@ -249,5 +275,6 @@ int fifo_try_push(int core_id, uint32_t val);     /* Non-blocking write */
  * ======================================================================== */
 
 int load_uf2(const char *filename);
+int load_elf(const char *filename);
 
 #endif /* EMULATOR_H */

@@ -1,5 +1,53 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.5.0] - 2026-03-08
+
+### Added - Performance, Correctness & Features
+
+**Performance**:
+
+- **Zero-copy dual-core context switching**: Eliminated 132KB RAM memcpy per step; memory bus pointer redirection via `mem_set_ram_ptr()` swaps only 64 bytes of registers
+- **Shared flash storage**: Removed duplicate 2MB flash from `cpu_state_dual_t`; both cores read from single `cpu.flash` array (~4MB saved)
+- **O(1) instruction dispatch table**: 256-entry lookup table indexed by `instr >> 8` replaces ~60-branch if-else chain; secondary dispatchers for ALU/misc blocks
+
+**Correctness**:
+
+- **PRIMASK register**: `CPSID`/`CPSIE` now set/clear `cpu.primask`; interrupt delivery gated by PRIMASK check in `cpu_step()`
+- **SVC exception**: `instr_svc()` triggers SVCall (vector 11) via `cpu_exception_entry()` with correct stacked return address
+- **RAM execution**: `cpu_is_halted()` and `cpu_step()` now accept PC in RAM range (0x20000000-0x20042000)
+
+**Features**:
+
+- **Peripheral stubs**: SPI0/SPI1 (PL022 status), I2C0/I2C1, PWM return sensible idle values; writes accepted silently
+- **ELF loader**: `load_elf()` loads ELF32 ARM LE binaries with PT_LOAD segment handling for flash and RAM; auto-detected by `.elf` extension
+- **New instructions**: ADCS (add with carry), SBCS (subtract with carry), RSBS (negate)
+
+**Testing**:
+
+- **Unit test suite**: 36 tests across 10 categories (PRIMASK, SVC, RAM execution, dispatch table, peripheral stubs, ADCS/SBCS/RSBS, dual-core memory, ELF loader, memory bus, instruction integration)
+- Built as `bramble_tests` CMake target, integrated with CTest
+
+### Files Added
+
+- `src/elf.c` - ELF32 ARM binary loader
+- `tests/test_suite.c` - Unit test suite (36 tests)
+
+### Files Modified
+
+- `src/cpu.c` - Dispatch table, zero-copy dual-core, PRIMASK-aware interrupt delivery, RAM execution
+- `src/instructions.c` - PRIMASK, SVC exception, ADCS/SBCS/RSBS, `pc_updated` flag pattern
+- `src/membus.c` - Pointer-based RAM routing, SPI/I2C/PWM stubs, shared flash reads
+- `include/emulator.h` - PRIMASK fields, peripheral base addresses, `mem_set_ram_ptr()`, ELF loader declaration
+- `CMakeLists.txt` - Added `elf.c` source, `bramble_tests` target
+
+### Known Issues
+
+- Shared RAM (0x20040000) partially overlaps Core 1's per-core RAM range
+- No DMA, USB, or PIO emulation
+- Timer uses simplified 1 cycle = 1 microsecond model
+
+---
+
 ## [0.3.0] - 2025-12-30
 
 ### Added - Unified Main & Dual-Core Production
