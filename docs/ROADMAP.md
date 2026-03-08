@@ -1,14 +1,14 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.8.0
+## Current State: v0.9.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~55% | Flash + SRAM; shared RAM fixed; no ROM, no aliases |
-| Peripherals | ~40% | GPIO, Timer, NVIC+SysTick, UART, Resets, Clocks, XOSC, PLLs, Watchdog, ADC, SPI/I2C/PWM stubs |
+| Memory Map | ~70% | Flash + SRAM + ROM (4KB); no SRAM aliases |
+| Peripherals | ~65% | GPIO, Timer, NVIC+SysTick, UART, SPI, I2C, PWM, Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub; no DMA/PIO |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
-| Boot | ~60% | Vector table + SDK boot peripherals; no ROM/boot2 simulation |
+| Boot | ~80% | Vector table + SDK boot peripherals + ROM function table |
 
 ---
 
@@ -105,25 +105,32 @@ on M0+. The original roadmap incorrectly listed these.
 
 ## Phase 3: Peripheral Emulation (Run real applications)
 
-### 3.1 UART Full (0x40034000 / 0x40038000) [HIGH]
-- Rx data register: return buffered input or empty flag
-- FIFO status: TXFF, RXFE, busy flags
-- Baud rate, line control registers (accept writes)
+### 3.1 UART Full (0x40034000 / 0x40038000) [COMPLETE]
+~~Rx data register: return buffered input or empty flag~~
+- Proper PL011 module with full register state (DR, RSR, IBRD, FBRD, LCR_H, CR, IFLS, IMSC, RIS, MIS, ICR)
+- Both UART0 and UART1 with independent state
+- TX interrupt status, ICR write-1-to-clear, PL011 peripheral ID
+- Atomic register aliases (SET/CLR/XOR)
 
-### 3.2 SPI Full (0x4003C000 / 0x40040000) [MEDIUM]
-- Data register read/write with simple FIFO
-- Status register already returns idle
-- Control registers for frame format
+### 3.2 SPI Full (0x4003C000 / 0x40040000) [COMPLETE]
+~~Data register read/write with simple FIFO~~
+- PL022 module with register state (CR0, CR1, CPSR, IMSC, RIS, DMACR)
+- Both SPI0 and SPI1 with independent state
+- Status register (TFE, TNF), PL022 peripheral ID
+- Atomic register aliases
 
-### 3.3 I2C Full (0x40044000 / 0x40048000) [MEDIUM]
-- Target address register, data register
-- Status: TX empty, RX full, busy
-- Simple transaction completion
+### 3.3 I2C Full (0x40044000 / 0x40048000) [COMPLETE]
+~~Target address, data register, status~~
+- DW_apb_i2c module with full register set (CON, TAR, SAR, SCL timing, ENABLE, etc.)
+- Both I2C0 and I2C1 with independent state
+- Status register (TFE, TFNF), component ID registers
+- Atomic register aliases
 
-### 3.4 PWM (0x40050000) [MEDIUM]
-- 8 PWM slices, each with counter, CC, TOP
-- Interrupt on wrap
-- No actual waveform output needed
+### 3.4 PWM (0x40050000) [COMPLETE]
+~~8 PWM slices, each with counter, CC, TOP~~
+- 8 independent slices with CSR, DIV, CTR, CC, TOP registers
+- Global EN, INTR (W1C), INTE, INTF, INTS registers
+- Atomic register aliases
 
 ### 3.5 DMA (0x50000000) [MEDIUM]
 - 12 channels with source, dest, count, control

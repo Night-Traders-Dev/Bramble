@@ -43,22 +43,7 @@
 /* SIO (Single-cycle I/O) - RP2040 core registers */
 #define SIO_BASE        0xD0000000
 
-/* UART - see uart.h for full register definitions */
-
-/* SPI (PL022-style) */
-#define SPI0_BASE       0x4003C000
-#define SPI1_BASE       0x40040000
-#define SPI_SSPCR0      0x000   /* Control register 0 */
-#define SPI_SSPCR1      0x004   /* Control register 1 */
-#define SPI_SSPDR       0x008   /* Data register */
-#define SPI_SSPSR       0x00C   /* Status register */
-
-/* I2C */
-#define I2C0_BASE       0x40044000
-#define I2C1_BASE       0x40048000
-
-/* PWM */
-#define PWM_BASE        0x40050000
+/* Peripherals - see individual headers (uart.h, spi.h, i2c.h, pwm.h) */
 
 /* USB */
 #define USBCTRL_DPRAM_BASE  0x50100000  /* USB dual-port RAM (4KB) */

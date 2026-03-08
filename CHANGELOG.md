@@ -1,5 +1,79 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.9.0] - 2026-03-08
+
+### Added - ROM Function Table & Full Peripherals
+
+**ROM Function Table (0x00000000)**:
+
+- 4KB ROM with RP2040-compatible layout (magic at 0x10, func/data table pointers at 0x14-0x18)
+- Executable Thumb code: `rom_table_lookup`, `memcpy`, `memset`, `popcount32`, `clz32`, `ctz32`, `reverse32`
+- 14 function table entries including 6 flash function no-op stubs
+- CPU execution from ROM addresses (0x00000000-0x00000FFF)
+
+**USB Controller Stub**:
+
+- DPRAM (0x50100000) and REGS (0x50110000) accept reads/writes
+- Returns 0 (disconnected); SDK `stdio_usb_init()` times out and falls back to UART
+
+**UART Module** (extracted from membus.c):
+
+- Dual PL011 UARTs (UART0 + UART1) with independent state
+- 12 registers with read-back: DR, RSR, IBRD, FBRD, LCR_H, CR, IFLS, IMSC, RIS, MIS, ICR, DMACR
+- TX interrupt status, ICR write-1-to-clear, PL011 peripheral ID registers
+- Atomic register aliases (SET/CLR/XOR)
+
+**SPI Module** (replaced inline stub):
+
+- Dual PL022 controllers (SPI0 + SPI1) with independent state
+- Register state: CR0, CR1, CPSR, IMSC, RIS, DMACR
+- Status register (TFE, TNF), PL022 peripheral ID, atomic aliases
+
+**I2C Module** (replaced return-0 stub):
+
+- Dual DW_apb_i2c controllers (I2C0 + I2C1) with independent state
+- Full register set: CON, TAR, SAR, SCL timing, ENABLE, STATUS, interrupts, DMA
+- Component ID registers (COMP_PARAM_1, COMP_VERSION, COMP_TYPE), atomic aliases
+
+**PWM Module** (replaced return-0 stub):
+
+- 8 independent slices with CSR, DIV, CTR, CC, TOP registers
+- Global EN, INTR (W1C), INTE, INTF, INTS registers, atomic aliases
+
+### Fixed
+
+**CMP ALU register decoding** (`instructions.c`):
+
+- ALU-block CMP (0x4280-0x42BF) uses 3-bit register fields
+- High-register CMP (0x4500-0x45FF) uses 4-bit register fields
+- Split into `instr_cmp_alu()` and `instr_cmp_reg_reg()` for correct decoding
+
+### Testing
+
+- **31 new tests** (145 total, up from 114)
+- 7 new categories: ROM Function Table, USB Controller Stub, Flash ROM Functions, UART Peripheral, SPI Peripheral, I2C Peripheral, PWM Peripheral
+
+### Files Added
+
+- `src/rom.c`, `include/rom.h` - ROM function table
+- `src/uart.c`, `include/uart.h` - UART peripheral module
+- `src/spi.c`, `include/spi.h` - SPI peripheral module
+- `src/i2c.c`, `include/i2c.h` - I2C peripheral module
+- `src/pwm.c`, `include/pwm.h` - PWM peripheral module
+
+### Files Modified
+
+- `src/membus.c` - ROM reads, USB stub, peripheral routing to new modules
+- `src/cpu.c` - ROM execution, CMP ALU dispatch fix
+- `src/instructions.c` - `instr_cmp_alu()` added
+- `src/main.c` - Init calls for all new peripherals
+- `include/emulator.h` - Peripheral defines moved to individual headers
+- `CMakeLists.txt` - Added 5 new source files
+- `tests/test_suite.c` - 31 new tests, updated stale peripheral tests
+- `docs/ROADMAP.md` - Phase 2.7 and Phase 3.1-3.4 marked complete
+
+---
+
 ## [0.8.0] - 2026-03-08
 
 ### Fixed - Audit-Driven Bug Fixes

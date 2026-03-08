@@ -28,6 +28,9 @@ set(SOURCES
     src/adc.c
     src/rom.c
     src/uart.c
+    src/spi.c
+    src/i2c.c
+    src/pwm.c
 )
 
 # Executable
@@ -50,6 +53,9 @@ set(LIB_SOURCES
     src/adc.c
     src/rom.c
     src/uart.c
+    src/spi.c
+    src/i2c.c
+    src/pwm.c
 )
 
 # Test executable

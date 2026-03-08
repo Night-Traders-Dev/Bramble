@@ -1,5 +1,64 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.9.0] - 2026-03-08
+
+### Phase 2.7: ROM Function Table + Phase 3: Full Peripherals
+
+1. **ROM Function Table** (`rom.c`, `rom.h`)
+   - 4KB ROM at 0x00000000 with RP2040-compatible layout (magic, func/data table pointers)
+   - Executable Thumb code stubs: `rom_table_lookup`, `memcpy`, `memset`, `popcount32`, `clz32`, `ctz32`, `reverse32`
+   - Flash function no-op stubs: connect_internal_flash, flash_exit_xip, flash_range_erase/program, flash_flush_cache, flash_enter_cmd_xip
+   - Integrated into membus (ROM reads) and cpu.c (execution from ROM addresses)
+
+2. **USB Controller Stub** (`membus.c`)
+   - DPRAM (0x50100000) and REGS (0x50110000) accept reads/writes without crashing
+   - Reads return 0 (SIE_STATUS = disconnected); SDK falls back to UART
+
+3. **UART Full Module** (`uart.c`, `uart.h`)
+   - Extracted inline UART from membus.c into proper PL011 module
+   - Both UART0 (0x40034000) and UART1 (0x40038000) with independent state
+   - 12 registers: DR, RSR, IBRD, FBRD, LCR_H, CR, IFLS, IMSC, RIS, MIS, ICR, DMACR
+   - TX interrupt status, ICR write-1-to-clear, PL011 peripheral ID
+   - Atomic register aliases (SET/CLR/XOR)
+
+4. **SPI Full Module** (`spi.c`, `spi.h`)
+   - PL022 module with both SPI0 (0x4003C000) and SPI1 (0x40040000)
+   - Register state: CR0, CR1, CPSR, IMSC, RIS, DMACR
+   - Status register (TFE, TNF), PL022 peripheral ID
+   - Atomic register aliases
+
+5. **I2C Full Module** (`i2c.c`, `i2c.h`)
+   - DW_apb_i2c module with both I2C0 (0x40044000) and I2C1 (0x40048000)
+   - Full register set: CON, TAR, SAR, SCL timing, ENABLE, STATUS, interrupt, DMA
+   - Component ID registers (COMP_PARAM_1, COMP_VERSION, COMP_TYPE)
+   - Atomic register aliases
+
+6. **PWM Full Module** (`pwm.c`, `pwm.h`)
+   - 8 independent slices with CSR, DIV, CTR, CC, TOP registers
+   - Global EN, INTR (W1C), INTE, INTF, INTS registers
+   - Atomic register aliases
+
+7. **CMP ALU fix** (`instructions.c`, `cpu.c`)
+   - Split ALU-block CMP (3-bit register fields, 0x4280-0x42BF) from high-register CMP (4-bit fields, 0x4500-0x45FF)
+   - New `instr_cmp_alu()` handler for correct register decoding
+
+### Test Suite (145 tests, up from 114)
+
+8. **31 new tests across 4 new categories**:
+   - ROM Function Table (8): magic, table pointers, func entries, lookup, lookup not-found, popcount, clz, ctz
+   - USB Controller Stub (3): regs read zero, dpram read zero, write no crash
+   - Flash ROM Functions (1): flash function table entries
+   - UART Peripheral (8): output, registers, baud readback, UART1 independent, CR readback, IMSC/ICR, atomic SET/CLR, periph ID
+   - SPI Peripheral (4): status, CR0 readback, SPI1 independent, periph ID
+   - I2C Peripheral (5): status, TAR readback, I2C1 independent, enable/disable, comp type
+   - PWM Peripheral (4): slice defaults, readback, multiple slices, global enable
+
+### Peripheral defines consolidated
+- Moved UART, SPI, I2C, PWM base addresses from `emulator.h` to individual peripheral headers
+- Peripheral modules are self-contained with their own header + source files
+
+---
+
 ## [0.8.0] - 2026-03-08
 
 ### Audit & Bug Fixes
@@ -363,6 +422,7 @@ All items below were fixed in v0.5.0:
 
 | Version | Date       | Highlights                                                                    |
 |---------|------------|-------------------------------------------------------------------------------|
+| 0.9.0   | 2026-03-08 | ROM function table, full UART/SPI/I2C/PWM peripherals, USB stub, 145 tests    |
 | 0.8.0   | 2026-03-08 | Audit bug fixes (bcond UB, timer, SysTick), 114 tests with verbose framework  |
 | 0.7.0   | 2026-03-08 | Phase 2: Resets, Clocks, XOSC/PLL, Watchdog, ADC, atomic aliases, 67 tests    |
 | 0.6.0   | 2026-03-08 | Phase 1: SysTick, MSR/MRS, NVIC preemption, shared RAM fix, 52 tests          |
@@ -376,6 +436,7 @@ All items below were fixed in v0.5.0:
 ## Git History Summary
 
 ```
+0.9.0  (2026-03-08)  ROM function table, full peripherals (UART/SPI/I2C/PWM), USB stub, 145 tests
 0.8.0  (2026-03-08)  Audit bug fixes, 114-test verbose suite
 0.7.0  (2026-03-08)  Phase 2: SDK boot path (Resets, Clocks, XOSC/PLL, Watchdog, ADC)
 0.6.0  (2026-03-08)  Phase 1: Core correctness (SysTick, MSR/MRS, NVIC preemption)

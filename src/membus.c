@@ -8,6 +8,9 @@
 #include "adc.h"
 #include "rom.h"
 #include "uart.h"
+#include "spi.h"
+#include "i2c.h"
+#include "pwm.h"
 
 /* ========================================================================
  * Active RAM pointer for zero-copy dual-core context switching
@@ -30,21 +33,6 @@ void mem_set_ram_ptr(uint8_t *ram, uint32_t base, uint32_t size) {
 static inline uint8_t *get_ram(void) {
     if (!active_ram) active_ram = cpu.ram;
     return active_ram;
-}
-
-/* ========================================================================
- * SPI Peripheral Stub
- * ======================================================================== */
-
-static uint32_t spi_read32(uint32_t addr) {
-    uint32_t offset = addr & 0xFFF; /* Offset within SPI block */
-    switch (offset) {
-        case SPI_SSPSR: /* Status register */
-            /* TFE=1 (TX empty), TNF=1 (TX not full), BSY=0 */
-            return 0x03;
-        default:
-            return 0;
-    }
 }
 
 /* ========================================================================
@@ -133,6 +121,60 @@ void mem_write32(uint32_t addr, uint32_t val) {
     /* ADC */
     if (is_adc_addr(addr)) {
         adc_write32(addr, val);
+        return;
+    }
+
+    /* SPI peripherals */
+    {
+        int spi_num = spi_match(addr);
+        if (spi_num >= 0) {
+            uint32_t alias = addr & 0x3000;
+            uint32_t off = addr & 0xFFF;
+            if (alias == 0x0000) {
+                spi_write32(spi_num, off, val);
+            } else if (alias == 0x2000) {
+                spi_write32(spi_num, off, spi_read32(spi_num, off) | val);
+            } else if (alias == 0x3000) {
+                spi_write32(spi_num, off, spi_read32(spi_num, off) & ~val);
+            } else {
+                spi_write32(spi_num, off, spi_read32(spi_num, off) ^ val);
+            }
+            return;
+        }
+    }
+
+    /* I2C peripherals */
+    {
+        int i2c_num = i2c_match(addr);
+        if (i2c_num >= 0) {
+            uint32_t alias = addr & 0x3000;
+            uint32_t off = addr & 0xFFF;
+            if (alias == 0x0000) {
+                i2c_write32(i2c_num, off, val);
+            } else if (alias == 0x2000) {
+                i2c_write32(i2c_num, off, i2c_read32(i2c_num, off) | val);
+            } else if (alias == 0x3000) {
+                i2c_write32(i2c_num, off, i2c_read32(i2c_num, off) & ~val);
+            } else {
+                i2c_write32(i2c_num, off, i2c_read32(i2c_num, off) ^ val);
+            }
+            return;
+        }
+    }
+
+    /* PWM */
+    if (pwm_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t off = addr & 0xFFF;
+        if (alias == 0x0000) {
+            pwm_write32(off, val);
+        } else if (alias == 0x2000) {
+            pwm_write32(off, pwm_read32(off) | val);
+        } else if (alias == 0x3000) {
+            pwm_write32(off, pwm_read32(off) & ~val);
+        } else {
+            pwm_write32(off, pwm_read32(off) ^ val);
+        }
         return;
     }
 
@@ -274,21 +316,25 @@ uint32_t mem_read32(uint32_t addr) {
         return adc_read32(addr);
     }
 
-    /* SPI peripheral stubs */
-    if ((addr >= SPI0_BASE && addr < SPI0_BASE + 0x1000) ||
-        (addr >= SPI1_BASE && addr < SPI1_BASE + 0x1000)) {
-        return spi_read32(addr);
+    /* SPI peripherals */
+    {
+        int spi_num = spi_match(addr);
+        if (spi_num >= 0) {
+            return spi_read32(spi_num, addr & 0xFFF);
+        }
     }
 
-    /* I2C peripheral stubs - return 0 (idle/ready) */
-    if ((addr >= I2C0_BASE && addr < I2C0_BASE + 0x1000) ||
-        (addr >= I2C1_BASE && addr < I2C1_BASE + 0x1000)) {
-        return 0;
+    /* I2C peripherals */
+    {
+        int i2c_num = i2c_match(addr);
+        if (i2c_num >= 0) {
+            return i2c_read32(i2c_num, addr & 0xFFF);
+        }
     }
 
-    /* PWM peripheral stub */
-    if (addr >= PWM_BASE && addr < PWM_BASE + 0x1000) {
-        return 0;
+    /* PWM */
+    if (pwm_match(addr)) {
+        return pwm_read32(addr & 0xFFF);
     }
 
     /* USB controller stub - return "disconnected" state.

@@ -23,6 +23,9 @@
 #include "adc.h"
 #include "rom.h"
 #include "uart.h"
+#include "spi.h"
+#include "i2c.h"
+#include "pwm.h"
 
 
 int any_core_running(void);
@@ -80,6 +83,9 @@ int main(int argc, char **argv) {
     cpu_init();
     rom_init();
     uart_init();
+    spi_init();
+    i2c_init();
+    pwm_init();
     clocks_init();
     adc_init();
 

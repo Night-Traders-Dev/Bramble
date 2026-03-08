@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.8.0 - Production Ready** ✅
+## Current Status: **v0.9.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, SPI/I2C/PWM peripheral stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **114-test verbose unit test suite** across 30+ categories.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **dual UART** output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **145-test verbose unit test suite** across 35+ categories.
 
 ### ✅ What Works
 
@@ -46,7 +46,7 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - Debug: BKPT, UDF
 
 - **Accurate Flag Handling**: N, Z, C, V flags with proper carry/overflow detection
-- **UART0 Emulation**: Character output via `UART0_DR` (0x40034000) with TX FIFO status
+- **UART Emulation**: Dual PL011 UARTs (UART0 + UART1) with full register state (DR, RSR, IBRD, FBRD, LCR_H, CR, IFLS, IMSC, RIS, MIS, ICR), TX output, interrupt status, PL011 peripheral ID, and atomic aliases
 - **GPIO Emulation**: Complete 30-pin GPIO peripheral with:
   - SIO fast GPIO access (direct read/write, atomic operations)
   - IO_BANK0 per-pin configuration (function select, control)
@@ -91,10 +91,16 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - CS, RESULT, FIFO, DIV registers
   - Channel 4 = internal temperature sensor (~27C default)
   - Configurable channel values for testing
-- **✨ Expanded UART0**: Full register set (DR, FR, IBRD, FBRD, LCR_H, CR, IMSC, RIS, MIS)
-- **Peripheral Stubs**: SPI0/SPI1 (PL022 idle status), I2C0/I2C1, PWM return sensible defaults so SDK firmware doesn't crash during init
+- **✨ ROM Function Table**: 4KB ROM at 0x00000000 with:
+  - RP2040-compatible layout (magic, function/data table pointers)
+  - Executable Thumb code: `rom_table_lookup`, `memcpy`, `memset`, `popcount32`, `clz32`, `ctz32`
+  - Flash function no-op stubs (connect, exit_xip, erase, program, flush, enter_xip)
+- **✨ USB Controller Stub**: Reads return 0 (disconnected), writes accepted silently; SDK falls back to UART
+- **✨ SPI Emulation**: Dual PL022 controllers (SPI0 + SPI1) with register state (CR0, CR1, CPSR, IMSC, status), PL022 peripheral ID, and atomic aliases
+- **✨ I2C Emulation**: Dual DW_apb_i2c controllers (I2C0 + I2C1) with full register set (CON, TAR, SAR, SCL timing, ENABLE, status), component ID registers, and atomic aliases
+- **✨ PWM Emulation**: 8 independent slices with CSR, DIV, CTR, CC, TOP registers, global EN/INTR/INTE/INTF/INTS, and atomic aliases
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 114 tests across 30+ categories with verbose per-category reporting, integrated with CTest
+- **✨ Unit Test Suite**: 145 tests across 35+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -141,8 +147,8 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 
 ### ⚠️ Known Limitations
 
-- **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (use UART stdio instead)
-- **Limited Peripheral Emulation**: UART0, GPIO, Timer, SysTick, ADC, Resets, Clocks, XOSC, PLLs, Watchdog, SPI/I2C/PWM stubs; DMA, USB, PIO not emulated
+- **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (SDK falls back to UART)
+- **Missing Peripherals**: DMA, PIO not emulated; USB is stub-only (disconnected state)
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
 - **UART Tx Only**: No receive (Rx) emulation
 - See [ROADMAP](docs/ROADMAP.md) for full status and next phases
@@ -307,7 +313,12 @@ Bramble/
 │   ├── timer.c         # Hardware timer emulation
 │   ├── nvic.c          # NVIC interrupt controller
 │   ├── clocks.c        # Resets, Clocks, XOSC, PLLs, Watchdog
-│   └── adc.c           # ADC peripheral emulation
+│   ├── adc.c           # ADC peripheral emulation
+│   ├── rom.c           # ROM function table with Thumb code stubs
+│   ├── uart.c          # Dual PL011 UART emulation
+│   ├── spi.c           # Dual PL022 SPI emulation
+│   ├── i2c.c           # Dual DW_apb_i2c emulation
+│   └── pwm.c           # 8-slice PWM emulation
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
@@ -315,9 +326,14 @@ Bramble/
 │   ├── timer.h         # Timer register definitions
 │   ├── nvic.h          # NVIC register definitions
 │   ├── clocks.h        # Clock-domain peripheral definitions
-│   └── adc.h           # ADC register definitions
+│   ├── adc.h           # ADC register definitions
+│   ├── rom.h           # ROM layout and function codes
+│   ├── uart.h          # PL011 UART register definitions
+│   ├── spi.h           # PL022 SPI register definitions
+│   ├── i2c.h           # DW_apb_i2c register definitions
+│   └── pwm.h           # PWM register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (114 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (145 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -497,8 +513,11 @@ Peripherals are integrated into the memory bus (`membus.c`):
 - Reads/writes to peripheral address ranges are routed to peripheral modules
 - GPIO: `0x40014000` (IO_BANK0), `0x4001C000` (PADS), `0xD0000000` (SIO)
 - Timer: `0x40054000` (64-bit counter, 4 alarms, interrupts)
-- UART0: `0x40034000`
-- Stub responses for unimplemented peripherals
+- UART: `0x40034000` / `0x40038000` (PL011 dual)
+- SPI: `0x4003C000` / `0x40040000` (PL022 dual)
+- I2C: `0x40044000` / `0x40048000` (DW_apb_i2c dual)
+- PWM: `0x40050000` (8 slices)
+- ROM: `0x00000000` (4KB with function table and Thumb code)
 
 ### Timer Timing Model
 
@@ -586,30 +605,28 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ## Future Work
 
-### High Priority (Phase 3 - Run littleOS)
+### High Priority
 
-1. **USB CDC Stub**: Allow `stdio_init_all()` to complete without hanging
-2. **Flash Programming**: `flash_range_erase()` / `flash_range_program()` stubs for config persistence
-3. **ROM Function Table**: Stub implementations for SDK utility functions (`rom_func_lookup`, `_memcpy4`)
+1. **DMA Controller**: 12 channels with source/dest/count/control, auto-copy on trigger, completion interrupts
+2. **UART Rx**: Implement receive path for bidirectional serial communication
 
 ### Medium Priority
 
-1. **UART Rx**: Implement receive path for bidirectional serial communication
-2. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
-3. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
-4. **Full Peripheral Emulation**: DMA controller, PIO state machines
+1. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
+2. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
+3. **SRAM Aliasing**: Map 0x21-0x25 ranges with XOR/SET/CLR semantics
 
 ### Low Priority
 
-1. **Performance**: JIT compilation for hot loops, instruction caching
-2. **Visualization**: Web-based register display, memory map explorer
-3. **SRAM Aliasing**: Map 0x21-0x25 ranges with XOR/SET/CLR semantics
+1. **PIO State Machines**: Programmable I/O (complex - defer unless needed)
+2. **USB Device Mode**: Endpoint handling (complex - stub already returns disconnected)
+3. **Performance**: JIT compilation for hot loops, instruction caching
 
 ## Contributing
 
 The Bramble project is open for contributions! Areas that need help:
 
-1. **Peripheral Emulation**: DMA, USB, PIO state machines, UART Rx
+1. **Peripheral Emulation**: DMA, PIO state machines, UART Rx
 2. **Testing**: New test firmware, edge cases, performance benchmarks
 3. **Debugging**: GDB remote stub, hardware breakpoints
 4. **Documentation**: Register descriptions, usage examples, architecture guides

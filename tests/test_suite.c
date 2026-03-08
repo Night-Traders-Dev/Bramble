@@ -23,6 +23,9 @@
 #include "adc.h"
 #include "rom.h"
 #include "uart.h"
+#include "spi.h"
+#include "i2c.h"
+#include "pwm.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -106,6 +109,9 @@ static void reset_cpu(void) {
     timer_reset();
     rom_init();
     uart_init();
+    spi_init();
+    i2c_init();
+    pwm_init();
 }
 
 /* ========================================================================
@@ -243,15 +249,15 @@ TEST(test_spi_other_regs_zero) {
     PASS();
 }
 
-TEST(test_i2c_read_zero) {
+TEST(test_i2c_con_default) {
     reset_cpu();
-    ASSERT_EQ(0, mem_read32(I2C0_BASE), "I2C0 reads 0");
+    ASSERT_EQ(0x7F, mem_read32(I2C0_BASE + I2C_CON), "I2C0 CON default");
     PASS();
 }
 
-TEST(test_pwm_read_zero) {
+TEST(test_pwm_csr_default) {
     reset_cpu();
-    ASSERT_EQ(0, mem_read32(PWM_BASE), "PWM reads 0");
+    ASSERT_EQ(0, mem_read32(PWM_BASE + PWM_CH_CSR), "PWM CSR default 0");
     PASS();
 }
 
@@ -840,6 +846,123 @@ TEST(test_uart_periph_id) {
     ASSERT_EQ(0x10, mem_read32(UART0_BASE + 0xFE4), "PERIPHID1");
     ASSERT_EQ(0x34, mem_read32(UART0_BASE + 0xFE8), "PERIPHID2");
     ASSERT_EQ(0x00, mem_read32(UART0_BASE + 0xFEC), "PERIPHID3");
+    PASS();
+}
+
+/* ========================================================================
+ * SPI Tests
+ * ======================================================================== */
+
+TEST(test_spi0_status) {
+    reset_cpu();
+    uint32_t sr = mem_read32(SPI0_BASE + SPI_SSPSR);
+    ASSERT_TRUE(sr & SPI_SSPSR_TFE, "SPI0 TX FIFO empty");
+    ASSERT_TRUE(sr & SPI_SSPSR_TNF, "SPI0 TX not full");
+    ASSERT_TRUE(!(sr & SPI_SSPSR_BSY), "SPI0 not busy");
+    PASS();
+}
+
+TEST(test_spi_cr0_readback) {
+    reset_cpu();
+    mem_write32(SPI0_BASE + SPI_SSPCR0, 0x0007);  /* 8-bit, SPI mode */
+    ASSERT_EQ(0x0007, mem_read32(SPI0_BASE + SPI_SSPCR0), "SPI0 CR0 readback");
+    PASS();
+}
+
+TEST(test_spi1_independent) {
+    reset_cpu();
+    mem_write32(SPI0_BASE + SPI_SSPCPSR, 2);
+    mem_write32(SPI1_BASE + SPI_SSPCPSR, 64);
+    ASSERT_EQ(2,  mem_read32(SPI0_BASE + SPI_SSPCPSR), "SPI0 CPSR");
+    ASSERT_EQ(64, mem_read32(SPI1_BASE + SPI_SSPCPSR), "SPI1 CPSR independent");
+    PASS();
+}
+
+TEST(test_spi_periph_id) {
+    reset_cpu();
+    ASSERT_EQ(0x22, mem_read32(SPI0_BASE + SPI_PERIPHID0), "SPI PERIPHID0 (PL022)");
+    PASS();
+}
+
+/* ========================================================================
+ * I2C Tests
+ * ======================================================================== */
+
+TEST(test_i2c0_status) {
+    reset_cpu();
+    uint32_t st = mem_read32(I2C0_BASE + I2C_STATUS);
+    ASSERT_TRUE(st & I2C_STATUS_TFE, "I2C0 TX FIFO empty");
+    ASSERT_TRUE(st & I2C_STATUS_TFNF, "I2C0 TX not full");
+    ASSERT_TRUE(!(st & I2C_STATUS_ACTIVITY), "I2C0 not active");
+    PASS();
+}
+
+TEST(test_i2c_tar_readback) {
+    reset_cpu();
+    mem_write32(I2C0_BASE + I2C_TAR, 0x50);
+    ASSERT_EQ(0x50, mem_read32(I2C0_BASE + I2C_TAR), "I2C0 TAR readback");
+    PASS();
+}
+
+TEST(test_i2c1_independent) {
+    reset_cpu();
+    mem_write32(I2C0_BASE + I2C_TAR, 0x10);
+    mem_write32(I2C1_BASE + I2C_TAR, 0x20);
+    ASSERT_EQ(0x10, mem_read32(I2C0_BASE + I2C_TAR), "I2C0 TAR");
+    ASSERT_EQ(0x20, mem_read32(I2C1_BASE + I2C_TAR), "I2C1 TAR independent");
+    PASS();
+}
+
+TEST(test_i2c_enable_disable) {
+    reset_cpu();
+    ASSERT_EQ(0, mem_read32(I2C0_BASE + I2C_ENABLE), "I2C0 disabled at init");
+    mem_write32(I2C0_BASE + I2C_ENABLE, 1);
+    ASSERT_EQ(1, mem_read32(I2C0_BASE + I2C_ENABLE), "I2C0 enabled");
+    PASS();
+}
+
+TEST(test_i2c_comp_type) {
+    reset_cpu();
+    ASSERT_EQ(0x44570140, mem_read32(I2C0_BASE + I2C_COMP_TYPE), "I2C COMP_TYPE");
+    PASS();
+}
+
+/* ========================================================================
+ * PWM Tests
+ * ======================================================================== */
+
+TEST(test_pwm_slice_defaults) {
+    reset_cpu();
+    ASSERT_EQ(0xFFFF, mem_read32(PWM_BASE + PWM_CH_TOP), "PWM slice 0 TOP default");
+    ASSERT_EQ(0x10, mem_read32(PWM_BASE + PWM_CH_DIV), "PWM slice 0 DIV default (1.0)");
+    ASSERT_EQ(0, mem_read32(PWM_BASE + PWM_CH_CSR), "PWM slice 0 CSR default");
+    PASS();
+}
+
+TEST(test_pwm_slice_readback) {
+    reset_cpu();
+    /* Write slice 0 registers */
+    mem_write32(PWM_BASE + PWM_CH_TOP, 1000);
+    mem_write32(PWM_BASE + PWM_CH_CC, 0x01F40064);  /* A=500, B=100 */
+    ASSERT_EQ(1000, mem_read32(PWM_BASE + PWM_CH_TOP), "PWM TOP readback");
+    ASSERT_EQ(0x01F40064, mem_read32(PWM_BASE + PWM_CH_CC), "PWM CC readback");
+    PASS();
+}
+
+TEST(test_pwm_multiple_slices) {
+    reset_cpu();
+    /* Slice 0 at offset 0x00, slice 3 at offset 0x3C (3 * 0x14) */
+    mem_write32(PWM_BASE + 0x00 + PWM_CH_TOP, 999);
+    mem_write32(PWM_BASE + 0x3C + PWM_CH_TOP, 1999);
+    ASSERT_EQ(999,  mem_read32(PWM_BASE + 0x00 + PWM_CH_TOP), "PWM slice 0 TOP");
+    ASSERT_EQ(1999, mem_read32(PWM_BASE + 0x3C + PWM_CH_TOP), "PWM slice 3 TOP");
+    PASS();
+}
+
+TEST(test_pwm_global_enable) {
+    reset_cpu();
+    mem_write32(PWM_BASE + PWM_EN, 0x05);  /* Enable slices 0 and 2 */
+    ASSERT_EQ(0x05, mem_read32(PWM_BASE + PWM_EN), "PWM EN readback");
     PASS();
 }
 
@@ -1484,8 +1607,8 @@ int main(void) {
     RUN_TEST(test_spi0_status_register);
     RUN_TEST(test_spi1_status_register);
     RUN_TEST(test_spi_other_regs_zero);
-    RUN_TEST(test_i2c_read_zero);
-    RUN_TEST(test_pwm_read_zero);
+    RUN_TEST(test_i2c_con_default);
+    RUN_TEST(test_pwm_csr_default);
     RUN_TEST(test_peripheral_writes_no_crash);
     END_CATEGORY("Peripheral Stubs");
 
@@ -1705,6 +1828,28 @@ int main(void) {
     RUN_TEST(test_uart_atomic_set_clr);
     RUN_TEST(test_uart_periph_id);
     END_CATEGORY("UART Peripheral");
+
+    BEGIN_CATEGORY("SPI Peripheral");
+    RUN_TEST(test_spi0_status);
+    RUN_TEST(test_spi_cr0_readback);
+    RUN_TEST(test_spi1_independent);
+    RUN_TEST(test_spi_periph_id);
+    END_CATEGORY("SPI Peripheral");
+
+    BEGIN_CATEGORY("I2C Peripheral");
+    RUN_TEST(test_i2c0_status);
+    RUN_TEST(test_i2c_tar_readback);
+    RUN_TEST(test_i2c1_independent);
+    RUN_TEST(test_i2c_enable_disable);
+    RUN_TEST(test_i2c_comp_type);
+    END_CATEGORY("I2C Peripheral");
+
+    BEGIN_CATEGORY("PWM Peripheral");
+    RUN_TEST(test_pwm_slice_defaults);
+    RUN_TEST(test_pwm_slice_readback);
+    RUN_TEST(test_pwm_multiple_slices);
+    RUN_TEST(test_pwm_global_enable);
+    END_CATEGORY("PWM Peripheral");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);
