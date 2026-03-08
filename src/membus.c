@@ -7,6 +7,7 @@
 #include "clocks.h"
 #include "adc.h"
 #include "rom.h"
+#include "uart.h"
 
 /* ========================================================================
  * Active RAM pointer for zero-copy dual-core context switching
@@ -66,56 +67,6 @@ static int is_adc_addr(uint32_t addr) {
 }
 
 /* ========================================================================
- * UART Peripheral (expanded for raw register access)
- * ======================================================================== */
-
-static int is_uart_addr(uint32_t addr) {
-    return (addr & ~0x3FFF) == UART0_BASE;
-}
-
-static uint32_t uart_read32(uint32_t addr) {
-    uint32_t offset = addr & 0xFFF;
-    switch (offset) {
-        case 0x000: /* UARTDR - Data Register */
-            return 0; /* No Rx data */
-        case 0x018: /* UARTFR - Flag Register */
-            /* TXFE=1 (bit 7), RXFE=1 (bit 4) = TX empty, RX empty */
-            return 0x00000090;
-        case 0x024: /* UARTIBRD - Integer baud rate */
-            return 0;
-        case 0x028: /* UARTFBRD - Fractional baud rate */
-            return 0;
-        case 0x02C: /* UARTLCR_H - Line control */
-            return 0;
-        case 0x030: /* UARTCR - Control register */
-            return (1u << 0) | (1u << 8) | (1u << 9); /* UARTEN, TXE, RXE */
-        case 0x038: /* UARTIFLS - Interrupt FIFO level select */
-            return 0;
-        case 0x03C: /* UARTIMSC - Interrupt mask */
-            return 0;
-        case 0x040: /* UARTRIS - Raw interrupt status */
-            return 0;
-        case 0x044: /* UARTMIS - Masked interrupt status */
-            return 0;
-        default:
-            return 0;
-    }
-}
-
-static void uart_write32(uint32_t addr, uint32_t val) {
-    uint32_t offset = addr & 0xFFF;
-    switch (offset) {
-        case 0x000: /* UARTDR - Data Register */
-            putchar((char)(val & 0xFF));
-            fflush(stdout);
-            break;
-        default:
-            /* Accept all other UART register writes silently */
-            break;
-    }
-}
-
-/* ========================================================================
  * Single-Core Memory Access Functions
  * ======================================================================== */
 
@@ -132,9 +83,25 @@ void mem_write32(uint32_t addr, uint32_t val) {
     }
 
     /* UART registers (including atomic aliases) */
-    if (is_uart_addr(addr)) {
-        uart_write32(addr, val);
-        return;
+    {
+        int uart_num = uart_match(addr);
+        if (uart_num >= 0) {
+            uint32_t alias = addr & 0x3000;
+            uint32_t offset = (addr & 0xFFF);
+            if (alias == 0x0000) {
+                uart_write32(uart_num, offset, val);
+            } else if (alias == 0x2000) {  /* SET */
+                uint32_t cur = uart_read32(uart_num, offset);
+                uart_write32(uart_num, offset, cur | val);
+            } else if (alias == 0x3000) {  /* CLR */
+                uint32_t cur = uart_read32(uart_num, offset);
+                uart_write32(uart_num, offset, cur & ~val);
+            } else {  /* XOR 0x1000 */
+                uint32_t cur = uart_read32(uart_num, offset);
+                uart_write32(uart_num, offset, cur ^ val);
+            }
+            return;
+        }
     }
 
     /* NVIC registers (0xE000E000 - 0xE000EFFF) */
@@ -273,8 +240,12 @@ uint32_t mem_read32(uint32_t addr) {
     }
 
     /* UART registers (including atomic aliases) */
-    if (is_uart_addr(addr)) {
-        return uart_read32(addr);
+    {
+        int uart_num = uart_match(addr);
+        if (uart_num >= 0) {
+            uint32_t offset = addr & 0xFFF;
+            return uart_read32(uart_num, offset);
+        }
     }
 
     /* NVIC registers (0xE000E000 - 0xE000EFFF) */

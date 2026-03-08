@@ -22,6 +22,7 @@
 #include "clocks.h"
 #include "adc.h"
 #include "rom.h"
+#include "uart.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -104,6 +105,7 @@ static void reset_cpu(void) {
     nvic_reset();
     timer_reset();
     rom_init();
+    uart_init();
 }
 
 /* ========================================================================
@@ -439,7 +441,7 @@ TEST(test_ram_read_write) {
 
 TEST(test_uart_output) {
     reset_cpu();
-    mem_write32(UART0_DR, 'X');
+    mem_write32(UART0_BASE + UART_DR, 'X');
     PASS();
 }
 
@@ -765,6 +767,79 @@ TEST(test_uart_registers) {
     uint32_t cr = mem_read32(UART0_BASE + 0x030);
     ASSERT_TRUE(cr & 1, "UART CR: UARTEN");
     ASSERT_TRUE(cr & (1u << 8), "UART CR: TXE");
+    PASS();
+}
+
+TEST(test_uart_baud_readback) {
+    reset_cpu();
+    mem_write32(UART0_BASE + UART_IBRD, 67);
+    mem_write32(UART0_BASE + UART_FBRD, 52);
+    ASSERT_EQ(67, mem_read32(UART0_BASE + UART_IBRD), "UART0 IBRD readback");
+    ASSERT_EQ(52, mem_read32(UART0_BASE + UART_FBRD), "UART0 FBRD readback");
+    PASS();
+}
+
+TEST(test_uart1_independent) {
+    reset_cpu();
+    /* Write to UART1 baud, check UART0 is unaffected */
+    mem_write32(UART0_BASE + UART_IBRD, 100);
+    mem_write32(UART1_BASE + UART_IBRD, 200);
+    ASSERT_EQ(100, mem_read32(UART0_BASE + UART_IBRD), "UART0 IBRD unchanged");
+    ASSERT_EQ(200, mem_read32(UART1_BASE + UART_IBRD), "UART1 IBRD independent");
+    /* UART1 FR also works */
+    ASSERT_EQ(0x00000090, mem_read32(UART1_BASE + UART_FR), "UART1 FR");
+    PASS();
+}
+
+TEST(test_uart_cr_readback) {
+    reset_cpu();
+    /* Disable UART, verify readback */
+    mem_write32(UART0_BASE + UART_CR, 0);
+    ASSERT_EQ(0, mem_read32(UART0_BASE + UART_CR), "UART CR cleared");
+    /* Re-enable */
+    mem_write32(UART0_BASE + UART_CR, UART_CR_UARTEN | UART_CR_TXE);
+    uint32_t cr = mem_read32(UART0_BASE + UART_CR);
+    ASSERT_TRUE(cr & UART_CR_UARTEN, "UART CR re-enabled");
+    ASSERT_TRUE(cr & UART_CR_TXE, "UART CR TXE set");
+    PASS();
+}
+
+TEST(test_uart_imsc_icr) {
+    reset_cpu();
+    /* Set TX interrupt mask */
+    mem_write32(UART0_BASE + UART_IMSC, UART_INT_TX);
+    ASSERT_EQ(UART_INT_TX, mem_read32(UART0_BASE + UART_IMSC), "IMSC TX set");
+    /* RIS has TX set at init (FIFO empty), so MIS should show it */
+    uint32_t mis = mem_read32(UART0_BASE + UART_MIS);
+    ASSERT_TRUE(mis & UART_INT_TX, "MIS TX active");
+    /* Clear TX interrupt */
+    mem_write32(UART0_BASE + UART_ICR, UART_INT_TX);
+    ASSERT_EQ(0, mem_read32(UART0_BASE + UART_RIS) & UART_INT_TX, "RIS TX cleared");
+    ASSERT_EQ(0, mem_read32(UART0_BASE + UART_MIS), "MIS zero after clear");
+    PASS();
+}
+
+TEST(test_uart_atomic_set_clr) {
+    reset_cpu();
+    /* CLR alias: clear RXE (bit 9) from default CR */
+    mem_write32(UART0_BASE + 0x3000 + UART_CR, UART_CR_RXE);
+    uint32_t cr = mem_read32(UART0_BASE + UART_CR);
+    ASSERT_TRUE(!(cr & UART_CR_RXE), "CLR alias cleared RXE");
+    ASSERT_TRUE(cr & UART_CR_TXE, "CLR alias preserved TXE");
+    /* SET alias: set RXE back */
+    mem_write32(UART0_BASE + 0x2000 + UART_CR, UART_CR_RXE);
+    cr = mem_read32(UART0_BASE + UART_CR);
+    ASSERT_TRUE(cr & UART_CR_RXE, "SET alias restored RXE");
+    PASS();
+}
+
+TEST(test_uart_periph_id) {
+    reset_cpu();
+    /* PL011 peripheral identification */
+    ASSERT_EQ(0x11, mem_read32(UART0_BASE + 0xFE0), "PERIPHID0");
+    ASSERT_EQ(0x10, mem_read32(UART0_BASE + 0xFE4), "PERIPHID1");
+    ASSERT_EQ(0x34, mem_read32(UART0_BASE + 0xFE8), "PERIPHID2");
+    ASSERT_EQ(0x00, mem_read32(UART0_BASE + 0xFEC), "PERIPHID3");
     PASS();
 }
 
@@ -1439,7 +1514,6 @@ int main(void) {
     BEGIN_CATEGORY("Memory Bus");
     RUN_TEST(test_flash_read_write);
     RUN_TEST(test_ram_read_write);
-    RUN_TEST(test_uart_output);
     END_CATEGORY("Memory Bus");
 
     BEGIN_CATEGORY("Instruction Integration");
@@ -1508,9 +1582,6 @@ int main(void) {
     RUN_TEST(test_adc_set_channel_value);
     END_CATEGORY("ADC");
 
-    BEGIN_CATEGORY("UART Registers");
-    RUN_TEST(test_uart_registers);
-    END_CATEGORY("UART Registers");
 
     BEGIN_CATEGORY("Timer");
     RUN_TEST(test_timer_alarm_arm_on_write);
@@ -1623,6 +1694,17 @@ int main(void) {
     BEGIN_CATEGORY("Flash ROM Functions");
     RUN_TEST(test_rom_flash_functions_in_table);
     END_CATEGORY("Flash ROM Functions");
+
+    BEGIN_CATEGORY("UART Peripheral");
+    RUN_TEST(test_uart_output);
+    RUN_TEST(test_uart_registers);
+    RUN_TEST(test_uart_baud_readback);
+    RUN_TEST(test_uart1_independent);
+    RUN_TEST(test_uart_cr_readback);
+    RUN_TEST(test_uart_imsc_icr);
+    RUN_TEST(test_uart_atomic_set_clr);
+    RUN_TEST(test_uart_periph_id);
+    END_CATEGORY("UART Peripheral");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

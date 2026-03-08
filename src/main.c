@@ -22,6 +22,7 @@
 #include "clocks.h"
 #include "adc.h"
 #include "rom.h"
+#include "uart.h"
 
 
 int any_core_running(void);
@@ -78,6 +79,7 @@ int main(int argc, char **argv) {
     /* Initialize CPU and peripherals */
     cpu_init();
     rom_init();
+    uart_init();
     clocks_init();
     adc_init();
 

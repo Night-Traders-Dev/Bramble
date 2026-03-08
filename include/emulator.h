@@ -43,10 +43,7 @@
 /* SIO (Single-cycle I/O) - RP2040 core registers */
 #define SIO_BASE        0xD0000000
 
-/* UART0 (PL011-style) */
-#define UART0_BASE      0x40034000
-#define UART0_DR        (UART0_BASE + 0x000)  /* Data Register */
-#define UART0_FR        (UART0_BASE + 0x018)  /* Flag Register */
+/* UART - see uart.h for full register definitions */
 
 /* SPI (PL022-style) */
 #define SPI0_BASE       0x4003C000

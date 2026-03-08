@@ -92,10 +92,14 @@ on M0+. The original roadmap incorrectly listed these.
 - All new peripherals support SET (+0x2000), CLR (+0x3000), XOR (+0x1000) aliases
 - SDK `hw_set_bits()` / `hw_clear_bits()` work correctly
 
-### 2.7 ROM Function Table [PENDING]
-SDK calls ROM utility functions (memcpy, popcount, etc.) via table at 0x00000018.
-- Minimal ROM: provide function table pointer and stub implementations
-- Key functions: `rom_func_lookup()`, `_memcpy4`, `_memset4`
+### 2.7 ROM Function Table [COMPLETE]
+
+~~SDK calls ROM utility functions (memcpy, popcount, etc.) via table at 0x00000018.~~
+
+- 4KB ROM at 0x00000000 with RP2040-compatible layout (magic, pointers, function table)
+- Thumb code: `rom_table_lookup`, `memcpy`, `memset`, `popcount32`, `clz32`, `ctz32`
+- Flash function no-op stubs (connect, exit_xip, erase, program, flush, enter_xip)
+- USB controller stub (reads return 0, writes accepted silently)
 
 ---
 
@@ -176,6 +180,6 @@ SDK calls ROM utility functions (memcpy, popcount, etc.) via table at 0x00000018
 | ~~MSR/MRS full impl~~ | ~~Maybe~~ | ~~Small~~ | ~~Medium~~ | DONE v0.6.0 |
 | ~~Watchdog~~ | ~~Maybe~~ | ~~Small~~ | ~~Medium~~ | DONE v0.7.0 |
 | ~~ADC~~ | ~~No~~ | ~~Small~~ | ~~Medium~~ | DONE v0.7.0 |
-| ROM function table | Some programs | Medium | Medium | Phase 2 (pending) |
+| ~~ROM function table~~ | ~~Some programs~~ | ~~Medium~~ | ~~Medium~~ | DONE v0.8.0 |
 | UART Rx | No | Medium | Medium | Phase 3 |
 | DMA stub | Some programs | Medium | Medium | Phase 3 |

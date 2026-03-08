@@ -27,6 +27,7 @@ set(SOURCES
     src/clocks.c
     src/adc.c
     src/rom.c
+    src/uart.c
 )
 
 # Executable
@@ -48,6 +49,7 @@ set(LIB_SOURCES
     src/clocks.c
     src/adc.c
     src/rom.c
+    src/uart.c
 )
 
 # Test executable
