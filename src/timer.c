@@ -9,6 +9,9 @@
 /* Timer state */
 timer_state_t timer_state;
 
+/* Latch for atomic 64-bit timer reads: reading TIMELR latches the high word */
+static uint32_t timer_latched_high = 0;
+
 /* Initialize timer subsystem */
 void timer_init(void) {
     timer_reset();
@@ -86,13 +89,15 @@ void timer_tick(uint32_t cycles) {
 /* Read from timer register space */
 uint32_t timer_read32(uint32_t addr) {
     switch (addr) {
-    case TIMER_TIMEHR:
-        /* Read high word of 64-bit counter */
-        return (uint32_t)((timer_state.time_us >> 32) & 0xFFFFFFFF);
-
     case TIMER_TIMELR:
-        /* Read low word of 64-bit counter */
+        /* Reading TIMELR latches the high word for atomic 64-bit reads.
+         * Firmware reads TIMELR first, then TIMEHR to get consistent value. */
+        timer_latched_high = (uint32_t)((timer_state.time_us >> 32) & 0xFFFFFFFF);
         return (uint32_t)(timer_state.time_us & 0xFFFFFFFF);
+
+    case TIMER_TIMEHR:
+        /* Returns latched value from last TIMELR read (atomic 64-bit pair) */
+        return timer_latched_high;
 
     case TIMER_TIMERAWH:
         /* Raw read high word (same as TIMEHR for us) */
@@ -159,30 +164,22 @@ void timer_write32(uint32_t addr, uint32_t val) {
 
     case TIMER_ALARM0:
         timer_state.alarm[0] = val;
-        timer_state.armed |= 0x1;  /* Arm alarm 0 */
-        timer_state.inte |= 0x1;   /* Enable interrupt 0 */
-        printf("[TIMER] Alarm 0 set to 0x%08X us (armed & enabled)\n", val);
+        timer_state.armed |= 0x1;  /* RP2040: writing ALARM register arms it */
         break;
 
     case TIMER_ALARM1:
         timer_state.alarm[1] = val;
-        timer_state.armed |= 0x2;  /* Arm alarm 1 */
-        timer_state.inte |= 0x2;   /* Enable interrupt 1 */
-        printf("[TIMER] Alarm 1 set to 0x%08X us (armed & enabled)\n", val);
+        timer_state.armed |= 0x2;
         break;
 
     case TIMER_ALARM2:
         timer_state.alarm[2] = val;
-        timer_state.armed |= 0x4;  /* Arm alarm 2 */
-        timer_state.inte |= 0x4;   /* Enable interrupt 2 */
-        printf("[TIMER] Alarm 2 set to 0x%08X us (armed & enabled)\n", val);
+        timer_state.armed |= 0x4;
         break;
 
     case TIMER_ALARM3:
         timer_state.alarm[3] = val;
-        timer_state.armed |= 0x8;  /* Arm alarm 3 */
-        timer_state.inte |= 0x8;   /* Enable interrupt 3 */
-        printf("[TIMER] Alarm 3 set to 0x%08X us (armed & enabled)\n", val);
+        timer_state.armed |= 0x8;
         break;
 
     case TIMER_ARMED:

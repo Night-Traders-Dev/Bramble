@@ -63,6 +63,10 @@
 /* PWM */
 #define PWM_BASE        0x40050000
 
+/* USB */
+#define USBCTRL_DPRAM_BASE  0x50100000  /* USB dual-port RAM (4KB) */
+#define USBCTRL_REGS_BASE   0x50110000  /* USB controller registers */
+
 /* ========================================================================
  * Single-Core CPU State (Base)
  * ======================================================================== */

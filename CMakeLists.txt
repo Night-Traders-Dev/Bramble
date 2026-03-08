@@ -26,6 +26,7 @@ set(SOURCES
     src/nvic.c
     src/clocks.c
     src/adc.c
+    src/rom.c
 )
 
 # Executable
@@ -46,6 +47,7 @@ set(LIB_SOURCES
     src/nvic.c
     src/clocks.c
     src/adc.c
+    src/rom.c
 )
 
 # Test executable

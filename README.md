@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.7.0 - Production Ready** ✅
+## Current Status: **v0.8.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, SPI/I2C/PWM peripheral stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a 67-test unit test suite.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, SPI/I2C/PWM peripheral stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **114-test verbose unit test suite** across 30+ categories.
 
 ### ✅ What Works
 
@@ -94,7 +94,7 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
 - **✨ Expanded UART0**: Full register set (DR, FR, IBRD, FBRD, LCR_H, CR, IMSC, RIS, MIS)
 - **Peripheral Stubs**: SPI0/SPI1 (PL022 idle status), I2C0/I2C1, PWM return sensible defaults so SDK firmware doesn't crash during init
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 67 tests covering all major features, integrated with CTest
+- **✨ Unit Test Suite**: 114 tests across 30+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -317,7 +317,7 @@ Bramble/
 │   ├── clocks.h        # Clock-domain peripheral definitions
 │   └── adc.h           # ADC register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (67 tests, CTest integrated)
+│   └── test_suite.c    # Unit test suite (114 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test

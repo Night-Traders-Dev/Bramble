@@ -22,7 +22,8 @@ void instr_sub_reg_reg(uint16_t instr);            // SUBS Rd, Rn, Rm [EXISTING]
 
 // Comparison
 void instr_cmp_imm8(uint16_t instr);               // CMP Rn, #imm8
-void instr_cmp_reg_reg(uint16_t instr);            // CMP Rn, Rm [EXISTING]
+void instr_cmp_reg_reg(uint16_t instr);            // CMP Rn, Rm (high regs, 0x45xx)
+void instr_cmp_alu(uint16_t instr);               // CMP Rn, Rm (ALU block, 0x42xx)
 
 // Load/Store - Word (32-bit)
 void instr_ldr_imm5(uint16_t instr);               // LDR Rd, [Rn, #imm5]

@@ -1,5 +1,45 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.8.0] - 2026-03-08
+
+### Fixed - Audit-Driven Bug Fixes
+
+**Bcond signed shift UB** (`instructions.c`):
+
+- Left-shifting negative `int8_t` is undefined behavior in C99
+- Fixed: `((int32_t)offset) * 2` replaces `(int32_t)(offset << 24) >> 23`
+
+**Timer auto-INTE** (`timer.c`):
+
+- Writing ALARM registers incorrectly auto-enabled interrupt enable bits
+- RP2040 only auto-arms alarms on write; INTE is set separately by firmware
+- Removed `timer_state.inte |= ...` from all 4 alarm write handlers
+
+**SYST_CALIB TENMS** (`nvic.c`):
+
+- Changed from 0xC0000000 (TENMS=0) to 0xC0002710 (TENMS=10000)
+- 10000 µs = 10 ms, matching emulator's 1 cycle = 1 µs timing model
+
+**Timer 64-bit atomic read** (`timer.c`):
+
+- Added latch mechanism: reading TIMELR latches TIMEHR for consistent 64-bit reads
+- Matches RP2040 hardware behavior
+
+### Testing
+
+- **47 new tests** (114 total, up from 67)
+- **Verbose framework**: per-category tracking with pass/fail counts per category
+- 17 new test categories: Timer, Spinlocks, FIFO, Bitwise, Shifts, Byte/Halfword, Branches, STMIA/LDMIA, MUL, Exception Entry/Return, CMN, ADR, ADD/SUB SP, BL 32-bit, SBCS Edge Cases, SysTick CALIB
+
+### Files Modified
+
+- `src/instructions.c` - Bcond UB fix
+- `src/timer.c` - Timer auto-INTE fix, 64-bit latch
+- `src/nvic.c` - SYST_CALIB TENMS fix
+- `tests/test_suite.c` - 47 new tests, verbose framework
+
+---
+
 ## [0.7.0] - 2026-03-08
 
 ### Added - Phase 2: SDK Boot Path

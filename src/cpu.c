@@ -16,6 +16,7 @@
 #include "instructions.h"
 #include "timer.h"
 #include "nvic.h"
+#include "rom.h"
 
 /* ========================================================================
  * Single-Core Global State
@@ -59,7 +60,7 @@ static void dispatch_alu_42(uint16_t instr) {
     switch ((instr >> 6) & 0x3) {
         case 0: instr_tst_reg_reg(instr); break;
         case 1: instr_rsbs(instr); break;
-        case 2: instr_cmp_reg_reg(instr); break;
+        case 2: instr_cmp_alu(instr); break;
         case 3: instr_cmn_reg(instr); break;
     }
 }
@@ -344,6 +345,11 @@ int cpu_is_halted(void) {
         return 1;
     }
 
+    /* Execute from ROM */
+    if (pc < ROM_SIZE) {
+        return 0;
+    }
+
     /* Execute from flash */
     if (pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) {
         return 0;
@@ -488,8 +494,9 @@ void cpu_step(void) {
         return;
     }
 
-    /* Allow execution from flash or RAM */
-    if (!((pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) ||
+    /* Allow execution from ROM, flash, or RAM */
+    if (!(pc < ROM_SIZE ||
+          (pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) ||
           (pc >= RAM_BASE && pc < RAM_TOP))) {
         printf("[CPU] ERROR: PC out of bounds (0x%08X)\n", pc);
         cpu.r[15] = 0xFFFFFFFF;

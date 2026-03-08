@@ -6,6 +6,7 @@
 #include "nvic.h"
 #include "clocks.h"
 #include "adc.h"
+#include "rom.h"
 
 /* ========================================================================
  * Active RAM pointer for zero-copy dual-core context switching
@@ -168,6 +169,12 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+    /* USB controller - accept writes silently (no emulation) */
+    if ((addr >= USBCTRL_DPRAM_BASE && addr < USBCTRL_DPRAM_BASE + 0x1000) ||
+        (addr >= USBCTRL_REGS_BASE && addr < USBCTRL_REGS_BASE + 0x1000)) {
+        return;
+    }
+
     /* Stub out other peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
     if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
@@ -246,6 +253,11 @@ void mem_write8(uint32_t addr, uint8_t val) {
 }
 
 uint32_t mem_read32(uint32_t addr) {
+    /* ROM (0x00000000 - 0x00000FFF) */
+    if (addr < ROM_SIZE) {
+        return rom_read32(addr);
+    }
+
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
         uint32_t val;
@@ -308,6 +320,14 @@ uint32_t mem_read32(uint32_t addr) {
         return 0;
     }
 
+    /* USB controller stub - return "disconnected" state.
+     * SIE_STATUS (0x50110050): all zeros = no VBUS, not connected.
+     * SDK's stdio_usb_init() times out after 500ms and falls back to UART. */
+    if ((addr >= USBCTRL_DPRAM_BASE && addr < USBCTRL_DPRAM_BASE + 0x1000) ||
+        (addr >= USBCTRL_REGS_BASE && addr < USBCTRL_REGS_BASE + 0x1000)) {
+        return 0;
+    }
+
     /* Stub peripheral reads: return 0 for now. */
     if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000)   return 0x00000000;
     if (addr >= 0x40000000   && addr < 0x50000000)          return 0x00000000;
@@ -317,6 +337,11 @@ uint32_t mem_read32(uint32_t addr) {
 }
 
 uint16_t mem_read16(uint32_t addr) {
+    /* ROM */
+    if (addr < ROM_SIZE) {
+        return rom_read16(addr);
+    }
+
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
         uint16_t val;
@@ -352,6 +377,11 @@ uint16_t mem_read16(uint32_t addr) {
 }
 
 uint8_t mem_read8(uint32_t addr) {
+    /* ROM */
+    if (addr < ROM_SIZE) {
+        return rom_read8(addr);
+    }
+
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return cpu.flash[addr - FLASH_BASE];
     }
@@ -445,6 +475,11 @@ void mem_write8_dual(int core_id, uint32_t addr, uint8_t val) {
 }
 
 uint32_t mem_read32_dual(int core_id, uint32_t addr) {
+    /* ROM */
+    if (addr < ROM_SIZE) {
+        return rom_read32(addr);
+    }
+
     /* Flash is shared across all cores (stored in cpu.flash) */
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;

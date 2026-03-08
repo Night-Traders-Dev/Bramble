@@ -168,11 +168,22 @@ void instr_cmp_imm8(uint16_t instr) {
     update_sub_flags(op1, imm, result);
 }
 
+/* CMP with high registers (0x4500-0x45FF): 4-bit register fields */
 void instr_cmp_reg_reg(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x0F;
     uint8_t reg_dst = ((instr >> 4) & 0x08) | (instr & 0x07);
     uint32_t op1 = cpu.r[reg_dst];
     uint32_t op2 = cpu.r[reg_src];
+    uint32_t result = op1 - op2;
+    update_sub_flags(op1, op2, result);
+}
+
+/* CMP in ALU block (0x4280-0x42BF): 3-bit register fields only */
+void instr_cmp_alu(uint16_t instr) {
+    uint8_t rn = instr & 0x07;
+    uint8_t rm = (instr >> 3) & 0x07;
+    uint32_t op1 = cpu.r[rn];
+    uint32_t op2 = cpu.r[rm];
     uint32_t result = op1 - op2;
     update_sub_flags(op1, op2, result);
 }
@@ -338,8 +349,10 @@ void instr_b_uncond(uint16_t instr) {
 
 void instr_bcond(uint16_t instr) {
     uint8_t cond = (instr >> 8) & 0x0F;
-    int8_t offset = instr & 0xFF;
-    int32_t signed_offset = (int32_t)(offset << 24) >> 23;
+    int8_t offset = (int8_t)(instr & 0xFF);
+    /* Sign-extend 8-bit offset to 32-bit, then scale by 2 (multiply avoids
+     * undefined behavior from left-shifting a negative signed integer) */
+    int32_t signed_offset = ((int32_t)offset) * 2;
 
     int take_branch = 0;
     switch (cond) {

@@ -1,5 +1,56 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.8.0] - 2026-03-08
+
+### Audit & Bug Fixes
+
+1. **Bcond signed shift undefined behavior** (`instructions.c`)
+   - `(int32_t)(offset << 24) >> 23` where offset is negative `int8_t` is UB in C99
+   - Fixed: `((int32_t)offset) * 2` — well-defined signed multiplication
+   - Impact: conditional branches with negative offsets could produce wrong targets
+
+2. **Timer auto-INTE removed** (`timer.c`)
+   - Writing ALARM registers incorrectly auto-enabled INTE bits (`timer_state.inte |= 0x1`)
+   - RP2040 datasheet: writing ALARM auto-arms, but INTE must be set separately by firmware
+   - Fixed: removed INTE auto-enable from all 4 alarm write handlers
+
+3. **SYST_CALIB TENMS field** (`nvic.c`)
+   - Was `0xC0000000` (TENMS=0), SDK couldn't determine SysTick calibration
+   - Fixed: `0xC0002710` (TENMS=10000) — matches emulator's 1 cycle = 1 µs model
+
+4. **Timer 64-bit atomic read** (`timer.c`)
+   - TIMELR and TIMEHR read independently, timer could tick between reads
+   - Added `timer_latched_high`: reading TIMELR latches TIMEHR for consistent 64-bit value
+   - Matches RP2040 hardware latch behavior
+
+### Test Suite Expansion (114 tests, up from 67)
+
+5. **Verbose test framework** (`tests/test_suite.c`)
+   - Per-category tracking with BEGIN_CATEGORY/END_CATEGORY macros
+   - Each test shows name and PASS/FAIL result on its own line
+   - Category summaries: `-- Category: X/Y passed`
+   - Final summary: `Results: 114/114 passed, 0 failed`
+
+6. **47 new tests across 17 new categories**:
+   - Timer (5): alarm arm, alarm fire/disarm, 64-bit latch, pause, intr clear
+   - Spinlocks (4): acquire free, acquire locked, release, out of range
+   - FIFO (4): push/pop, empty check, try pop empty, try push full
+   - Bitwise (6): AND, EOR, ORR, BIC, MVN, TST flags
+   - Shifts (6): LSR imm32, ASR imm32 (neg/pos), ROR reg, LSLS reg by 0/32
+   - Byte/Halfword (7): SXTB, SXTH, UXTB, UXTH, REV, REV16, REVSH
+   - Branches (3): bcond negative offset, B unconditional, bcond not taken
+   - STMIA/LDMIA (1): round-trip store and load
+   - MUL (2): multiply, multiply by zero
+   - Exception Entry/Return (1): full stacking/unstacking round-trip
+   - CMN (1): compare negative register
+   - ADR (1): PC-relative address generation
+   - ADD/SUB SP (2): SP immediate add/subtract
+   - BL 32-bit (1): branch-with-link encoding
+   - SBCS Edge Cases (2): carry flag with/without borrow
+   - SysTick CALIB (1): TENMS=10000 verification
+
+---
+
 ## [0.7.0] - 2026-03-08
 
 ### Phase 2: SDK Boot Path (Mostly Complete)
@@ -310,20 +361,22 @@ All items below were fixed in v0.5.0:
 
 ## Version History
 
-| Version | Date       | Highlights                                                                |
-|---------|------------|---------------------------------------------------------------------------|
-| 0.7.0   | 2026-03-08 | Phase 2: Resets, Clocks, XOSC/PLL, Watchdog, ADC, atomic aliases, 67 tests |
-| 0.6.0   | 2026-03-08 | Phase 1: SysTick, MSR/MRS, NVIC preemption, shared RAM fix, 52 tests     |
-| 0.5.0   | 2026-03-08 | Zero-copy dual-core, dispatch table, PRIMASK, SVC, ELF loader, test suite |
-| 0.4.0   | 2026-03-08 | 15 bug fixes, 3 performance improvements, audit-driven                    |
-| 0.3.0   | 2025-12-30 | Unified single/dual-core, FIFO, spinlocks |
-| 0.2.1   | 2025-12-06 | Debug flags, NVIC audit |
-| 0.2.0   | 2025-12-03 | GPIO peripheral support |
-| 0.1.0   | 2025-12-02 | Initial release: CPU, timer, UART, UF2 loader |
+| Version | Date       | Highlights                                                                    |
+|---------|------------|-------------------------------------------------------------------------------|
+| 0.8.0   | 2026-03-08 | Audit bug fixes (bcond UB, timer, SysTick), 114 tests with verbose framework  |
+| 0.7.0   | 2026-03-08 | Phase 2: Resets, Clocks, XOSC/PLL, Watchdog, ADC, atomic aliases, 67 tests    |
+| 0.6.0   | 2026-03-08 | Phase 1: SysTick, MSR/MRS, NVIC preemption, shared RAM fix, 52 tests          |
+| 0.5.0   | 2026-03-08 | Zero-copy dual-core, dispatch table, PRIMASK, SVC, ELF loader, test suite     |
+| 0.4.0   | 2026-03-08 | 15 bug fixes, 3 performance improvements, audit-driven                        |
+| 0.3.0   | 2025-12-30 | Unified single/dual-core, FIFO, spinlocks                                     |
+| 0.2.1   | 2025-12-06 | Debug flags, NVIC audit                                                       |
+| 0.2.0   | 2025-12-03 | GPIO peripheral support                                                       |
+| 0.1.0   | 2025-12-02 | Initial release: CPU, timer, UART, UF2 loader                                 |
 
 ## Git History Summary
 
 ```
+0.8.0  (2026-03-08)  Audit bug fixes, 114-test verbose suite
 0.7.0  (2026-03-08)  Phase 2: SDK boot path (Resets, Clocks, XOSC/PLL, Watchdog, ADC)
 0.6.0  (2026-03-08)  Phase 1: Core correctness (SysTick, MSR/MRS, NVIC preemption)
 0.5.0  (2026-03-08)  Performance, correctness, features, and test suite

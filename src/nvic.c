@@ -181,8 +181,8 @@ uint32_t nvic_read_register(uint32_t addr) {
             return systick_state.cvr & 0x00FFFFFF;
         case SYST_CALIB:
             /* NOREF=1 (bit 31: no external ref), SKEW=1 (bit 30),
-             * TENMS=0 (no calibration value) */
-            return 0xC0000000;
+             * TENMS=10000 (10ms at 1 cycle/µs emulator model) */
+            return 0xC0002710;
 
         /* NVIC registers */
         case NVIC_ISER:
