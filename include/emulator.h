@@ -33,6 +33,17 @@
 #define RAM_SIZE        (264 * 1024)         /* 264 KB on-chip SRAM */
 #define RAM_TOP         (RAM_BASE + RAM_SIZE)
 
+/* SRAM alias (mirror at +0x01000000) */
+#define SRAM_ALIAS_BASE 0x21000000
+
+/* XIP aliases and cache control */
+#define XIP_NOALLOC_BASE     0x11000000  /* XIP non-allocating (uncached read) */
+#define XIP_NOCACHE_BASE     0x12000000  /* XIP cache bypass */
+#define XIP_NOCACHE_NOALLOC  0x13000000  /* XIP bypass + non-allocating */
+#define XIP_CTRL_BASE        0x14000000  /* XIP cache control registers */
+#define XIP_SRAM_BASE        0x15000000  /* XIP cache as SRAM (16KB) */
+#define XIP_SRAM_SIZE        (16 * 1024)
+
 /* Emulator guard (not a hardware boundary) */
 #define MEM_END         0x30000000
 

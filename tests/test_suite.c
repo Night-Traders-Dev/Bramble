@@ -1439,6 +1439,97 @@ TEST(test_pio_atomic_set_clr) {
 }
 
 /* ========================================================================
+ * SRAM Alias Tests (v0.13.0)
+ * ======================================================================== */
+
+TEST(test_sram_alias_write_read) {
+    reset_cpu();
+    /* Write via normal SRAM address, read via alias */
+    mem_write32(RAM_BASE + 0x100, 0xDEADBEEF);
+    ASSERT_EQ(0xDEADBEEF, mem_read32(SRAM_ALIAS_BASE + 0x100), "SRAM alias read mirrors normal");
+    PASS();
+}
+
+TEST(test_sram_alias_write_through) {
+    reset_cpu();
+    /* Write via alias, read via normal */
+    mem_write32(SRAM_ALIAS_BASE + 0x200, 0xCAFEBABE);
+    ASSERT_EQ(0xCAFEBABE, mem_read32(RAM_BASE + 0x200), "SRAM alias write mirrors to normal");
+    PASS();
+}
+
+TEST(test_sram_alias_byte_halfword) {
+    reset_cpu();
+    /* Byte access via alias */
+    mem_write8(SRAM_ALIAS_BASE + 0x300, 0x42);
+    ASSERT_EQ(0x42, mem_read8(RAM_BASE + 0x300), "SRAM alias byte access");
+    /* Halfword access via alias */
+    mem_write16(SRAM_ALIAS_BASE + 0x304, 0x1234);
+    ASSERT_EQ(0x1234, mem_read16(RAM_BASE + 0x304), "SRAM alias halfword access");
+    PASS();
+}
+
+/* ========================================================================
+ * XIP Cache Control Tests (v0.13.0)
+ * ======================================================================== */
+
+TEST(test_xip_ctrl_defaults) {
+    reset_cpu();
+    /* Default: EN=1, ERR_BADWRITE=1 */
+    ASSERT_EQ(0x03, mem_read32(XIP_CTRL_BASE), "XIP CTRL default");
+    PASS();
+}
+
+TEST(test_xip_stat_ready) {
+    reset_cpu();
+    /* STAT: FIFO_EMPTY=1 (bit 2), FLUSH_READY=1 (bit 1) */
+    uint32_t stat = mem_read32(XIP_CTRL_BASE + 0x08);
+    ASSERT_TRUE(stat & (1u << 2), "XIP STAT FIFO_EMPTY");
+    ASSERT_TRUE(stat & (1u << 1), "XIP STAT FLUSH_READY");
+    PASS();
+}
+
+TEST(test_xip_flush_strobe) {
+    reset_cpu();
+    /* Flush is strobe: write 1, reads back 0 */
+    mem_write32(XIP_CTRL_BASE + 0x04, 1);
+    ASSERT_EQ(0, mem_read32(XIP_CTRL_BASE + 0x04), "XIP FLUSH reads 0 (strobe)");
+    PASS();
+}
+
+TEST(test_xip_counter_readback) {
+    reset_cpu();
+    mem_write32(XIP_CTRL_BASE + 0x0C, 100);  /* CTR_HIT */
+    mem_write32(XIP_CTRL_BASE + 0x10, 200);  /* CTR_ACC */
+    ASSERT_EQ(100, mem_read32(XIP_CTRL_BASE + 0x0C), "XIP CTR_HIT readback");
+    ASSERT_EQ(200, mem_read32(XIP_CTRL_BASE + 0x10), "XIP CTR_ACC readback");
+    PASS();
+}
+
+TEST(test_xip_sram_readwrite) {
+    reset_cpu();
+    /* XIP SRAM (cache as SRAM) at 0x15000000 */
+    mem_write32(XIP_SRAM_BASE, 0x12345678);
+    ASSERT_EQ(0x12345678, mem_read32(XIP_SRAM_BASE), "XIP SRAM word readback");
+    mem_write8(XIP_SRAM_BASE + 4, 0xAB);
+    ASSERT_EQ(0xAB, mem_read8(XIP_SRAM_BASE + 4), "XIP SRAM byte readback");
+    PASS();
+}
+
+TEST(test_xip_flash_aliases) {
+    reset_cpu();
+    /* Write test data to flash via cpu.flash directly */
+    uint32_t test_val = 0xBEEFCAFE;
+    memcpy(&cpu.flash[0], &test_val, 4);
+    /* All XIP aliases should return the same flash data */
+    ASSERT_EQ(test_val, mem_read32(FLASH_BASE), "XIP normal read");
+    ASSERT_EQ(test_val, mem_read32(XIP_NOALLOC_BASE), "XIP NOALLOC read");
+    ASSERT_EQ(test_val, mem_read32(XIP_NOCACHE_BASE), "XIP NOCACHE read");
+    ASSERT_EQ(test_val, mem_read32(XIP_NOCACHE_NOALLOC), "XIP NOCACHE_NOALLOC read");
+    PASS();
+}
+
+/* ========================================================================
  * Timer Tests (NEW - v0.8.0)
  * ======================================================================== */
 
@@ -2360,6 +2451,21 @@ int main(void) {
     RUN_TEST(test_pio_tx_rx_fifo_stubs);
     RUN_TEST(test_pio_atomic_set_clr);
     END_CATEGORY("PIO Peripheral");
+
+    BEGIN_CATEGORY("SRAM Aliasing");
+    RUN_TEST(test_sram_alias_write_read);
+    RUN_TEST(test_sram_alias_write_through);
+    RUN_TEST(test_sram_alias_byte_halfword);
+    END_CATEGORY("SRAM Aliasing");
+
+    BEGIN_CATEGORY("XIP Cache Control");
+    RUN_TEST(test_xip_ctrl_defaults);
+    RUN_TEST(test_xip_stat_ready);
+    RUN_TEST(test_xip_flush_strobe);
+    RUN_TEST(test_xip_counter_readback);
+    RUN_TEST(test_xip_sram_readwrite);
+    RUN_TEST(test_xip_flash_aliases);
+    END_CATEGORY("XIP Cache Control");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

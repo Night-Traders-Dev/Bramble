@@ -1,5 +1,39 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.13.0] - 2026-03-08
+
+### Added - SRAM Aliasing + XIP Cache Control
+
+**SRAM Aliasing** (0x21000000):
+
+- SRAM mirror at 0x21000000 maps to canonical SRAM at 0x20000000
+- All access widths (32/16/8-bit), both single-core and dual-core paths
+
+**XIP Cache Control** (0x14000000):
+
+- CTRL register with RP2040 defaults, FLUSH (strobe), STAT (always ready)
+- CTR_HIT/CTR_ACC performance counters, STREAM registers
+- XIP SRAM at 0x15000000 (16KB cache as general SRAM)
+
+**XIP Flash Aliases**:
+
+- 0x11000000 (NOALLOC), 0x12000000 (NOCACHE), 0x13000000 (NOCACHE_NOALLOC)
+- All read from the same backing flash storage; writes ignored
+
+### Testing
+
+- **9 new tests** (183 total, up from 174)
+- SRAM Aliasing: write-read mirror, write-through, byte/halfword access
+- XIP Cache Control: defaults, STAT, FLUSH strobe, counters, XIP SRAM, flash aliases
+
+### Files Modified
+
+- `include/emulator.h` - SRAM_ALIAS_BASE, XIP address defines
+- `src/membus.c` - SRAM alias translation, XIP cache control, XIP SRAM, flash aliases
+- `tests/test_suite.c` - 9 new tests
+
+---
+
 ## [0.12.0] - 2026-03-08
 
 ### Added - PIO Peripheral + UART Stdin Polling

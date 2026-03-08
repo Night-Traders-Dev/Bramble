@@ -2,13 +2,13 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.12.0 - Production Ready** ✅
+## Current Status: **v0.13.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO register-level emulation** (2 blocks, 4 SMs each), **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **174-test verbose unit test suite** across 40+ categories.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO register-level emulation** (2 blocks, 4 SMs each), **SRAM aliasing** (0x21000000 mirror), **XIP cache control** with flash aliases and 16KB XIP SRAM, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **183-test verbose unit test suite** across 42+ categories.
 
 ### ✅ What Works
 
-- **Complete RP2040 Memory Map**: Flash (0x10000000), SRAM (0x20000000), SIO (0xD0000000), and APB peripherals
+- **Complete RP2040 Memory Map**: Flash (0x10000000) with XIP aliases (0x11-0x13), SRAM (0x20000000) with alias mirror (0x21000000), XIP cache control (0x14000000), XIP SRAM (0x15000000, 16KB), SIO (0xD0000000), and APB peripherals
 - **UF2 & ELF Firmware Loading**: Parses UF2 blocks or ELF32 ARM binaries into flash/RAM with proper address validation
 - **O(1) Instruction Dispatch**: 256-entry lookup table indexed by `instr >> 8` with secondary dispatchers for ALU/misc blocks
 - **Full ARM Cortex-M0+ Thumb Instruction Set**: 65+ instructions across 4 phases:
@@ -114,7 +114,7 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - DBG_CFGINFO returns correct RP2040 values
   - Atomic register aliases (SET/CLR/XOR)
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 174 tests across 40+ categories with verbose per-category reporting, integrated with CTest
+- **✨ Unit Test Suite**: 183 tests across 42+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -353,7 +353,7 @@ Bramble/
 │   ├── dma.h           # DMA controller register definitions
 │   └── pio.h           # PIO register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (174 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (183 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -520,8 +520,10 @@ Then run with:
 ### Memory Map
 
 The emulator accurately models the RP2040 address space:
-- **Flash (XIP)**: 0x10000000 - 0x101FFFFF (2MB executable)
-- **SRAM**: 0x20000000 - 0x20041FFF (264KB)
+- **Flash (XIP)**: 0x10000000 - 0x101FFFFF (2MB executable, + aliases at 0x11/0x12/0x13)
+- **XIP Cache Control**: 0x14000000 (CTRL, FLUSH, STAT, counters)
+- **XIP SRAM**: 0x15000000 - 0x15003FFF (16KB cache as SRAM)
+- **SRAM**: 0x20000000 - 0x20041FFF (264KB, + mirror alias at 0x21000000)
 - **APB Peripherals**: 0x40000000 - 0x4FFFFFFF (UART, GPIO, timers, etc.)
 - **SIO**: 0xD0000000 - 0xD0000FFF (Single-cycle I/O, GPIO fast access)
 
@@ -539,6 +541,8 @@ Peripherals are integrated into the memory bus (`membus.c`):
 - PWM: `0x40050000` (8 slices)
 - DMA: `0x50000000` (12 channels with chaining)
 - PIO: `0x50200000` / `0x50300000` (2 blocks, 4 SMs each, register-level)
+- XIP Cache: `0x14000000` (CTRL, FLUSH, STAT, counters, stream)
+- XIP SRAM: `0x15000000` (16KB cache as SRAM)
 - ROM: `0x00000000` (4KB with function table and Thumb code)
 
 ### Timer Timing Model
@@ -631,7 +635,6 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 1. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
 2. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
-3. **SRAM Aliasing**: Map 0x21-0x25 ranges with XOR/SET/CLR semantics
 
 ### Low Priority
 

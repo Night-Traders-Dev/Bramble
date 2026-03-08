@@ -15,6 +15,71 @@
 #include "pio.h"
 
 /* ========================================================================
+ * XIP Cache Control State (0x14000000)
+ *
+ * Stub implementation: cache is always "ready" and "empty".
+ * Real RP2040 has 16KB XIP cache that caches flash reads.
+ * ======================================================================== */
+
+#define XIP_CTRL_OFFSET    0x00  /* Cache enable (bit 3=POWER_DOWN, bit 1=ERR_BADWRITE, bit 0=EN) */
+#define XIP_FLUSH_OFFSET   0x04  /* Write 1 to flush (strobe, self-clearing) */
+#define XIP_STAT_OFFSET    0x08  /* bit 2=FIFO_EMPTY, bit 1=FLUSH_READY */
+#define XIP_CTR_HIT_OFFSET 0x0C  /* Cache hit counter */
+#define XIP_CTR_ACC_OFFSET 0x10  /* Cache access counter */
+#define XIP_STREAM_ADDR    0x14  /* Stream address */
+#define XIP_STREAM_CTR     0x18  /* Stream counter */
+#define XIP_STREAM_FIFO    0x1C  /* Stream FIFO (read-only) */
+
+static uint32_t xip_ctrl_reg = 0x00000003;  /* EN=1, ERR_BADWRITE=1 (RP2040 default) */
+static uint32_t xip_ctr_hit = 0;
+static uint32_t xip_ctr_acc = 0;
+static uint32_t xip_stream_addr = 0;
+static uint32_t xip_stream_ctr = 0;
+
+/* XIP SRAM: 16KB cache memory usable as SRAM */
+static uint8_t xip_sram[XIP_SRAM_SIZE];
+
+static uint32_t xip_ctrl_read(uint32_t offset) {
+    switch (offset) {
+    case XIP_CTRL_OFFSET:    return xip_ctrl_reg;
+    case XIP_FLUSH_OFFSET:   return 0;  /* Always reads as 0 (strobe register) */
+    case XIP_STAT_OFFSET:    return (1u << 2) | (1u << 1);  /* FIFO_EMPTY=1, FLUSH_READY=1 */
+    case XIP_CTR_HIT_OFFSET: return xip_ctr_hit;
+    case XIP_CTR_ACC_OFFSET: return xip_ctr_acc;
+    case XIP_STREAM_ADDR:    return xip_stream_addr;
+    case XIP_STREAM_CTR:     return xip_stream_ctr;
+    case XIP_STREAM_FIFO:    return 0;  /* No stream data */
+    default: return 0;
+    }
+}
+
+static void xip_ctrl_write(uint32_t offset, uint32_t val) {
+    switch (offset) {
+    case XIP_CTRL_OFFSET:    xip_ctrl_reg = val & 0x0B; break;  /* EN, ERR_BADWRITE, POWER_DOWN */
+    case XIP_FLUSH_OFFSET:   break;  /* Strobe: accept and ignore (no actual cache) */
+    case XIP_CTR_HIT_OFFSET: xip_ctr_hit = val; break;
+    case XIP_CTR_ACC_OFFSET: xip_ctr_acc = val; break;
+    case XIP_STREAM_ADDR:    xip_stream_addr = val; break;
+    case XIP_STREAM_CTR:     xip_stream_ctr = val; break;
+    default: break;
+    }
+}
+
+/* ========================================================================
+ * SRAM Alias Translation
+ *
+ * RP2040 mirrors SRAM at 0x21000000 (same as 0x20000000).
+ * Translate alias addresses to canonical SRAM addresses.
+ * ======================================================================== */
+
+static inline uint32_t sram_alias_translate(uint32_t addr) {
+    if (addr >= SRAM_ALIAS_BASE && addr < SRAM_ALIAS_BASE + RAM_SIZE) {
+        return addr - SRAM_ALIAS_BASE + RAM_BASE;
+    }
+    return addr;
+}
+
+/* ========================================================================
  * Active RAM pointer for zero-copy dual-core context switching
  *
  * In single-core mode: points to cpu.ram (full 264KB)
@@ -61,8 +126,27 @@ static int is_adc_addr(uint32_t addr) {
  * ======================================================================== */
 
 void mem_write32(uint32_t addr, uint32_t val) {
-    /* Writes to XIP flash are ignored: in real hardware this is external QSPI flash. */
+    /* SRAM alias translation (0x21xxxxxx -> 0x20xxxxxx) */
+    addr = sram_alias_translate(addr);
+
+    /* Writes to XIP flash (and uncached aliases) are ignored */
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+        return;
+    }
+    if (addr >= XIP_NOALLOC_BASE && addr < XIP_NOALLOC_BASE + FLASH_SIZE) return;
+    if (addr >= XIP_NOCACHE_BASE && addr < XIP_NOCACHE_BASE + FLASH_SIZE) return;
+    if (addr >= XIP_NOCACHE_NOALLOC && addr < XIP_NOCACHE_NOALLOC + FLASH_SIZE) return;
+
+    /* XIP cache control registers */
+    if (addr >= XIP_CTRL_BASE && addr < XIP_CTRL_BASE + 0x20) {
+        xip_ctrl_write(addr - XIP_CTRL_BASE, val);
+        return;
+    }
+
+    /* XIP SRAM (cache as SRAM) */
+    if (addr >= XIP_SRAM_BASE && addr < XIP_SRAM_BASE + XIP_SRAM_SIZE) {
+        uint32_t offset = addr - XIP_SRAM_BASE;
+        memcpy(&xip_sram[offset], &val, 4);
         return;
     }
 
@@ -229,8 +313,16 @@ void mem_write32(uint32_t addr, uint32_t val) {
 }
 
 void mem_write16(uint32_t addr, uint16_t val) {
-    /* Writes to XIP flash are ignored: in real hardware this is external QSPI flash. */
+    addr = sram_alias_translate(addr);
+
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+        return;
+    }
+
+    /* XIP SRAM */
+    if (addr >= XIP_SRAM_BASE && addr < XIP_SRAM_BASE + XIP_SRAM_SIZE) {
+        uint32_t offset = addr - XIP_SRAM_BASE;
+        memcpy(&xip_sram[offset], &val, 2);
         return;
     }
 
@@ -265,8 +357,16 @@ void mem_write16(uint32_t addr, uint16_t val) {
 }
 
 void mem_write8(uint32_t addr, uint8_t val) {
+    addr = sram_alias_translate(addr);
+
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return;  /* Flash writes ignored */
+    }
+
+    /* XIP SRAM */
+    if (addr >= XIP_SRAM_BASE && addr < XIP_SRAM_BASE + XIP_SRAM_SIZE) {
+        xip_sram[addr - XIP_SRAM_BASE] = val;
+        return;
     }
 
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
@@ -299,15 +399,50 @@ void mem_write8(uint32_t addr, uint8_t val) {
 }
 
 uint32_t mem_read32(uint32_t addr) {
+    /* SRAM alias translation */
+    addr = sram_alias_translate(addr);
+
     /* ROM (0x00000000 - 0x00000FFF) */
     if (addr < ROM_SIZE) {
         return rom_read32(addr);
     }
 
+    /* XIP flash (and uncached aliases read from same backing store) */
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
         uint32_t val;
         memcpy(&val, &cpu.flash[offset], 4);
+        return val;
+    }
+    if (addr >= XIP_NOALLOC_BASE && addr < XIP_NOALLOC_BASE + FLASH_SIZE) {
+        uint32_t offset = addr - XIP_NOALLOC_BASE;
+        uint32_t val;
+        memcpy(&val, &cpu.flash[offset], 4);
+        return val;
+    }
+    if (addr >= XIP_NOCACHE_BASE && addr < XIP_NOCACHE_BASE + FLASH_SIZE) {
+        uint32_t offset = addr - XIP_NOCACHE_BASE;
+        uint32_t val;
+        memcpy(&val, &cpu.flash[offset], 4);
+        return val;
+    }
+    if (addr >= XIP_NOCACHE_NOALLOC && addr < XIP_NOCACHE_NOALLOC + FLASH_SIZE) {
+        uint32_t offset = addr - XIP_NOCACHE_NOALLOC;
+        uint32_t val;
+        memcpy(&val, &cpu.flash[offset], 4);
+        return val;
+    }
+
+    /* XIP cache control registers */
+    if (addr >= XIP_CTRL_BASE && addr < XIP_CTRL_BASE + 0x20) {
+        return xip_ctrl_read(addr - XIP_CTRL_BASE);
+    }
+
+    /* XIP SRAM */
+    if (addr >= XIP_SRAM_BASE && addr < XIP_SRAM_BASE + XIP_SRAM_SIZE) {
+        uint32_t offset = addr - XIP_SRAM_BASE;
+        uint32_t val;
+        memcpy(&val, &xip_sram[offset], 4);
         return val;
     }
 
@@ -404,6 +539,8 @@ uint32_t mem_read32(uint32_t addr) {
 }
 
 uint16_t mem_read16(uint32_t addr) {
+    addr = sram_alias_translate(addr);
+
     /* ROM */
     if (addr < ROM_SIZE) {
         return rom_read16(addr);
@@ -413,6 +550,14 @@ uint16_t mem_read16(uint32_t addr) {
         uint32_t offset = addr - FLASH_BASE;
         uint16_t val;
         memcpy(&val, &cpu.flash[offset], 2);
+        return val;
+    }
+
+    /* XIP SRAM */
+    if (addr >= XIP_SRAM_BASE && addr < XIP_SRAM_BASE + XIP_SRAM_SIZE) {
+        uint32_t offset = addr - XIP_SRAM_BASE;
+        uint16_t val;
+        memcpy(&val, &xip_sram[offset], 2);
         return val;
     }
 
@@ -444,6 +589,8 @@ uint16_t mem_read16(uint32_t addr) {
 }
 
 uint8_t mem_read8(uint32_t addr) {
+    addr = sram_alias_translate(addr);
+
     /* ROM */
     if (addr < ROM_SIZE) {
         return rom_read8(addr);
@@ -452,6 +599,12 @@ uint8_t mem_read8(uint32_t addr) {
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return cpu.flash[addr - FLASH_BASE];
     }
+
+    /* XIP SRAM */
+    if (addr >= XIP_SRAM_BASE && addr < XIP_SRAM_BASE + XIP_SRAM_SIZE) {
+        return xip_sram[addr - XIP_SRAM_BASE];
+    }
+
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
         return get_ram()[addr - active_ram_base];
     }
@@ -481,6 +634,8 @@ uint8_t mem_read8(uint32_t addr) {
  * ======================================================================== */
 
 void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
+    addr = sram_alias_translate(addr);
+
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         return;  /* Flash writes ignored */
     }
@@ -542,6 +697,8 @@ void mem_write8_dual(int core_id, uint32_t addr, uint8_t val) {
 }
 
 uint32_t mem_read32_dual(int core_id, uint32_t addr) {
+    addr = sram_alias_translate(addr);
+
     /* ROM */
     if (addr < ROM_SIZE) {
         return rom_read32(addr);

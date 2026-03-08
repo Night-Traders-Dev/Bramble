@@ -1,11 +1,11 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.12.0
+## Current State: v0.13.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~70% | Flash + SRAM + ROM (4KB); no SRAM aliases |
+| Memory Map | ~85% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + SRAM + SRAM alias + ROM (4KB) |
 | Peripherals | ~85% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (register-level), Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
 | Boot | ~80% | Vector table + SDK boot peripherals + ROM function table |
@@ -163,11 +163,17 @@ on M0+. The original roadmap incorrectly listed these.
 
 ## Phase 4: Advanced Features (Full compatibility)
 
-### 4.1 SRAM Aliasing
-- Map 0x21000000-0x25FFFFFF to 0x20000000 with XOR/SET/CLR semantics
+### 4.1 SRAM Aliasing [COMPLETE]
+~~Map 0x21000000 to 0x20000000~~
+- SRAM mirror at 0x21000000 translates to canonical 0x20000000
+- All access widths (32/16/8-bit), single-core and dual-core paths
+- Note: RP2040 SRAM alias is a simple mirror, not XOR/SET/CLR (those are peripheral-only)
 
-### 4.2 XIP Cache Control (0x14000000)
-- Cache flush, invalidate registers
+### 4.2 XIP Cache Control (0x14000000) [COMPLETE]
+~~Cache flush, invalidate registers~~
+- CTRL, FLUSH (strobe), STAT (FIFO_EMPTY + FLUSH_READY), CTR_HIT/ACC, STREAM registers
+- XIP SRAM at 0x15000000 (16KB cache memory usable as general SRAM)
+- XIP flash aliases: 0x11 (NOALLOC), 0x12 (NOCACHE), 0x13 (NOCACHE_NOALLOC)
 
 ### 4.3 ROM Bootloader
 - Full boot2 simulation or skip-to-application shortcut

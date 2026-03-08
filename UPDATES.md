@@ -1,5 +1,48 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.13.0] - 2026-03-08
+
+### Phase 4.1 + 4.2: SRAM Aliasing + XIP Cache Control
+
+1. **SRAM Aliasing** (`membus.c`, `emulator.h`)
+   - SRAM mirror at 0x21000000 translates to canonical 0x20000000 via `sram_alias_translate()`
+   - Applied in all 6 single-core access functions (read/write 32/16/8-bit)
+   - Applied in dual-core `mem_read32_dual()` and `mem_write32_dual()`
+   - SDK code using `SRAM_BASE_ALIAS` or address aliases now resolves correctly
+
+2. **XIP Cache Control** (`membus.c`, `emulator.h`)
+   - Register stub at 0x14000000 with 8 registers
+   - CTRL: EN=1, ERR_BADWRITE=1 default (RP2040 compatible)
+   - FLUSH: strobe register (write accepted, always reads 0)
+   - STAT: FIFO_EMPTY=1, FLUSH_READY=1 (cache always reports ready)
+   - CTR_HIT/CTR_ACC: writable performance counters (SDK can zero them)
+   - STREAM_ADDR/CTR/FIFO: stream registers (FIFO returns 0)
+
+3. **XIP Flash Aliases** (`membus.c`, `emulator.h`)
+   - 0x11000000 (XIP_NOALLOC): uncached flash reads
+   - 0x12000000 (XIP_NOCACHE): cache-bypass flash reads
+   - 0x13000000 (XIP_NOCACHE_NOALLOC): bypass + non-allocating
+   - All read from `cpu.flash[]` backing store; writes silently ignored
+
+4. **XIP SRAM** (`membus.c`, `emulator.h`)
+   - 16KB at 0x15000000: cache memory usable as general SRAM
+   - Full read/write support (32/16/8-bit)
+
+### Test Suite (183 tests, up from 174)
+
+1. **3 new SRAM Aliasing tests**:
+   - Write via normal, read via alias (mirror verified)
+   - Write via alias, read via normal (write-through verified)
+   - Byte and halfword access via alias
+
+2. **6 new XIP Cache Control tests**:
+   - CTRL register defaults, STAT ready bits
+   - FLUSH strobe behavior, counter readback
+   - XIP SRAM word and byte read/write
+   - Flash alias reads (4 XIP aliases return same data)
+
+---
+
 ## [0.12.0] - 2026-03-08
 
 ### Phase 3.7: PIO Peripheral + UART Stdin Polling
