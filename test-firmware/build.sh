@@ -81,6 +81,23 @@ echo "✓ Build complete: interrupt_test.uf2"
 
 ;;
 
+name_prompt|prompt|name)
+
+echo "[1/3] Compiling name_prompt.S..."
+arm-none-eabi-gcc -mcpu=cortex-m0plus -mthumb -c ../name_prompt.S -o name_prompt.o
+
+echo "[2/3] Linking..."
+arm-none-eabi-ld -T ../linker.ld name_prompt.o -o name_prompt.elf
+
+echo "[3/3] Converting to UF2..."
+arm-none-eabi-objcopy -O binary name_prompt.elf name_prompt.bin
+
+python3 ../uf2conv.py name_prompt.bin -o ../../name_prompt.uf2 -b 0x10000100 -f 0xE48BFF56
+
+echo "✓ Build complete: name_prompt.uf2"
+
+;;
+
 all)
 
 echo "Building all test firmware..."
@@ -117,9 +134,17 @@ arm-none-eabi-objcopy -O binary interrupt_test.elf interrupt_test.bin
 python3 ../uf2conv.py interrupt_test.bin -o ../../interrupt_test.uf2 -b 0x10000100 -f 0xE48BFF56
 echo " ✓ interrupt_test.uf2"
 
+# Interactive UART prompt test
+echo " - Building name_prompt.uf2..."
+arm-none-eabi-gcc -mcpu=cortex-m0plus -mthumb -c ../name_prompt.S -o name_prompt.o
+arm-none-eabi-ld -T ../linker.ld name_prompt.o -o name_prompt.elf
+arm-none-eabi-objcopy -O binary name_prompt.elf name_prompt.bin
+python3 ../uf2conv.py name_prompt.bin -o ../../name_prompt.uf2 -b 0x10000100 -f 0xE48BFF56
+echo " ✓ name_prompt.uf2"
+
 echo ""
 
-echo "✓ All firmware built successfully (4/4)"
+echo "✓ All firmware built successfully (5/5)"
 
 ;;
 
@@ -132,6 +157,7 @@ echo " hello_world (default) - Build hello world test"
 echo " gpio - Build GPIO test"
 echo " timer - Build timer test"
 echo " interrupt - Build timer interrupt test (full flow)"
+echo " name_prompt - Build interactive UART stdin test"
 echo " all - Build all tests"
 echo ""
 

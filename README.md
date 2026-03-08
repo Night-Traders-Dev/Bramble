@@ -243,6 +243,12 @@ cd test-firmware
 ./build.sh alarm
 ```
 
+**Interactive UART Prompt Test** (reads host stdin via `-stdin` and prints a greeting):
+```bash
+cd test-firmware
+./build.sh name_prompt
+```
+
 **Build All Tests**:
 ```bash
 cd test-firmware
@@ -258,6 +264,8 @@ cd test-firmware
 ./bramble gpio_test.uf2
 ./bramble timer_test.uf2
 ./bramble alarm_test.uf2
+./bramble name_prompt.uf2 -stdin
+printf 'Ada\n' | ./bramble name_prompt.uf2 -stdin
 ```
 
 **ELF Firmware** (auto-detected by extension):
