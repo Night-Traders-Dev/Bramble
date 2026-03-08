@@ -1,5 +1,40 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.10.0] - 2026-03-08
+
+### Added - DMA Controller
+
+**DMA Controller** (0x50000000):
+
+- 12 independent channels with READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG
+- 4 alias register layouts per channel (AL1-AL3 reorder fields, last reg triggers)
+- Immediate synchronous transfer engine: byte, halfword, and word sizes
+- INCR_READ / INCR_WRITE address increment control
+- CHAIN_TO: automatic channel chaining on completion
+- IRQ_QUIET: suppress interrupt on completion
+- Global registers: INTR (W1C), INTE0/1, INTF0/1, INTS0/1, MULTI_CHAN_TRIGGER
+- Pacing timers (TIMER0-3), SNIFF_CTRL/DATA, CHAN_ABORT, N_CHANNELS
+- Atomic register aliases (SET/CLR/XOR)
+
+### Testing
+
+- **12 new tests** (157 total, up from 145)
+- DMA Controller category: N_CHANNELS, defaults, readback, word transfer, byte transfer, no-incr-write, interrupt on completion, IRQ_QUIET, interrupt status, chain transfer, multi-chan trigger, atomic SET/CLR
+
+### Files Added
+
+- `src/dma.c`, `include/dma.h` - DMA controller module
+
+### Files Modified
+
+- `src/membus.c` - DMA address routing with atomic aliases
+- `src/main.c` - `dma_init()` call
+- `CMakeLists.txt` - Added `src/dma.c`
+- `tests/test_suite.c` - 12 new DMA tests
+- `docs/ROADMAP.md` - Phase 3.5 marked complete
+
+---
+
 ## [0.9.0] - 2026-03-08
 
 ### Added - ROM Function Table & Full Peripherals

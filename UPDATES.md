@@ -1,5 +1,35 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.10.0] - 2026-03-08
+
+### Phase 3.5: DMA Controller
+
+1. **DMA Controller** (`dma.c`, `dma.h`)
+   - 12 channels at 0x50000000 with 0x40-byte stride per channel
+   - Per-channel: READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG
+   - 4 alias layouts per channel (AL1-AL3 reorder fields; last register in each alias triggers transfer)
+   - Immediate synchronous transfer engine using mem_read/write functions
+   - DATA_SIZE: byte (1B), halfword (2B), word (4B)
+   - INCR_READ / INCR_WRITE for address auto-increment
+   - CHAIN_TO: triggers another channel on completion (default = self = no chain)
+   - IRQ_QUIET: suppress interrupt flag on completion
+   - Global INTR (W1C), INTE0/1, INTF0/1, INTS0/1 interrupt registers
+   - MULTI_CHAN_TRIGGER: trigger multiple channels simultaneously
+   - Pacing timers (TIMER0-3), SNIFF_CTRL/DATA, CHAN_ABORT, N_CHANNELS
+   - Atomic register aliases (SET/CLR/XOR)
+
+### Test Suite (157 tests, up from 145)
+
+1. **12 new DMA Controller tests**:
+   - N_CHANNELS readback, channel defaults (CHAIN_TO=self), register readback
+   - Word transfer (4 words, verify dst), byte transfer (3 bytes)
+   - No-incr-write (last value wins), interrupt on completion (INTR bit set + W1C)
+   - IRQ_QUIET (no INTR bit), interrupt status (INTS0 computation)
+   - Chain transfer (ch0 chains to ch1), MULTI_CHAN_TRIGGER
+   - Atomic SET/CLR aliases on INTE0
+
+---
+
 ## [0.9.0] - 2026-03-08
 
 ### Phase 2.7: ROM Function Table + Phase 3: Full Peripherals
@@ -422,6 +452,7 @@ All items below were fixed in v0.5.0:
 
 | Version | Date       | Highlights                                                                    |
 |---------|------------|-------------------------------------------------------------------------------|
+| 0.10.0  | 2026-03-08 | DMA controller (12 channels, chaining, immediate transfers), 157 tests         |
 | 0.9.0   | 2026-03-08 | ROM function table, full UART/SPI/I2C/PWM peripherals, USB stub, 145 tests    |
 | 0.8.0   | 2026-03-08 | Audit bug fixes (bcond UB, timer, SysTick), 114 tests with verbose framework  |
 | 0.7.0   | 2026-03-08 | Phase 2: Resets, Clocks, XOSC/PLL, Watchdog, ADC, atomic aliases, 67 tests    |
@@ -436,6 +467,7 @@ All items below were fixed in v0.5.0:
 ## Git History Summary
 
 ```
+0.10.0 (2026-03-08)  DMA controller (12 channels, chaining, immediate transfers), 157 tests
 0.9.0  (2026-03-08)  ROM function table, full peripherals (UART/SPI/I2C/PWM), USB stub, 145 tests
 0.8.0  (2026-03-08)  Audit bug fixes, 114-test verbose suite
 0.7.0  (2026-03-08)  Phase 2: SDK boot path (Resets, Clocks, XOSC/PLL, Watchdog, ADC)

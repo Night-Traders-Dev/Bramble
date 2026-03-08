@@ -1,12 +1,12 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.9.0
+## Current State: v0.10.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~70% | Flash + SRAM + ROM (4KB); no SRAM aliases |
-| Peripherals | ~65% | GPIO, Timer, NVIC+SysTick, UART, SPI, I2C, PWM, Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub; no DMA/PIO |
+| Peripherals | ~75% | GPIO, Timer, NVIC+SysTick, UART, SPI, I2C, PWM, DMA, Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub; no PIO |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
 | Boot | ~80% | Vector table + SDK boot peripherals + ROM function table |
 
@@ -132,10 +132,14 @@ on M0+. The original roadmap incorrectly listed these.
 - Global EN, INTR (W1C), INTE, INTF, INTS registers
 - Atomic register aliases
 
-### 3.5 DMA (0x50000000) [MEDIUM]
-- 12 channels with source, dest, count, control
-- Auto-copy between memory regions on trigger
-- Interrupt on completion
+### 3.5 DMA (0x50000000) [COMPLETE]
+~~12 channels with source, dest, count, control~~
+- 12 independent channels with READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG
+- 4 alias register layouts per channel (AL1-AL3)
+- Immediate synchronous transfers: byte, halfword, word
+- INCR_READ / INCR_WRITE, CHAIN_TO, IRQ_QUIET
+- Global INTR (W1C), INTE0/1, INTF0/1, INTS0/1, MULTI_CHAN_TRIGGER
+- Atomic register aliases (SET/CLR/XOR)
 
 ### 3.6 ADC (0x4004C000) [LOW]
 - Return configurable analog values
@@ -189,4 +193,4 @@ on M0+. The original roadmap incorrectly listed these.
 | ~~ADC~~ | ~~No~~ | ~~Small~~ | ~~Medium~~ | DONE v0.7.0 |
 | ~~ROM function table~~ | ~~Some programs~~ | ~~Medium~~ | ~~Medium~~ | DONE v0.8.0 |
 | UART Rx | No | Medium | Medium | Phase 3 |
-| DMA stub | Some programs | Medium | Medium | Phase 3 |
+| ~~DMA controller~~ | ~~Some programs~~ | ~~Medium~~ | ~~Medium~~ | DONE v0.10.0 |

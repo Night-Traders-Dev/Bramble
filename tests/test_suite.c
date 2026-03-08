@@ -26,6 +26,7 @@
 #include "spi.h"
 #include "i2c.h"
 #include "pwm.h"
+#include "dma.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -112,6 +113,7 @@ static void reset_cpu(void) {
     spi_init();
     i2c_init();
     pwm_init();
+    dma_init();
 }
 
 /* ========================================================================
@@ -963,6 +965,245 @@ TEST(test_pwm_global_enable) {
     reset_cpu();
     mem_write32(PWM_BASE + PWM_EN, 0x05);  /* Enable slices 0 and 2 */
     ASSERT_EQ(0x05, mem_read32(PWM_BASE + PWM_EN), "PWM EN readback");
+    PASS();
+}
+
+/* ========================================================================
+ * DMA Controller Tests (NEW - v0.10.0)
+ * ======================================================================== */
+
+TEST(test_dma_n_channels) {
+    reset_cpu();
+    ASSERT_EQ(DMA_NUM_CHANNELS, mem_read32(DMA_BASE + DMA_N_CHANNELS), "DMA N_CHANNELS");
+    PASS();
+}
+
+TEST(test_dma_channel_defaults) {
+    reset_cpu();
+    /* All channel registers should be zero except CHAIN_TO=self */
+    ASSERT_EQ(0, dma_state.ch[0].read_addr, "DMA ch0 read_addr default");
+    ASSERT_EQ(0, dma_state.ch[0].write_addr, "DMA ch0 write_addr default");
+    ASSERT_EQ(0, dma_state.ch[0].trans_count, "DMA ch0 trans_count default");
+    /* CHAIN_TO field (bits 14:11) should be channel number (0 for ch0) */
+    uint32_t chain_to = (dma_state.ch[0].ctrl & DMA_CTRL_CHAIN_TO_MASK) >> DMA_CTRL_CHAIN_TO_SHIFT;
+    ASSERT_EQ(0, chain_to, "DMA ch0 CHAIN_TO defaults to self");
+    chain_to = (dma_state.ch[5].ctrl & DMA_CTRL_CHAIN_TO_MASK) >> DMA_CTRL_CHAIN_TO_SHIFT;
+    ASSERT_EQ(5, chain_to, "DMA ch5 CHAIN_TO defaults to self");
+    PASS();
+}
+
+TEST(test_dma_register_readback) {
+    reset_cpu();
+    /* Write channel 0 registers via direct addresses (alias 0) */
+    mem_write32(DMA_BASE + 0 * DMA_CH_STRIDE + DMA_CH_READ_ADDR, 0x20000100);
+    mem_write32(DMA_BASE + 0 * DMA_CH_STRIDE + DMA_CH_WRITE_ADDR, 0x20000200);
+    mem_write32(DMA_BASE + 0 * DMA_CH_STRIDE + DMA_CH_TRANS_COUNT, 16);
+    ASSERT_EQ(0x20000100, mem_read32(DMA_BASE + DMA_CH_READ_ADDR), "DMA ch0 READ_ADDR readback");
+    ASSERT_EQ(0x20000200, mem_read32(DMA_BASE + DMA_CH_WRITE_ADDR), "DMA ch0 WRITE_ADDR readback");
+    ASSERT_EQ(16, mem_read32(DMA_BASE + DMA_CH_TRANS_COUNT), "DMA ch0 TRANS_COUNT readback");
+    PASS();
+}
+
+TEST(test_dma_word_transfer) {
+    reset_cpu();
+    /* Write 4 words to RAM source region */
+    uint32_t src = RAM_BASE + 0x1000;
+    uint32_t dst = RAM_BASE + 0x2000;
+    mem_write32(src + 0, 0xDEADBEEF);
+    mem_write32(src + 4, 0xCAFEBABE);
+    mem_write32(src + 8, 0x12345678);
+    mem_write32(src + 12, 0xAAAABBBB);
+
+    /* Configure DMA channel 0: word transfer, incr both, 4 words */
+    mem_write32(DMA_BASE + DMA_CH_READ_ADDR, src);
+    mem_write32(DMA_BASE + DMA_CH_WRITE_ADDR, dst);
+    mem_write32(DMA_BASE + DMA_CH_TRANS_COUNT, 4);
+    /* CTRL_TRIG: EN=1, DATA_SIZE=2 (word), INCR_READ=1, INCR_WRITE=1
+     * Writing CTRL_TRIG triggers the transfer */
+    uint32_t ctrl = DMA_CTRL_EN | (DMA_SIZE_WORD << DMA_CTRL_DATA_SIZE_SHIFT)
+                  | DMA_CTRL_INCR_READ | DMA_CTRL_INCR_WRITE;
+    mem_write32(DMA_BASE + DMA_CH_CTRL_TRIG, ctrl);
+
+    /* Verify destination */
+    ASSERT_EQ(0xDEADBEEF, mem_read32(dst + 0),  "DMA word copy [0]");
+    ASSERT_EQ(0xCAFEBABE, mem_read32(dst + 4),  "DMA word copy [1]");
+    ASSERT_EQ(0x12345678, mem_read32(dst + 8),  "DMA word copy [2]");
+    ASSERT_EQ(0xAAAABBBB, mem_read32(dst + 12), "DMA word copy [3]");
+    /* trans_count should be 0 after completion */
+    ASSERT_EQ(0, dma_state.ch[0].trans_count, "DMA ch0 trans_count after transfer");
+    PASS();
+}
+
+TEST(test_dma_byte_transfer) {
+    reset_cpu();
+    uint32_t src = RAM_BASE + 0x3000;
+    uint32_t dst = RAM_BASE + 0x4000;
+    mem_write8(src + 0, 0x41);  /* 'A' */
+    mem_write8(src + 1, 0x42);  /* 'B' */
+    mem_write8(src + 2, 0x43);  /* 'C' */
+
+    mem_write32(DMA_BASE + DMA_CH_READ_ADDR, src);
+    mem_write32(DMA_BASE + DMA_CH_WRITE_ADDR, dst);
+    mem_write32(DMA_BASE + DMA_CH_TRANS_COUNT, 3);
+    uint32_t ctrl = DMA_CTRL_EN | (DMA_SIZE_BYTE << DMA_CTRL_DATA_SIZE_SHIFT)
+                  | DMA_CTRL_INCR_READ | DMA_CTRL_INCR_WRITE;
+    mem_write32(DMA_BASE + DMA_CH_CTRL_TRIG, ctrl);
+
+    ASSERT_EQ(0x41, mem_read8(dst + 0), "DMA byte copy [0]");
+    ASSERT_EQ(0x42, mem_read8(dst + 1), "DMA byte copy [1]");
+    ASSERT_EQ(0x43, mem_read8(dst + 2), "DMA byte copy [2]");
+    PASS();
+}
+
+TEST(test_dma_no_incr_write) {
+    reset_cpu();
+    /* Transfer 3 words to same destination (no INCR_WRITE) - last value wins */
+    uint32_t src = RAM_BASE + 0x5000;
+    uint32_t dst = RAM_BASE + 0x6000;
+    mem_write32(src + 0, 0x11111111);
+    mem_write32(src + 4, 0x22222222);
+    mem_write32(src + 8, 0x33333333);
+
+    mem_write32(DMA_BASE + DMA_CH_READ_ADDR, src);
+    mem_write32(DMA_BASE + DMA_CH_WRITE_ADDR, dst);
+    mem_write32(DMA_BASE + DMA_CH_TRANS_COUNT, 3);
+    uint32_t ctrl = DMA_CTRL_EN | (DMA_SIZE_WORD << DMA_CTRL_DATA_SIZE_SHIFT)
+                  | DMA_CTRL_INCR_READ;  /* no INCR_WRITE */
+    mem_write32(DMA_BASE + DMA_CH_CTRL_TRIG, ctrl);
+
+    /* Only last word written to dst */
+    ASSERT_EQ(0x33333333, mem_read32(dst), "DMA no-incr-write: last value at dst");
+    PASS();
+}
+
+TEST(test_dma_interrupt_on_completion) {
+    reset_cpu();
+    uint32_t src = RAM_BASE + 0x7000;
+    uint32_t dst = RAM_BASE + 0x8000;
+    mem_write32(src, 0xFEEDFACE);
+
+    /* Channel 2, 1-word transfer */
+    uint32_t ch2 = 2 * DMA_CH_STRIDE;
+    mem_write32(DMA_BASE + ch2 + DMA_CH_READ_ADDR, src);
+    mem_write32(DMA_BASE + ch2 + DMA_CH_WRITE_ADDR, dst);
+    mem_write32(DMA_BASE + ch2 + DMA_CH_TRANS_COUNT, 1);
+    uint32_t ctrl = DMA_CTRL_EN | (DMA_SIZE_WORD << DMA_CTRL_DATA_SIZE_SHIFT)
+                  | DMA_CTRL_INCR_READ | DMA_CTRL_INCR_WRITE;
+    mem_write32(DMA_BASE + ch2 + DMA_CH_CTRL_TRIG, ctrl);
+
+    /* INTR bit 2 should be set */
+    ASSERT_TRUE(dma_state.intr & (1 << 2), "DMA INTR bit set for ch2");
+    /* Clear it via W1C */
+    mem_write32(DMA_BASE + DMA_INTR, (1 << 2));
+    ASSERT_EQ(0, dma_state.intr & (1 << 2), "DMA INTR bit cleared via W1C");
+    PASS();
+}
+
+TEST(test_dma_irq_quiet) {
+    reset_cpu();
+    uint32_t src = RAM_BASE + 0x9000;
+    uint32_t dst = RAM_BASE + 0xA000;
+    mem_write32(src, 0x12345678);
+
+    /* Channel 3 with IRQ_QUIET */
+    uint32_t ch3 = 3 * DMA_CH_STRIDE;
+    mem_write32(DMA_BASE + ch3 + DMA_CH_READ_ADDR, src);
+    mem_write32(DMA_BASE + ch3 + DMA_CH_WRITE_ADDR, dst);
+    mem_write32(DMA_BASE + ch3 + DMA_CH_TRANS_COUNT, 1);
+    uint32_t ctrl = DMA_CTRL_EN | (DMA_SIZE_WORD << DMA_CTRL_DATA_SIZE_SHIFT)
+                  | DMA_CTRL_INCR_READ | DMA_CTRL_INCR_WRITE | DMA_CTRL_IRQ_QUIET;
+    mem_write32(DMA_BASE + ch3 + DMA_CH_CTRL_TRIG, ctrl);
+
+    /* INTR bit 3 should NOT be set */
+    ASSERT_EQ(0, dma_state.intr & (1 << 3), "DMA IRQ_QUIET suppresses INTR");
+    /* But transfer should still complete */
+    ASSERT_EQ(0x12345678, mem_read32(dst), "DMA IRQ_QUIET transfer completes");
+    PASS();
+}
+
+TEST(test_dma_interrupt_status) {
+    reset_cpu();
+    /* Set up INTE0 and force INTF0 to test INTS0 computation */
+    mem_write32(DMA_BASE + DMA_INTE0, 0x00F);  /* Enable ch0-3 */
+    mem_write32(DMA_BASE + DMA_INTF0, 0x004);  /* Force ch2 */
+    uint32_t ints0 = mem_read32(DMA_BASE + DMA_INTS0);
+    /* INTS0 = (INTR | INTF0) & INTE0 = (0 | 0x004) & 0x00F = 0x004 */
+    ASSERT_EQ(0x004, ints0, "DMA INTS0 = (INTR|INTF0)&INTE0");
+    PASS();
+}
+
+TEST(test_dma_chain_transfer) {
+    reset_cpu();
+    uint32_t src0 = RAM_BASE + 0xB000;
+    uint32_t dst0 = RAM_BASE + 0xC000;
+    uint32_t src1 = RAM_BASE + 0xD000;
+    uint32_t dst1 = RAM_BASE + 0xE000;
+
+    mem_write32(src0, 0xAAAAAAAA);
+    mem_write32(src1, 0xBBBBBBBB);
+
+    /* Set up channel 1 first (target of chain) */
+    uint32_t ch1 = 1 * DMA_CH_STRIDE;
+    mem_write32(DMA_BASE + ch1 + DMA_CH_READ_ADDR, src1);
+    mem_write32(DMA_BASE + ch1 + DMA_CH_WRITE_ADDR, dst1);
+    mem_write32(DMA_BASE + ch1 + DMA_CH_TRANS_COUNT, 1);
+    /* Ch1: EN, word, incr both, CHAIN_TO=self (1) */
+    uint32_t ctrl1 = DMA_CTRL_EN | (DMA_SIZE_WORD << DMA_CTRL_DATA_SIZE_SHIFT)
+                   | DMA_CTRL_INCR_READ | DMA_CTRL_INCR_WRITE
+                   | (1 << DMA_CTRL_CHAIN_TO_SHIFT);
+    /* Write CTRL without trigger (use alias 1: CTRL is first reg, not trigger) */
+    mem_write32(DMA_BASE + ch1 + DMA_CH_AL1_CTRL, ctrl1);
+
+    /* Set up channel 0 with CHAIN_TO=1 */
+    uint32_t ch0 = 0 * DMA_CH_STRIDE;
+    mem_write32(DMA_BASE + ch0 + DMA_CH_READ_ADDR, src0);
+    mem_write32(DMA_BASE + ch0 + DMA_CH_WRITE_ADDR, dst0);
+    mem_write32(DMA_BASE + ch0 + DMA_CH_TRANS_COUNT, 1);
+    uint32_t ctrl0 = DMA_CTRL_EN | (DMA_SIZE_WORD << DMA_CTRL_DATA_SIZE_SHIFT)
+                   | DMA_CTRL_INCR_READ | DMA_CTRL_INCR_WRITE
+                   | (1 << DMA_CTRL_CHAIN_TO_SHIFT);  /* CHAIN_TO = ch1 */
+    mem_write32(DMA_BASE + ch0 + DMA_CH_CTRL_TRIG, ctrl0);  /* Trigger ch0 */
+
+    /* Both transfers should have completed */
+    ASSERT_EQ(0xAAAAAAAA, mem_read32(dst0), "DMA chain: ch0 dst");
+    ASSERT_EQ(0xBBBBBBBB, mem_read32(dst1), "DMA chain: ch1 dst");
+    PASS();
+}
+
+TEST(test_dma_multi_chan_trigger) {
+    reset_cpu();
+    uint32_t src4 = RAM_BASE + 0xF000;
+    uint32_t dst4 = RAM_BASE + 0x10000;
+    mem_write32(src4, 0x44444444);
+
+    /* Configure ch4 but don't trigger */
+    uint32_t ch4 = 4 * DMA_CH_STRIDE;
+    mem_write32(DMA_BASE + ch4 + DMA_CH_READ_ADDR, src4);
+    mem_write32(DMA_BASE + ch4 + DMA_CH_WRITE_ADDR, dst4);
+    mem_write32(DMA_BASE + ch4 + DMA_CH_TRANS_COUNT, 1);
+    uint32_t ctrl = DMA_CTRL_EN | (DMA_SIZE_WORD << DMA_CTRL_DATA_SIZE_SHIFT)
+                  | DMA_CTRL_INCR_READ | DMA_CTRL_INCR_WRITE
+                  | (4 << DMA_CTRL_CHAIN_TO_SHIFT);
+    /* Write via AL1_CTRL (not a trigger register) */
+    mem_write32(DMA_BASE + ch4 + DMA_CH_AL1_CTRL, ctrl);
+
+    /* Trigger via MULTI_CHAN_TRIGGER */
+    mem_write32(DMA_BASE + DMA_MULTI_CHAN_TRIGGER, (1 << 4));
+    ASSERT_EQ(0x44444444, mem_read32(dst4), "DMA MULTI_CHAN_TRIGGER ch4");
+    PASS();
+}
+
+TEST(test_dma_atomic_set_clr) {
+    reset_cpu();
+    /* Write INTE0 normally, then use SET alias to add bits */
+    mem_write32(DMA_BASE + DMA_INTE0, 0x003);
+    ASSERT_EQ(0x003, mem_read32(DMA_BASE + DMA_INTE0), "DMA INTE0 initial");
+    /* SET alias: DMA_BASE + 0x2000 + offset */
+    mem_write32(DMA_BASE + 0x2000 + DMA_INTE0, 0x00C);
+    ASSERT_EQ(0x00F, mem_read32(DMA_BASE + DMA_INTE0), "DMA INTE0 after SET");
+    /* CLR alias */
+    mem_write32(DMA_BASE + 0x3000 + DMA_INTE0, 0x005);
+    ASSERT_EQ(0x00A, mem_read32(DMA_BASE + DMA_INTE0), "DMA INTE0 after CLR");
     PASS();
 }
 
@@ -1850,6 +2091,21 @@ int main(void) {
     RUN_TEST(test_pwm_multiple_slices);
     RUN_TEST(test_pwm_global_enable);
     END_CATEGORY("PWM Peripheral");
+
+    BEGIN_CATEGORY("DMA Controller");
+    RUN_TEST(test_dma_n_channels);
+    RUN_TEST(test_dma_channel_defaults);
+    RUN_TEST(test_dma_register_readback);
+    RUN_TEST(test_dma_word_transfer);
+    RUN_TEST(test_dma_byte_transfer);
+    RUN_TEST(test_dma_no_incr_write);
+    RUN_TEST(test_dma_interrupt_on_completion);
+    RUN_TEST(test_dma_irq_quiet);
+    RUN_TEST(test_dma_interrupt_status);
+    RUN_TEST(test_dma_chain_transfer);
+    RUN_TEST(test_dma_multi_chan_trigger);
+    RUN_TEST(test_dma_atomic_set_clr);
+    END_CATEGORY("DMA Controller");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

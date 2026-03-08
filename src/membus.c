@@ -11,6 +11,7 @@
 #include "spi.h"
 #include "i2c.h"
 #include "pwm.h"
+#include "dma.h"
 
 /* ========================================================================
  * Active RAM pointer for zero-copy dual-core context switching
@@ -178,6 +179,22 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+    /* DMA controller */
+    if (dma_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t off = addr & 0xFFF;
+        if (alias == 0x0000) {
+            dma_write32(off, val);
+        } else if (alias == 0x2000) {
+            dma_write32(off, dma_read32(off) | val);
+        } else if (alias == 0x3000) {
+            dma_write32(off, dma_read32(off) & ~val);
+        } else {
+            dma_write32(off, dma_read32(off) ^ val);
+        }
+        return;
+    }
+
     /* USB controller - accept writes silently (no emulation) */
     if ((addr >= USBCTRL_DPRAM_BASE && addr < USBCTRL_DPRAM_BASE + 0x1000) ||
         (addr >= USBCTRL_REGS_BASE && addr < USBCTRL_REGS_BASE + 0x1000)) {
@@ -335,6 +352,11 @@ uint32_t mem_read32(uint32_t addr) {
     /* PWM */
     if (pwm_match(addr)) {
         return pwm_read32(addr & 0xFFF);
+    }
+
+    /* DMA controller */
+    if (dma_match(addr)) {
+        return dma_read32(addr & 0xFFF);
     }
 
     /* USB controller stub - return "disconnected" state.

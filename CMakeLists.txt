@@ -31,6 +31,7 @@ set(SOURCES
     src/spi.c
     src/i2c.c
     src/pwm.c
+    src/dma.c
 )
 
 # Executable
@@ -56,6 +57,7 @@ set(LIB_SOURCES
     src/spi.c
     src/i2c.c
     src/pwm.c
+    src/dma.c
 )
 
 # Test executable

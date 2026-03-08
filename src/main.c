@@ -26,6 +26,7 @@
 #include "spi.h"
 #include "i2c.h"
 #include "pwm.h"
+#include "dma.h"
 
 
 int any_core_running(void);
@@ -86,6 +87,7 @@ int main(int argc, char **argv) {
     spi_init();
     i2c_init();
     pwm_init();
+    dma_init();
     clocks_init();
     adc_init();
 

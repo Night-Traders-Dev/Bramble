@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.9.0 - Production Ready** ✅
+## Current Status: **v0.10.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **dual UART** output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **145-test verbose unit test suite** across 35+ categories.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **dual UART** output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **157-test verbose unit test suite** across 37+ categories.
 
 ### ✅ What Works
 
@@ -99,8 +99,16 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
 - **✨ SPI Emulation**: Dual PL022 controllers (SPI0 + SPI1) with register state (CR0, CR1, CPSR, IMSC, status), PL022 peripheral ID, and atomic aliases
 - **✨ I2C Emulation**: Dual DW_apb_i2c controllers (I2C0 + I2C1) with full register set (CON, TAR, SAR, SCL timing, ENABLE, status), component ID registers, and atomic aliases
 - **✨ PWM Emulation**: 8 independent slices with CSR, DIV, CTR, CC, TOP registers, global EN/INTR/INTE/INTF/INTS, and atomic aliases
+- **✨ DMA Controller**: 12 independent channels with:
+  - READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG per channel
+  - 4 alias register layouts (AL1-AL3) with trigger-on-last-write
+  - Immediate synchronous transfers: byte, halfword, word sizes
+  - INCR_READ / INCR_WRITE address auto-increment
+  - CHAIN_TO for automatic channel chaining on completion
+  - IRQ_QUIET, MULTI_CHAN_TRIGGER, interrupt status registers
+  - Atomic register aliases (SET/CLR/XOR)
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 145 tests across 35+ categories with verbose per-category reporting, integrated with CTest
+- **✨ Unit Test Suite**: 157 tests across 37+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -148,7 +156,7 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 ### ⚠️ Known Limitations
 
 - **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (SDK falls back to UART)
-- **Missing Peripherals**: DMA, PIO not emulated; USB is stub-only (disconnected state)
+- **Missing Peripherals**: PIO not emulated; USB is stub-only (disconnected state)
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
 - **UART Tx Only**: No receive (Rx) emulation
 - See [ROADMAP](docs/ROADMAP.md) for full status and next phases
@@ -318,7 +326,8 @@ Bramble/
 │   ├── uart.c          # Dual PL011 UART emulation
 │   ├── spi.c           # Dual PL022 SPI emulation
 │   ├── i2c.c           # Dual DW_apb_i2c emulation
-│   └── pwm.c           # 8-slice PWM emulation
+│   ├── pwm.c           # 8-slice PWM emulation
+│   └── dma.c           # 12-channel DMA controller
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
@@ -331,9 +340,10 @@ Bramble/
 │   ├── uart.h          # PL011 UART register definitions
 │   ├── spi.h           # PL022 SPI register definitions
 │   ├── i2c.h           # DW_apb_i2c register definitions
-│   └── pwm.h           # PWM register definitions
+│   ├── pwm.h           # PWM register definitions
+│   └── dma.h           # DMA controller register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (145 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (157 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -517,6 +527,7 @@ Peripherals are integrated into the memory bus (`membus.c`):
 - SPI: `0x4003C000` / `0x40040000` (PL022 dual)
 - I2C: `0x40044000` / `0x40048000` (DW_apb_i2c dual)
 - PWM: `0x40050000` (8 slices)
+- DMA: `0x50000000` (12 channels with chaining)
 - ROM: `0x00000000` (4KB with function table and Thumb code)
 
 ### Timer Timing Model
@@ -607,8 +618,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ### High Priority
 
-1. **DMA Controller**: 12 channels with source/dest/count/control, auto-copy on trigger, completion interrupts
-2. **UART Rx**: Implement receive path for bidirectional serial communication
+1. **UART Rx**: Implement receive path for bidirectional serial communication
 
 ### Medium Priority
 
@@ -626,7 +636,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 The Bramble project is open for contributions! Areas that need help:
 
-1. **Peripheral Emulation**: DMA, PIO state machines, UART Rx
+1. **Peripheral Emulation**: PIO state machines, UART Rx
 2. **Testing**: New test firmware, edge cases, performance benchmarks
 3. **Debugging**: GDB remote stub, hardware breakpoints
 4. **Documentation**: Register descriptions, usage examples, architecture guides
