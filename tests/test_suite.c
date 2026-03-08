@@ -27,6 +27,7 @@
 #include "i2c.h"
 #include "pwm.h"
 #include "dma.h"
+#include "pio.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -114,6 +115,7 @@ static void reset_cpu(void) {
     i2c_init();
     pwm_init();
     dma_init();
+    pio_init();
 }
 
 /* ========================================================================
@@ -1324,6 +1326,119 @@ TEST(test_dma_atomic_set_clr) {
 }
 
 /* ========================================================================
+ * PIO Tests (v0.12.0)
+ * ======================================================================== */
+
+TEST(test_pio_fstat_fifos_empty) {
+    reset_cpu();
+    uint32_t fstat = mem_read32(PIO0_BASE + PIO_FSTAT);
+    /* All TX empty (bits 27:24), all RX empty (bits 11:8) */
+    ASSERT_TRUE(fstat & (0x0F << PIO_FSTAT_TXEMPTY_SHIFT), "TX FIFOs empty");
+    ASSERT_TRUE(fstat & (0x0F << PIO_FSTAT_RXEMPTY_SHIFT), "RX FIFOs empty");
+    PASS();
+}
+
+TEST(test_pio_instr_mem_readback) {
+    reset_cpu();
+    /* Write a PIO instruction to memory slot 0 */
+    mem_write32(PIO0_BASE + PIO_INSTR_MEM0, 0xE040);  /* SET PINS, 0 */
+    ASSERT_EQ(0xE040, mem_read32(PIO0_BASE + PIO_INSTR_MEM0), "PIO instr_mem[0] readback");
+    /* Write to slot 5 */
+    mem_write32(PIO0_BASE + PIO_INSTR_MEM0 + 5 * 4, 0x8020);
+    ASSERT_EQ(0x8020, mem_read32(PIO0_BASE + PIO_INSTR_MEM0 + 5 * 4), "PIO instr_mem[5] readback");
+    /* 16-bit mask: upper bits should be stripped */
+    mem_write32(PIO0_BASE + PIO_INSTR_MEM0 + 1 * 4, 0xFFFFE001);
+    ASSERT_EQ(0xE001, mem_read32(PIO0_BASE + PIO_INSTR_MEM0 + 1 * 4), "PIO instr 16-bit mask");
+    PASS();
+}
+
+TEST(test_pio_sm_register_readback) {
+    reset_cpu();
+    /* Write SM0 CLKDIV */
+    mem_write32(PIO0_BASE + PIO_SM0_CLKDIV, 0x01000000);
+    ASSERT_EQ(0x01000000, mem_read32(PIO0_BASE + PIO_SM0_CLKDIV), "SM0 CLKDIV readback");
+    /* Write SM0 PINCTRL */
+    mem_write32(PIO0_BASE + PIO_SM0_PINCTRL, 0x04000500);
+    ASSERT_EQ(0x04000500, mem_read32(PIO0_BASE + PIO_SM0_PINCTRL), "SM0 PINCTRL readback");
+    /* Write SM2 CLKDIV (stride 0x18, SM2 offset = 0x0C8 + 2*0x18 = 0x0F8) */
+    mem_write32(PIO0_BASE + PIO_SM0_CLKDIV + 2 * PIO_SM_STRIDE, 0x02000000);
+    ASSERT_EQ(0x02000000, mem_read32(PIO0_BASE + PIO_SM0_CLKDIV + 2 * PIO_SM_STRIDE), "SM2 CLKDIV readback");
+    PASS();
+}
+
+TEST(test_pio_ctrl_enable) {
+    reset_cpu();
+    ASSERT_EQ(0, mem_read32(PIO0_BASE + PIO_CTRL), "PIO CTRL starts at 0");
+    /* Enable SM0 and SM2 */
+    mem_write32(PIO0_BASE + PIO_CTRL, 0x05);
+    ASSERT_EQ(0x05, mem_read32(PIO0_BASE + PIO_CTRL), "PIO CTRL SM0+SM2 enabled");
+    PASS();
+}
+
+TEST(test_pio_dbg_cfginfo) {
+    reset_cpu();
+    uint32_t cfginfo = mem_read32(PIO0_BASE + PIO_DBG_CFGINFO);
+    /* RP2040: 4 FIFO depth (bits 21:16), 32 instr mem (bits 13:8), 4 SMs (bits 3:0) */
+    uint32_t fifo_depth = (cfginfo >> 16) & 0x3F;
+    uint32_t imem_size = (cfginfo >> 8) & 0x3F;
+    uint32_t n_sm = cfginfo & 0x0F;
+    ASSERT_EQ(4, fifo_depth, "DBG_CFGINFO FIFO depth");
+    ASSERT_EQ(PIO_INSTR_MEM_SIZE, imem_size, "DBG_CFGINFO instr mem size");
+    ASSERT_EQ(PIO_NUM_SM, n_sm, "DBG_CFGINFO num SMs");
+    PASS();
+}
+
+TEST(test_pio1_independent) {
+    reset_cpu();
+    /* Write to PIO0 instr_mem[0] */
+    mem_write32(PIO0_BASE + PIO_INSTR_MEM0, 0x1234);
+    /* Write to PIO1 instr_mem[0] */
+    mem_write32(PIO1_BASE + PIO_INSTR_MEM0, 0x5678);
+    ASSERT_EQ(0x1234, mem_read32(PIO0_BASE + PIO_INSTR_MEM0), "PIO0 instr independent");
+    ASSERT_EQ(0x5678, mem_read32(PIO1_BASE + PIO_INSTR_MEM0), "PIO1 instr independent");
+    /* PIO1 CTRL independent */
+    mem_write32(PIO1_BASE + PIO_CTRL, 0x0F);
+    ASSERT_EQ(0, mem_read32(PIO0_BASE + PIO_CTRL), "PIO0 CTRL unaffected");
+    ASSERT_EQ(0x0F, mem_read32(PIO1_BASE + PIO_CTRL), "PIO1 CTRL set");
+    PASS();
+}
+
+TEST(test_pio_irq_write_clear) {
+    reset_cpu();
+    /* Force IRQ bits */
+    mem_write32(PIO0_BASE + PIO_IRQ_FORCE, 0x05);
+    ASSERT_EQ(0x05, mem_read32(PIO0_BASE + PIO_IRQ), "IRQ set by force");
+    /* Write-1-to-clear IRQ */
+    mem_write32(PIO0_BASE + PIO_IRQ, 0x01);
+    ASSERT_EQ(0x04, mem_read32(PIO0_BASE + PIO_IRQ), "IRQ after W1C");
+    PASS();
+}
+
+TEST(test_pio_tx_rx_fifo_stubs) {
+    reset_cpu();
+    /* TX writes accepted silently, RX reads return 0 */
+    mem_write32(PIO0_BASE + PIO_TXF0, 0xDEADBEEF);
+    mem_write32(PIO0_BASE + PIO_TXF3, 0xCAFEBABE);
+    ASSERT_EQ(0, mem_read32(PIO0_BASE + PIO_RXF0), "RXF0 returns 0");
+    ASSERT_EQ(0, mem_read32(PIO0_BASE + PIO_RXF3), "RXF3 returns 0");
+    PASS();
+}
+
+TEST(test_pio_atomic_set_clr) {
+    reset_cpu();
+    /* Write IRQ0_INTE normally */
+    mem_write32(PIO0_BASE + PIO_IRQ0_INTE, 0x003);
+    ASSERT_EQ(0x003, mem_read32(PIO0_BASE + PIO_IRQ0_INTE), "PIO IRQ0_INTE initial");
+    /* SET alias */
+    mem_write32(PIO0_BASE + 0x2000 + PIO_IRQ0_INTE, 0x00C);
+    ASSERT_EQ(0x00F, mem_read32(PIO0_BASE + PIO_IRQ0_INTE), "PIO IRQ0_INTE after SET");
+    /* CLR alias */
+    mem_write32(PIO0_BASE + 0x3000 + PIO_IRQ0_INTE, 0x005);
+    ASSERT_EQ(0x00A, mem_read32(PIO0_BASE + PIO_IRQ0_INTE), "PIO IRQ0_INTE after CLR");
+    PASS();
+}
+
+/* ========================================================================
  * Timer Tests (NEW - v0.8.0)
  * ======================================================================== */
 
@@ -2233,6 +2348,18 @@ int main(void) {
     RUN_TEST(test_dma_multi_chan_trigger);
     RUN_TEST(test_dma_atomic_set_clr);
     END_CATEGORY("DMA Controller");
+
+    BEGIN_CATEGORY("PIO Peripheral");
+    RUN_TEST(test_pio_fstat_fifos_empty);
+    RUN_TEST(test_pio_instr_mem_readback);
+    RUN_TEST(test_pio_sm_register_readback);
+    RUN_TEST(test_pio_ctrl_enable);
+    RUN_TEST(test_pio_dbg_cfginfo);
+    RUN_TEST(test_pio1_independent);
+    RUN_TEST(test_pio_irq_write_clear);
+    RUN_TEST(test_pio_tx_rx_fifo_stubs);
+    RUN_TEST(test_pio_atomic_set_clr);
+    END_CATEGORY("PIO Peripheral");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

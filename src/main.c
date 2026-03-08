@@ -9,11 +9,15 @@
  *   - Unified peripheral initialization
  *   - Debug mode support for both cores
  *   - Status monitoring and statistics
+ *   - Non-blocking stdin polling for UART Rx (-stdin flag)
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
 
 #include "emulator.h"
 #include "gpio.h"
@@ -27,9 +31,53 @@
 #include "i2c.h"
 #include "pwm.h"
 #include "dma.h"
+#include "pio.h"
 
 
 int any_core_running(void);
+
+/* ============================================================================
+ * UART Stdin Polling
+ *
+ * When enabled with -stdin, polls stdin for input and pushes bytes into
+ * UART0's RX FIFO. Uses non-blocking I/O to avoid stalling the emulator.
+ * ============================================================================ */
+
+static int stdin_enabled = 0;
+static int stdin_nonblock_set = 0;
+
+static void uart_stdin_init(void) {
+    /* Set stdin to non-blocking mode */
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (flags != -1) {
+        fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+        stdin_nonblock_set = 1;
+    }
+}
+
+static void uart_stdin_cleanup(void) {
+    if (stdin_nonblock_set) {
+        int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+        if (flags != -1) {
+            fcntl(STDIN_FILENO, F_SETFL, flags & ~O_NONBLOCK);
+        }
+    }
+}
+
+/* Poll stdin and push any available bytes into UART0 RX FIFO.
+ * Called periodically from the main execution loop. */
+static void uart_stdin_poll(void) {
+    struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
+    if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+        uint8_t buf[16];
+        ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
+        if (n > 0) {
+            for (ssize_t i = 0; i < n; i++) {
+                uart_rx_push(0, buf[i]);
+            }
+        }
+    }
+}
 
 /* ============================================================================
  * Main Entry Point
@@ -43,6 +91,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -debug1    Enable debug output for Core 1 (dual-core only)\n");
         fprintf(stderr, "  -asm       Show assembly instruction tracing\n");
         fprintf(stderr, "  -status    Print periodic status updates\n");
+        fprintf(stderr, "  -stdin     Enable stdin polling for UART0 Rx input\n");
         return EXIT_FAILURE;
     }
 
@@ -50,7 +99,6 @@ int main(int argc, char **argv) {
     char *firmware_path = argv[1];
     int debug_mode = 0;
     int debug1_mode = 0;
-    int asm_mode = 0;
     int show_status = 0;
 
     for (int i = 2; i < argc; i++) {
@@ -59,9 +107,11 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-debug1") == 0) {
             debug1_mode = 1;
         } else if (strcmp(argv[i], "-asm") == 0) {
-            asm_mode = 1;
+            /* Reserved for future use */
         } else if (strcmp(argv[i], "-status") == 0) {
             show_status = 1;
+        } else if (strcmp(argv[i], "-stdin") == 0) {
+            stdin_enabled = 1;
         }
     }
 
@@ -88,6 +138,7 @@ int main(int argc, char **argv) {
     i2c_init();
     pwm_init();
     dma_init();
+    pio_init();
     clocks_init();
     adc_init();
 
@@ -125,6 +176,11 @@ int main(int argc, char **argv) {
         printf("[Init] Debug output enabled for Core 1\n");
     }
 
+    if (stdin_enabled) {
+        uart_stdin_init();
+        printf("[Init] Stdin polling enabled for UART0 Rx\n");
+    }
+
     printf("[Boot] Starting Core 0 from flash...\n");
     cpu_reset_core(CORE0);
     printf("[Boot] Core 0 SP = 0x%08X\n", cores[CORE0].r[13]);
@@ -132,7 +188,6 @@ int main(int argc, char **argv) {
     cpu_reset_core(CORE1);
     printf("[Boot] Core 1 SP = 0x%08X\n", cores[CORE1].r[13]);
     printf("[Boot] Core 1 PC = 0x%08X\n", cores[CORE1].r[15]);
-//    printf("[Boot] Core 1 held in reset (waiting for Core 0 to start)\n");
     printf("\n");
 
 
@@ -154,6 +209,11 @@ int main(int argc, char **argv) {
         dual_core_step();
         instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
         step_count++;
+
+        /* Poll stdin for UART Rx data every 1024 steps */
+        if (stdin_enabled && (step_count & 0x3FF) == 0) {
+            uart_stdin_poll();
+        }
 
         if (show_status && (step_count % 1000 == 0)) {
             printf("[Status] Step %u (Inst %u)\n", step_count, instruction_count);
@@ -178,6 +238,10 @@ int main(int argc, char **argv) {
     /* ========================================================================
      * Completion Phase (Dual-Core)
      * ======================================================================== */
+
+    if (stdin_enabled) {
+        uart_stdin_cleanup();
+    }
 
     printf("\n");
     printf("═══════════════════════════════════════════════════════════\n");

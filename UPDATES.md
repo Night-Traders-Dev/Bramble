@@ -1,5 +1,39 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.12.0] - 2026-03-08
+
+### Phase 3.7: PIO Peripheral + UART Stdin Polling
+
+1. **PIO Peripheral** (`pio.c`, `pio.h`)
+   - Two PIO blocks (PIO0 at 0x50200000, PIO1 at 0x50300000)
+   - Register-level stub — allows SDK code to configure PIO without crashing
+   - 4 state machines per block with full register set (CLKDIV, EXECCTRL, SHIFTCTRL, ADDR, INSTR, PINCTRL)
+   - 32-word instruction memory per block (16-bit write mask)
+   - FSTAT: TX/RX FIFOs always reported empty
+   - TX FIFO writes accepted and discarded; RX FIFO reads return 0
+   - CTRL tracks SM_ENABLE bits; SM_RESTART/CLKDIV_RESTART are strobe (self-clearing)
+   - IRQ with W1C, IRQ_FORCE forces IRQ bits
+   - DBG_CFGINFO returns RP2040 values: 4 FIFO depth, 32 instr mem, 4 SMs
+   - Interrupt registers (IRQ0/IRQ1 INTE/INTF/INTS)
+   - Atomic register aliases (SET/CLR/XOR) via membus dispatch
+
+2. **UART Stdin Polling** (`main.c`, `-stdin` flag)
+   - Non-blocking stdin via `fcntl(O_NONBLOCK)` + `poll()` syscall
+   - Polls every 1024 emulator steps to avoid performance impact
+   - Pushes received bytes into UART0 RX FIFO via `uart_rx_push()`
+   - Restores blocking stdin on exit (cleanup)
+   - Enables interactive serial input to emulated firmware
+
+### Test Suite (174 tests, up from 165)
+
+1. **9 new PIO Peripheral tests**:
+   - FSTAT FIFOs empty, instruction memory readback (including 16-bit mask)
+   - SM register readback (SM0 CLKDIV/PINCTRL, SM2 CLKDIV)
+   - CTRL SM enable, DBG_CFGINFO values, PIO1 independence
+   - IRQ write-1-to-clear, TX/RX FIFO stubs, atomic SET/CLR aliases
+
+---
+
 ## [0.11.0] - 2026-03-08
 
 ### UART Receive Path

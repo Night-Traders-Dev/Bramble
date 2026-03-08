@@ -12,6 +12,7 @@
 #include "i2c.h"
 #include "pwm.h"
 #include "dma.h"
+#include "pio.h"
 
 /* ========================================================================
  * Active RAM pointer for zero-copy dual-core context switching
@@ -195,6 +196,25 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+    /* PIO */
+    {
+        int pio_num = pio_match(addr);
+        if (pio_num >= 0) {
+            uint32_t alias = addr & 0x3000;
+            uint32_t off = addr & 0xFFF;
+            if (alias == 0x0000) {
+                pio_write32(pio_num, off, val);
+            } else if (alias == 0x2000) {
+                pio_write32(pio_num, off, pio_read32(pio_num, off) | val);
+            } else if (alias == 0x3000) {
+                pio_write32(pio_num, off, pio_read32(pio_num, off) & ~val);
+            } else {
+                pio_write32(pio_num, off, pio_read32(pio_num, off) ^ val);
+            }
+            return;
+        }
+    }
+
     /* USB controller - accept writes silently (no emulation) */
     if ((addr >= USBCTRL_DPRAM_BASE && addr < USBCTRL_DPRAM_BASE + 0x1000) ||
         (addr >= USBCTRL_REGS_BASE && addr < USBCTRL_REGS_BASE + 0x1000)) {
@@ -357,6 +377,14 @@ uint32_t mem_read32(uint32_t addr) {
     /* DMA controller */
     if (dma_match(addr)) {
         return dma_read32(addr & 0xFFF);
+    }
+
+    /* PIO */
+    {
+        int pio_num = pio_match(addr);
+        if (pio_num >= 0) {
+            return pio_read32(pio_num, addr & 0xFFF);
+        }
     }
 
     /* USB controller stub - return "disconnected" state.

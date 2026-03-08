@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.11.0 - Production Ready** ✅
+## Current Status: **v0.12.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **165-test verbose unit test suite** across 38+ categories.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO register-level emulation** (2 blocks, 4 SMs each), **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **174-test verbose unit test suite** across 40+ categories.
 
 ### ✅ What Works
 
@@ -107,8 +107,14 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - CHAIN_TO for automatic channel chaining on completion
   - IRQ_QUIET, MULTI_CHAN_TRIGGER, interrupt status registers
   - Atomic register aliases (SET/CLR/XOR)
+- **✨ PIO Emulation**: Register-level stub for 2 PIO blocks (PIO0 + PIO1):
+  - 4 state machines per block with full register set
+  - 32-word instruction memory per block (writable/readable)
+  - FSTAT, FDEBUG, FLEVEL, IRQ/IRQ_FORCE, interrupt registers
+  - DBG_CFGINFO returns correct RP2040 values
+  - Atomic register aliases (SET/CLR/XOR)
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 165 tests across 38+ categories with verbose per-category reporting, integrated with CTest
+- **✨ Unit Test Suite**: 174 tests across 40+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -156,9 +162,10 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 ### ⚠️ Known Limitations
 
 - **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (SDK falls back to UART)
-- **Missing Peripherals**: PIO not emulated; USB is stub-only (disconnected state)
+- **PIO**: Register-level stub only — state machines do not execute PIO instructions
+- **Missing Peripherals**: USB is stub-only (disconnected state)
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
-- **UART Rx**: Receive FIFO works via `uart_rx_push()` API; no automatic stdin polling yet
+- **UART Rx**: Receive FIFO works via `uart_rx_push()` API; stdin polling available with `-stdin` flag
 - See [ROADMAP](docs/ROADMAP.md) for full status and next phases
 
 ## Building and Running
@@ -285,6 +292,7 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -debug -debug1   # Both cores debug
 ./bramble firmware.uf2 -status          # Periodic status updates
 ./bramble firmware.uf2 -debug -status   # Debug + status combined
+./bramble firmware.uf2 -stdin           # Enable stdin → UART0 Rx
 ```
 
 Expected output:
@@ -327,7 +335,8 @@ Bramble/
 │   ├── spi.c           # Dual PL022 SPI emulation
 │   ├── i2c.c           # Dual DW_apb_i2c emulation
 │   ├── pwm.c           # 8-slice PWM emulation
-│   └── dma.c           # 12-channel DMA controller
+│   ├── dma.c           # 12-channel DMA controller
+│   └── pio.c           # Dual PIO block emulation (register-level)
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
@@ -341,9 +350,10 @@ Bramble/
 │   ├── spi.h           # PL022 SPI register definitions
 │   ├── i2c.h           # DW_apb_i2c register definitions
 │   ├── pwm.h           # PWM register definitions
-│   └── dma.h           # DMA controller register definitions
+│   ├── dma.h           # DMA controller register definitions
+│   └── pio.h           # PIO register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (165 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (174 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -528,6 +538,7 @@ Peripherals are integrated into the memory bus (`membus.c`):
 - I2C: `0x40044000` / `0x40048000` (DW_apb_i2c dual)
 - PWM: `0x40050000` (8 slices)
 - DMA: `0x50000000` (12 channels with chaining)
+- PIO: `0x50200000` / `0x50300000` (2 blocks, 4 SMs each, register-level)
 - ROM: `0x00000000` (4KB with function table and Thumb code)
 
 ### Timer Timing Model
@@ -616,10 +627,6 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ## Future Work
 
-### High Priority
-
-1. **UART Stdin Polling**: Non-blocking stdin read for interactive UART Rx input
-
 ### Medium Priority
 
 1. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
@@ -628,7 +635,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ### Low Priority
 
-1. **PIO State Machines**: Programmable I/O (complex - defer unless needed)
+1. **PIO Instruction Execution**: State machine instruction execution (register stubs in place)
 2. **USB Device Mode**: Endpoint handling (complex - stub already returns disconnected)
 3. **Performance**: JIT compilation for hot loops, instruction caching
 
@@ -636,7 +643,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 The Bramble project is open for contributions! Areas that need help:
 
-1. **Peripheral Emulation**: PIO state machines, UART Rx
+1. **Peripheral Emulation**: PIO instruction execution, USB device mode
 2. **Testing**: New test firmware, edge cases, performance benchmarks
 3. **Debugging**: GDB remote stub, hardware breakpoints
 4. **Documentation**: Register descriptions, usage examples, architecture guides

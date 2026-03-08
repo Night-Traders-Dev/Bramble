@@ -1,5 +1,46 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.12.0] - 2026-03-08
+
+### Added - PIO Peripheral + UART Stdin Polling
+
+**PIO (Programmable I/O)** (0x50200000 / 0x50300000):
+
+- Two independent PIO blocks (PIO0 + PIO1) with register-level emulation
+- 4 state machines per block with CLKDIV, EXECCTRL, SHIFTCTRL, ADDR, INSTR, PINCTRL
+- 32-word shared instruction memory per block (writable and readable, 16-bit masked)
+- FSTAT reports all TX/RX FIFOs empty; TX writes accepted and discarded; RX reads return 0
+- CTRL SM_ENABLE bits tracked (SM_RESTART and CLKDIV_RESTART are strobe/self-clearing)
+- IRQ and IRQ_FORCE with write-1-to-clear semantics
+- DBG_CFGINFO returns correct RP2040 values (4 SMs, 32 instr mem, 4-deep FIFOs)
+- Interrupt registers: IRQ0/IRQ1 INTE, INTF, INTS
+- Atomic register aliases (SET/CLR/XOR)
+
+**UART Stdin Polling** (`-stdin` flag):
+
+- Non-blocking stdin via `O_NONBLOCK` + `poll()` syscall
+- Polls every 1024 steps and pushes bytes into UART0 RX FIFO via `uart_rx_push()`
+- Cleanup restores blocking stdin mode on exit
+- Usage: `./bramble firmware.uf2 -stdin`
+
+### Testing
+
+- **9 new tests** (174 total, up from 165)
+- PIO Peripheral category: FSTAT fifos empty, instruction memory readback (with 16-bit mask), SM register readback (SM0 + SM2), CTRL enable, DBG_CFGINFO, PIO1 independence, IRQ write-1-to-clear, TX/RX FIFO stubs, atomic SET/CLR aliases
+
+### Files Added
+
+- `src/pio.c`, `include/pio.h` - PIO peripheral module
+
+### Files Modified
+
+- `src/membus.c` - PIO address routing with atomic aliases
+- `src/main.c` - PIO init, `-stdin` flag, UART stdin polling infrastructure
+- `CMakeLists.txt` - Added `src/pio.c`
+- `tests/test_suite.c` - 9 new PIO tests
+
+---
+
 ## [0.11.0] - 2026-03-08
 
 ### Added - UART Receive Path
