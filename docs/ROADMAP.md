@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.13.0
+## Current State: v0.14.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -182,9 +182,13 @@ on M0+. The original roadmap incorrectly listed these.
 - Configurable cycles-per-microsecond ratio
 - Instruction timing table
 
-### 4.5 GDB Remote Stub
-- TCP server implementing GDB RSP
-- Hardware breakpoints, single-step, register read/write
+### 4.5 GDB Remote Stub [COMPLETE]
+~~TCP server implementing GDB RSP~~
+- TCP server on configurable port (default 3333) implementing full GDB RSP
+- Register read/write (R0-R15 + xPSR), memory read/write
+- 16 software/hardware breakpoints, single-step, continue, vCont
+- Ctrl-C interrupt, detach, kill, thread queries
+- Usage: `./bramble firmware.uf2 -gdb` then `target remote :3333`
 
 ---
 

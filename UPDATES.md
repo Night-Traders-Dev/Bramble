@@ -1,5 +1,45 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.14.0] - 2026-03-08
+
+### Phase 4.5: GDB Remote Debugging
+
+1. **GDB Remote Stub** (`gdb.c`, `gdb.h`)
+   - TCP server on configurable port (default 3333) implementing GDB RSP
+   - Packet framing: `$data#checksum` with ACK/NACK
+   - Register access: R0-R15 + xPSR (17 ARM Cortex-M0+ registers)
+   - Little-endian hex encoding for register values (GDB convention)
+   - Memory read (`m addr,len`) and write (`M addr,len:data`) via `mem_read8/write8`
+   - Breakpoint management: 16 slots, software (Z0/z0) and hardware (Z1/z1)
+   - Single-step and continue execution
+   - vCont protocol support for continue/step
+   - Ctrl-C (0x03) interrupt breaks running execution
+   - Initial stop on connect for pre-execution inspection
+   - Thread queries (single-threaded: thread 1)
+   - qSupported: advertises PacketSize, swbreak+, hwbreak+
+
+2. **Main Integration** (`main.c`)
+   - `-gdb [port]` flag starts GDB server after boot, before execution
+   - Execution loop checks `gdb_should_stop(pc)` before each dual_core_step
+   - 10M instruction safety limit disabled during GDB sessions
+   - Clean GDB socket cleanup on exit
+
+### Usage
+
+```bash
+# Start emulator with GDB server
+./bramble firmware.uf2 -gdb
+
+# In another terminal, connect GDB
+arm-none-eabi-gdb firmware.elf -ex "target remote :3333"
+
+# Or with custom port
+./bramble firmware.uf2 -gdb 4444
+arm-none-eabi-gdb -ex "target remote :4444"
+```
+
+---
+
 ## [0.13.0] - 2026-03-08
 
 ### Phase 4.1 + 4.2: SRAM Aliasing + XIP Cache Control

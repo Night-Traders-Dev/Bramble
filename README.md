@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.13.0 - Production Ready** ✅
+## Current Status: **v0.14.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO register-level emulation** (2 blocks, 4 SMs each), **SRAM aliasing** (0x21000000 mirror), **XIP cache control** with flash aliases and 16KB XIP SRAM, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **183-test verbose unit test suite** across 42+ categories.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO register-level emulation** (2 blocks, 4 SMs each), **SRAM aliasing** (0x21000000 mirror), **XIP cache control** with flash aliases and 16KB XIP SRAM, **GDB remote debugging** via RSP, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **183-test verbose unit test suite** across 42+ categories.
 
 ### ✅ What Works
 
@@ -114,6 +114,11 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - DBG_CFGINFO returns correct RP2040 values
   - Atomic register aliases (SET/CLR/XOR)
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
+- **✨ GDB Remote Debugging**: TCP server implementing GDB RSP:
+  - Register read/write (R0-R15 + xPSR), memory read/write
+  - Up to 16 software/hardware breakpoints
+  - Single-step and continue, vCont support, Ctrl-C interrupt
+  - Usage: `./bramble firmware.uf2 -gdb` then `target remote :3333`
 - **✨ Unit Test Suite**: 183 tests across 42+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
@@ -293,6 +298,17 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -status          # Periodic status updates
 ./bramble firmware.uf2 -debug -status   # Debug + status combined
 ./bramble firmware.uf2 -stdin           # Enable stdin → UART0 Rx
+./bramble firmware.uf2 -gdb            # Start GDB server on port 3333
+./bramble firmware.uf2 -gdb 4444       # GDB server on custom port
+```
+
+**GDB Remote Debugging:**
+```bash
+# Terminal 1: Start emulator with GDB server
+./bramble firmware.uf2 -gdb
+
+# Terminal 2: Connect GDB
+arm-none-eabi-gdb firmware.elf -ex "target remote :3333"
 ```
 
 Expected output:
@@ -336,7 +352,8 @@ Bramble/
 │   ├── i2c.c           # Dual DW_apb_i2c emulation
 │   ├── pwm.c           # 8-slice PWM emulation
 │   ├── dma.c           # 12-channel DMA controller
-│   └── pio.c           # Dual PIO block emulation (register-level)
+│   ├── pio.c           # Dual PIO block emulation (register-level)
+│   └── gdb.c           # GDB remote serial protocol stub
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
@@ -351,7 +368,8 @@ Bramble/
 │   ├── i2c.h           # DW_apb_i2c register definitions
 │   ├── pwm.h           # PWM register definitions
 │   ├── dma.h           # DMA controller register definitions
-│   └── pio.h           # PIO register definitions
+│   ├── pio.h           # PIO register definitions
+│   └── gdb.h           # GDB RSP stub definitions
 ├── tests/
 │   └── test_suite.c    # Unit test suite (183 tests, verbose, CTest integrated)
 ├── test-firmware/
@@ -634,7 +652,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 ### Medium Priority
 
 1. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
-2. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
+2. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
 
 ### Low Priority
 

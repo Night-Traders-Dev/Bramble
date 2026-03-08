@@ -33,6 +33,7 @@ set(SOURCES
     src/pwm.c
     src/dma.c
     src/pio.c
+    src/gdb.c
 )
 
 # Executable

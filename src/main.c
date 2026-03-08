@@ -10,6 +10,7 @@
  *   - Debug mode support for both cores
  *   - Status monitoring and statistics
  *   - Non-blocking stdin polling for UART Rx (-stdin flag)
+ *   - GDB remote debugging support (-gdb flag)
  */
 
 #include <stdio.h>
@@ -32,6 +33,7 @@
 #include "pwm.h"
 #include "dma.h"
 #include "pio.h"
+#include "gdb.h"
 
 
 int any_core_running(void);
@@ -92,6 +94,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -asm       Show assembly instruction tracing\n");
         fprintf(stderr, "  -status    Print periodic status updates\n");
         fprintf(stderr, "  -stdin     Enable stdin polling for UART0 Rx input\n");
+        fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         return EXIT_FAILURE;
     }
 
@@ -100,6 +103,8 @@ int main(int argc, char **argv) {
     int debug_mode = 0;
     int debug1_mode = 0;
     int show_status = 0;
+    int gdb_enabled = 0;
+    int gdb_port = GDB_DEFAULT_PORT;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-debug") == 0) {
@@ -112,6 +117,11 @@ int main(int argc, char **argv) {
             show_status = 1;
         } else if (strcmp(argv[i], "-stdin") == 0) {
             stdin_enabled = 1;
+        } else if (strcmp(argv[i], "-gdb") == 0) {
+            gdb_enabled = 1;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                gdb_port = atoi(argv[++i]);
+            }
         }
     }
 
@@ -190,6 +200,15 @@ int main(int argc, char **argv) {
     printf("[Boot] Core 1 PC = 0x%08X\n", cores[CORE1].r[15]);
     printf("\n");
 
+    /* GDB server initialization */
+    if (gdb_enabled) {
+        if (gdb_init(gdb_port) < 0) {
+            fprintf(stderr, "[Error] Failed to start GDB server\n");
+            return EXIT_FAILURE;
+        }
+        /* Initial stop: let GDB inspect state before execution */
+        gdb_handle();
+    }
 
     /* ========================================================================
      * Execution Phase
@@ -205,6 +224,14 @@ int main(int argc, char **argv) {
     uint32_t step_count = 0;
 
     while (any_core_running()) {
+
+        /* GDB: check for breakpoint or single-step before executing */
+        if (gdb_enabled && gdb.active && gdb_should_stop(cores[CORE0].r[15])) {
+            int result = gdb_handle();
+            if (result < 0) {
+                gdb_enabled = 0;  /* Detached or killed */
+            }
+        }
 
         dual_core_step();
         instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
@@ -228,8 +255,8 @@ int main(int argc, char **argv) {
             printf("\n");
         }
 
-        /* Safety limit: prevent infinite loops */
-        if (instruction_count > 10000000) {
+        /* Safety limit: prevent infinite loops (disabled during GDB) */
+        if (!gdb_enabled && instruction_count > 10000000) {
             printf("[Warning] Instruction limit reached (10M)\n");
             break;
         }
@@ -238,6 +265,10 @@ int main(int argc, char **argv) {
     /* ========================================================================
      * Completion Phase (Dual-Core)
      * ======================================================================== */
+
+    if (gdb_enabled) {
+        gdb_cleanup();
+    }
 
     if (stdin_enabled) {
         uart_stdin_cleanup();

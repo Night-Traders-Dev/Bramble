@@ -1,5 +1,36 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.14.0] - 2026-03-08
+
+### Added - GDB Remote Debugging
+
+**GDB Remote Serial Protocol Stub** (`-gdb [port]`):
+
+- TCP server implementing GDB RSP for interactive firmware debugging
+- Default port 3333, configurable via `-gdb <port>`
+- Register read/write: R0-R15 + xPSR (17 registers, little-endian hex)
+- Memory read/write: all widths via `m`/`M` commands
+- Software and hardware breakpoints: up to 16 concurrent breakpoints
+- Single-step execution via `s` command
+- Continue execution via `c` command, vCont support
+- Ctrl-C interrupt to break running execution
+- Detach (`D`) and kill (`k`) commands
+- Thread and feature queries (qSupported, qAttached, qC, qfThreadInfo)
+- Initial stop on connect: GDB can inspect state before execution starts
+- 10M instruction limit disabled during GDB sessions
+- Usage: `./bramble firmware.uf2 -gdb` then `arm-none-eabi-gdb -ex "target remote :3333"`
+
+### Files Added
+
+- `src/gdb.c`, `include/gdb.h` - GDB remote stub module
+
+### Files Modified
+
+- `src/main.c` - `-gdb` flag, GDB init/handle/cleanup in execution loop
+- `CMakeLists.txt` - Added `src/gdb.c` to SOURCES
+
+---
+
 ## [0.13.0] - 2026-03-08
 
 ### Added - SRAM Aliasing + XIP Cache Control
