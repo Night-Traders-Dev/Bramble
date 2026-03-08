@@ -32,7 +32,6 @@ void mem_write32(uint32_t addr, uint32_t val) {
     /* Timer registers */
     if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
         timer_write32(addr, val);
-        printf("[MEMBUS] Timer read at 0x%08X\n", addr);  /* ADD THIS DEBUG LINE */
         return;
     }
 
@@ -233,22 +232,21 @@ uint8_t mem_read8(uint32_t addr) {
 
 void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
-        printf("[MEM] WARNING: Attempt to write to flash at 0x%08X (read-only)\n", addr);
-        return;
+        return;  /* Flash writes ignored */
     }
-    
+
     if (core_id == CORE0 && addr >= CORE0_RAM_START && addr < CORE0_RAM_END) {
         uint32_t offset = addr - CORE0_RAM_START;
         memcpy(&cores[CORE0].ram[offset], &val, 4);
         return;
     }
-    
+
     if (core_id == CORE1 && addr >= CORE1_RAM_START && addr < CORE1_RAM_END) {
         uint32_t offset = addr - CORE1_RAM_START;
         memcpy(&cores[CORE1].ram[offset], &val, 4);
         return;
     }
-    
+
     if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
         uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
         if (offset < (SHARED_RAM_SIZE / 4)) {
@@ -256,6 +254,9 @@ void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
         }
         return;
     }
+
+    /* Route peripheral writes through single-core memory bus */
+    mem_write32(addr, val);
 }
 
 uint16_t mem_read16_dual(int core_id, uint32_t addr) {
@@ -297,7 +298,7 @@ uint32_t mem_read32_dual(int core_id, uint32_t addr) {
         memcpy(&val, &cores[0].flash[offset], 4);
         return val;
     }
-    
+
     /* Per-core RAM regions */
     if (core_id == CORE0 && addr >= CORE0_RAM_START && addr < CORE0_RAM_END) {
         uint32_t offset = addr - CORE0_RAM_START;
@@ -305,14 +306,14 @@ uint32_t mem_read32_dual(int core_id, uint32_t addr) {
         memcpy(&val, &cores[CORE0].ram[offset], 4);
         return val;
     }
-    
+
     if (core_id == CORE1 && addr >= CORE1_RAM_START && addr < CORE1_RAM_END) {
         uint32_t offset = addr - CORE1_RAM_START;
         uint32_t val = 0;
         memcpy(&val, &cores[CORE1].ram[offset], 4);
         return val;
     }
-    
+
     /* Shared RAM (accessible by both cores) */
     if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
         uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
@@ -320,6 +321,7 @@ uint32_t mem_read32_dual(int core_id, uint32_t addr) {
             return shared_ram[offset];
         }
     }
-    
-    return 0;  /* Out of bounds */
+
+    /* Route peripheral reads through single-core memory bus */
+    return mem_read32(addr);
 }

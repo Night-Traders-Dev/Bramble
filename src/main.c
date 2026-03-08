@@ -100,7 +100,10 @@ int main(int argc, char **argv) {
     cpu_reset_core(CORE0);
     printf("[Boot] Core 0 SP = 0x%08X\n", cores[CORE0].r[13]);
     printf("[Boot] Core 0 PC = 0x%08X\n", cores[CORE0].r[15]);
-    printf("[Boot] Core 1 held in reset (waiting for Core 0 to start)\n");
+    cpu_reset_core(CORE1);
+    printf("[Boot] Core 1 SP = 0x%08X\n", cores[CORE1].r[13]);
+    printf("[Boot] Core 1 PC = 0x%08X\n", cores[CORE1].r[15]);
+//    printf("[Boot] Core 1 held in reset (waiting for Core 0 to start)\n");
     printf("\n");
 
 
@@ -120,7 +123,7 @@ int main(int argc, char **argv) {
     while (any_core_running()) {
 
         dual_core_step();
-        instruction_count += 2;
+        instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
         step_count++;
 
         if (show_status && (step_count % 1000 == 0)) {

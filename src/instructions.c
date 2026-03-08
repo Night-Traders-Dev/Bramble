@@ -21,7 +21,7 @@ void update_nz_flags(uint32_t result) {
 }
 
 void update_add_flags(uint32_t op1, uint32_t op2, uint32_t result) {
-    cpu.xpsr = 0;
+    cpu.xpsr &= ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V);
 
     // N and Z flags
     if (result == 0) cpu.xpsr |= FLAG_Z;
@@ -36,7 +36,7 @@ void update_add_flags(uint32_t op1, uint32_t op2, uint32_t result) {
 }
 
 void update_sub_flags(uint32_t op1, uint32_t op2, uint32_t result) {
-    cpu.xpsr = 0;
+    cpu.xpsr &= ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V);
 
     // N and Z flags
     if (result == 0) cpu.xpsr |= FLAG_Z;
@@ -124,13 +124,29 @@ void instr_mov_reg(uint16_t instr) {
     // MOV does NOT update flags
 }
 
-void instr_add_reg_reg(uint16_t instr) {
+void instr_adds_reg_reg(uint16_t instr) {
+    // ADDS Rd, Rn, Rm - Encoding: 0001 100 mmm nnn ddd (updates flags)
+    uint8_t rm = (instr >> 6) & 0x07;
+    uint8_t rn = (instr >> 3) & 0x07;
+    uint8_t rd = instr & 0x07;
+    uint32_t op1 = cpu.r[rn];
+    uint32_t op2 = cpu.r[rm];
+    uint32_t result = op1 + op2;
+    cpu.r[rd] = result;
+    update_add_flags(op1, op2, result);
+}
+
+void instr_add_reg_high(uint16_t instr) {
+    // ADD Rd, Rm - Encoding: 0100 0100 D:mmm:ddd (high regs, no flags)
     uint8_t reg_src = (instr >> 3) & 0x0F;
     uint8_t reg_dst = ((instr >> 4) & 0x08) | (instr & 0x07);
-    uint32_t op1 = cpu.r[reg_dst];
-    uint32_t op2 = cpu.r[reg_src];
-    uint32_t result = op1 + op2;
-    cpu.r[reg_dst] = result;
+    uint32_t result = cpu.r[reg_dst] + cpu.r[reg_src];
+
+    if (reg_dst == 15) {
+        cpu.r[15] = result & ~1u;
+    } else {
+        cpu.r[reg_dst] = result;
+    }
     // High register ADD does not update flags
 }
 
@@ -207,19 +223,21 @@ void instr_str_sp_imm8(uint16_t instr) {
 }
 
 void instr_str_reg_offset(uint16_t instr) {
-    uint8_t reg_src = instr & 0x07;
-    uint8_t reg_dst = (instr >> 3) & 0x07;
-    uint8_t imm = (instr >> 6) & 0x1F;
-    uint32_t addr = cpu.r[reg_dst] + (imm * 4);
-    mem_write32(addr, cpu.r[reg_src]);
+    // STR Rd, [Rn, Rm] - Encoding: 0101 000 mmm nnn ddd
+    uint8_t rd = instr & 0x07;
+    uint8_t rn = (instr >> 3) & 0x07;
+    uint8_t rm = (instr >> 6) & 0x07;
+    uint32_t addr = cpu.r[rn] + cpu.r[rm];
+    mem_write32(addr, cpu.r[rd]);
 }
 
 void instr_ldr_reg_offset(uint16_t instr) {
-    uint8_t reg_dst = instr & 0x07;
-    uint8_t reg_src = (instr >> 3) & 0x07;
-    uint8_t imm = (instr >> 6) & 0x1F;
-    uint32_t addr = cpu.r[reg_src] + (imm * 4);
-    cpu.r[reg_dst] = mem_read32(addr);
+    // LDR Rd, [Rn, Rm] - Encoding: 0101 100 mmm nnn ddd
+    uint8_t rd = instr & 0x07;
+    uint8_t rn = (instr >> 3) & 0x07;
+    uint8_t rm = (instr >> 6) & 0x07;
+    uint32_t addr = cpu.r[rn] + cpu.r[rm];
+    cpu.r[rd] = mem_read32(addr);
 }
 
 void instr_stmia(uint16_t instr) {
@@ -299,12 +317,11 @@ void instr_pop(uint16_t instr) {
             if (cpu.debug_asm) {
                 printf("[POP] *** MAGIC VALUE DETECTED - EXCEPTION RETURN ***\n");
             }
+            /* cpu_exception_return will restore all regs including SP */
             cpu_exception_return(pc_val);
-            sp += 4;
-            cpu.r[13] = sp;
-            return;  /* PC already updated */
+            return;  /* PC and SP already updated by exception_return */
         }
-        
+
         cpu.r[15] = pc_val & ~1;  /* Clear thumb bit */
         sp += 4;
     }
@@ -705,19 +722,25 @@ void instr_shift_arithmetic_right(uint16_t instr) {
     uint8_t imm = (instr >> 6) & 0x1F;
     uint8_t reg_src = (instr >> 3) & 0x07;
     uint8_t reg_dst = instr & 0x07;
-    
+
     if (imm == 0) {
-        imm = 32;
-    }
-    
-    // Update carry before shift
-    if (cpu.r[reg_src] & (1 << (imm - 1))) {
-        cpu.xpsr |= FLAG_C;
+        // ASR #0 encodes ASR #32: result is all sign bits, carry = bit 31
+        if (cpu.r[reg_src] & 0x80000000) {
+            cpu.xpsr |= FLAG_C;
+            cpu.r[reg_dst] = 0xFFFFFFFF;
+        } else {
+            cpu.xpsr &= ~FLAG_C;
+            cpu.r[reg_dst] = 0;
+        }
     } else {
-        cpu.xpsr &= ~FLAG_C;
+        // Update carry: last bit shifted out
+        if (cpu.r[reg_src] & (1u << (imm - 1))) {
+            cpu.xpsr |= FLAG_C;
+        } else {
+            cpu.xpsr &= ~FLAG_C;
+        }
+        cpu.r[reg_dst] = ((int32_t)cpu.r[reg_src]) >> imm;
     }
-    
-    cpu.r[reg_dst] = ((int32_t)cpu.r[reg_src]) >> imm;
     update_nz_flags(cpu.r[reg_dst]);
 }
 
@@ -800,12 +823,20 @@ void instr_rors_reg(uint16_t instr) {
     // RORS Rd, Rs - Encoding: 0100 0001 11 sss ddd
     uint8_t rd = instr & 0x07;
     uint8_t rs = (instr >> 3) & 0x07;
-    uint8_t shift = cpu.r[rs] & 0x1F;  // Only use bottom 5 bits
-    
-    if (shift == 0) {
-        // No change
+    uint8_t shift_full = cpu.r[rs] & 0xFF;  // Bottom 8 bits per ARM spec
+
+    if (shift_full == 0) {
+        // No change to value or carry
     } else {
-        uint32_t result = (cpu.r[rd] >> shift) | (cpu.r[rd] << (32 - shift));
+        uint8_t shift = shift_full & 0x1F;  // Effective rotation amount
+        uint32_t result;
+        if (shift == 0) {
+            // Rotate by 32 (or multiple of 32): result unchanged, carry = bit 31
+            result = cpu.r[rd];
+        } else {
+            result = (cpu.r[rd] >> shift) | (cpu.r[rd] << (32 - shift));
+        }
+        // Carry = bit 31 of result (last bit rotated)
         if (result & 0x80000000) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] = result;
@@ -859,8 +890,16 @@ void instr_svc(uint16_t instr) {
 }
 
 void instr_add_high_reg(uint16_t instr) {
-    // ADD with high registers (already handled by instr_add_reg_reg)
-    instr_add_reg_reg(instr);
+    // ADD with high registers (no flag update)
+    uint8_t reg_src = (instr >> 3) & 0x0F;
+    uint8_t reg_dst = ((instr >> 4) & 0x08) | (instr & 0x07);
+    uint32_t result = cpu.r[reg_dst] + cpu.r[reg_src];
+
+    if (reg_dst == 15) {
+        cpu.r[15] = result & ~1u;
+    } else {
+        cpu.r[reg_dst] = result;
+    }
 }
 
 void instr_cmp_high_reg(uint16_t instr) {
@@ -938,9 +977,8 @@ void instr_wfi(uint16_t instr) {
         printf("[CPU] WFI - Will check for interrupt on next cycle\n");
     }
     
-    /* Simply advance PC - cpu_step() will handle interrupt on next cycle */
-    /* This is the correct behavior: WFI doesn't block indefinitely */
-    cpu.r[15] += 2;
+    /* Don't advance PC here - cpu_step() handles PC += 2 for all
+     * non-branch instructions. WFI is a no-op in the emulator. */
 }
 
 void instr_wfe(uint16_t instr) {
@@ -1009,8 +1047,7 @@ void instr_rev16(uint16_t instr) {
     uint8_t rd = instr & 0x07;
     uint8_t rm = (instr >> 3) & 0x07;
     uint32_t value = cpu.r[rm];
-    cpu.r[rd] = ((value & 0xFF) << 8) | ((value & 0xFF00) >> 8) |
-                ((value & 0xFF0000) << 8) | ((value >> 24) << 24);
+    cpu.r[rd] = ((value & 0x00FF00FF) << 8) | ((value & 0xFF00FF00) >> 8);
 }
 
 void instr_revsh(uint16_t instr) {

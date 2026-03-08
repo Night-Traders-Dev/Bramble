@@ -14,7 +14,8 @@ void instr_mov_reg(uint16_t instr);                // MOV Rd, Rm (high register 
 // Arithmetic Operations
 void instr_adds_imm3(uint16_t instr);              // ADDS Rd, Rn, #imm3 [EXISTING]
 void instr_adds_imm8(uint16_t instr);              // ADDS Rd, #imm8 [EXISTING]
-void instr_add_reg_reg(uint16_t instr);            // ADDS Rd, Rn, Rm [EXISTING]
+void instr_adds_reg_reg(uint16_t instr);           // ADDS Rd, Rn, Rm (updates flags)
+void instr_add_reg_high(uint16_t instr);           // ADD Rd, Rm (high regs, no flags)
 void instr_subs_imm3(uint16_t instr);              // SUBS Rd, Rn, #imm3 [EXISTING]
 void instr_subs_imm8(uint16_t instr);              // SUBS Rd, #imm8
 void instr_sub_reg_reg(uint16_t instr);            // SUBS Rd, Rn, Rm [EXISTING]

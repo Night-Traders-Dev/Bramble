@@ -312,16 +312,12 @@ void cpu_step(void) {
 
         /* Enter the exception handler (this sets Active bits) */
         cpu_exception_entry(vector_num);
-
-        /* Update timer and return without executing regular instruction */
-        timer_tick(1);
         return;
     }
 
     /* Treat all-zero halfword as NOP */
     if (instr == 0x0000) {
         cpu.r[15] = pc + 2;
-        timer_tick(1);
         return;
     }
 
@@ -342,7 +338,6 @@ if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
                    instr, instr2, pc);
         }
         instr_bl_32(instr, instr2);
-        timer_tick(1);
         return;
     }
 
@@ -358,40 +353,33 @@ if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
     /* -------- Control-flow instructions (handle PC themselves) -------- */
     } else if ((instr & 0xFF00) == 0xBE00) { /* BKPT */
         instr_bkpt(instr);
-        timer_tick(1);
         return;
 
     } else if ((instr & 0xFF87) == 0x4700) { /* BX Rm */
         instr_bx(instr);
-        timer_tick(1);
         return;
 
     } else if ((instr & 0xFF87) == 0x4780) { /* BLX Rm */
         instr_blx(instr);
-        timer_tick(1);
         return;
 
     } else if ((instr & 0xF800) == 0xE000) { /* B (unconditional) */
         instr_b_uncond(instr);
-        timer_tick(1);
         return;
 
     } else if ((instr & 0xF000) == 0xD000) { /* B{cond} */
         instr_bcond(instr);
-        timer_tick(1);
         return;
 
     } else if ((instr & 0xFE00) == 0xBC00) { /* POP (includes R15) */
         instr_pop(instr);
         /* If P bit (bit 8) set, POP loaded PC - don't increment */
         if ((instr & 0x0100) != 0) {
-            timer_tick(1);
             return; /* PC was loaded, don't increment */
         }
 
     } else if (instr == 0xE7FD) { /* UDF */
         instr_udf(instr);
-        timer_tick(1);
         return;
 
     /* -------- Data Movement -------- */
@@ -416,10 +404,10 @@ if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
 
     /* -------- Arithmetic - Register -------- */
     } else if ((instr & 0xFE00) == 0x1800) { /* ADDS Rd, Rn, Rm */
-        instr_add_reg_reg(instr);
+        instr_adds_reg_reg(instr);
 
     } else if ((instr & 0xFF00) == 0x4400) { /* ADD Rd, Rm (high regs) */
-        instr_add_reg_reg(instr);
+        instr_add_reg_high(instr);
 
     } else if ((instr & 0xFE00) == 0x1A00) { /* SUBS Rd, Rn, Rm */
         instr_sub_reg_reg(instr);
@@ -643,7 +631,6 @@ if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
     } else {
         /* Unknown / unimplemented instruction: log and halt */
         instr_unimplemented(instr);
-        timer_tick(1);
         return;
     }
 
@@ -726,70 +713,105 @@ void dual_core_init(void) {
 
 
 
-/* 
+/*
  * Helper: Context-switch a specific core into the single-core engine
  * to execute one instruction using the full 'instructions.c' decoder.
+ *
+ * Uses lightweight register swap instead of copying 2MB+ flash/RAM.
+ * Flash and RAM are accessed via the memory bus which routes to the
+ * correct core's storage based on active_core.
  */
 static void cpu_step_core_via_single(int core_id) {
     if (core_id >= NUM_CORES) return;
     if (cores[core_id].is_halted) return;
 
-    // 1. Activate the core (for shared peripheral logic)
+    /* 1. Activate the core (for memory bus routing) */
     set_active_core(core_id);
 
-    // 2. Backup the global single-core state (so we don't corrupt it)
-    cpu_state_t saved_cpu = cpu;
+    /* 2. Save only the lightweight register state (64 bytes, not 2MB+) */
+    uint32_t saved_r[16];
+    memcpy(saved_r, cpu.r, sizeof(saved_r));
+    uint32_t saved_xpsr = cpu.xpsr;
+    uint32_t saved_vtor = cpu.vtor;
+    uint32_t saved_step = cpu.step_count;
+    int saved_debug = cpu.debug_enabled;
+    int saved_debug_asm = cpu.debug_asm;
+    uint32_t saved_irq = cpu.current_irq;
 
-    // 3. Load the target core's state into the global 'cpu' structure
-    memset(cpu.r, 0, sizeof(cpu.r));
+    /* 3. Load core registers into global cpu */
     memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
     cpu.xpsr         = cores[core_id].xpsr;
     cpu.vtor         = cores[core_id].vtor;
     cpu.step_count   = cores[core_id].step_count;
     cpu.debug_enabled= cores[core_id].debug_enabled;
+    cpu.debug_asm    = cores[core_id].debug_asm;
     cpu.current_irq  = cores[core_id].current_irq;
-    
-    // 4. Map memory contexts
-    //    - Flash is shared (copy from Core 0 storage)
-    //    - RAM is per-core
-    memcpy(cpu.flash, cores[0].flash, FLASH_SIZE);
-    memcpy(cpu.ram,   cores[core_id].ram, CORE_RAM_SIZE);
 
-    // 5. Execute ONE instruction using the single-core engine
-    //    This handles LDR, CMP, B, BL, PUSH/POP, etc. correctly.
+    /* 4. Point cpu flash/ram at the core's storage (pointer swap) */
+    /* Note: cpu.flash and cpu.ram are arrays (not pointers), so we must
+     * ensure the memory bus reads from cores[].flash/ram directly.
+     * The mem_read/write functions already handle this via the
+     * single-core path which accesses cpu.flash/ram, so we need to
+     * make cpu.flash/ram point to the right data.
+     * For flash (shared), use core 0's copy.
+     * For RAM, use the active core's copy. */
+    uint8_t *saved_flash_ptr = NULL;
+    uint8_t *saved_ram_ptr = NULL;
+
+    /* Swap flash: point to core 0's flash (shared) */
+    /* Since cpu.flash is a fixed array, we swap contents by pointer trick:
+     * We'll memcpy only if the pointers differ, but since instructions
+     * only read flash (not write), we can just copy the core's flash
+     * pointer into cpu's flash for the duration of the step.
+     *
+     * OPTIMIZATION: The cpu struct's flash/ram are used by mem_read/write.
+     * Instead of copying 2MB, we note that in dual-core mode the memory
+     * bus should route through cores[] arrays. For now, we do a minimal
+     * swap of just the RAM that might be modified. */
+
+    /* Only swap RAM (not flash - flash is read-only during execution) */
+    /* Use a stack buffer to avoid 2MB copy - just swap pointers conceptually.
+     * Since C arrays can't be reassigned, we swap the RAM content only. */
+    memcpy(cpu.ram, cores[core_id].ram, CORE_RAM_SIZE);
+
+    /* Flash: only copy if this is the first step or if needed.
+     * Since flash is read-only during execution and shared, we copy once
+     * during init and keep it in sync. */
+
+    /* 5. Execute ONE instruction */
     cpu_step();
 
-    // 6. Save the updated state back to the target core
+    /* 6. Save updated state back */
     memcpy(cores[core_id].r, cpu.r, sizeof(cpu.r));
     cores[core_id].xpsr         = cpu.xpsr;
     cores[core_id].vtor         = cpu.vtor;
     cores[core_id].step_count   = cpu.step_count;
     cores[core_id].current_irq  = cpu.current_irq;
-    
-    //    Check if the instruction halted the CPU (PC=0xFFFFFFFF)
+
     if (cpu.r[15] == 0xFFFFFFFF) {
         cores[core_id].is_halted = 1;
     }
 
-    // 7. Write back RAM (in case the instruction was STR or PUSH)
+    /* 7. Write back RAM (only the per-core portion) */
     memcpy(cores[core_id].ram, cpu.ram, CORE_RAM_SIZE);
 
-    // 8. Restore the original global single-core state
-    cpu = saved_cpu;
+    /* 8. Restore saved register state */
+    memcpy(cpu.r, saved_r, sizeof(saved_r));
+    cpu.xpsr = saved_xpsr;
+    cpu.vtor = saved_vtor;
+    cpu.step_count = saved_step;
+    cpu.debug_enabled = saved_debug;
+    cpu.debug_asm = saved_debug_asm;
+    cpu.current_irq = saved_irq;
+
+    (void)saved_flash_ptr;
+    (void)saved_ram_ptr;
 }
 
 /* 
  * Unified Dual-Core Stepper
  */
 void cpu_step_core(int core_id) {
-    #define CORE1_ENTRY_OFFSET 0x2C  /* Example - check your binary */
-    uint32_t core1_entry = mem_read32(FLASH_BASE + CORE1_ENTRY_OFFSET);
-
-    if ((core1_entry & 0x1) || (core1_entry >= FLASH_BASE)) {
-        cores[CORE1].is_halted = 0;
-        cores[CORE1].r[15] = core1_entry & ~1;
-        printf("[Boot] Core 1 entry: 0x%08X\n", core1_entry & ~1);
-    }
     cpu_step_core_via_single(core_id);
 }
 
@@ -956,11 +978,15 @@ void sio_set_core1_stall(int stall) {
 uint32_t spinlock_acquire(uint32_t lock_num) {
     if (lock_num >= SPINLOCK_SIZE) return 0;
 
-    while ((spinlocks[lock_num] & SPINLOCK_LOCKED) == 0) {
-        spinlocks[lock_num] = SPINLOCK_VALID | SPINLOCK_LOCKED;
+    /* RP2040 hardware semantics: reading the spinlock register is atomic.
+     * Returns 0 if lock was already held (failed to acquire).
+     * Returns nonzero if lock was free and is now acquired. */
+    if (spinlocks[lock_num] & SPINLOCK_LOCKED) {
+        return 0;  /* Already locked - acquisition failed */
     }
 
-    return spinlocks[lock_num];
+    spinlocks[lock_num] = SPINLOCK_VALID | SPINLOCK_LOCKED;
+    return spinlocks[lock_num];  /* Success */
 }
 
 void spinlock_release(uint32_t lock_num) {
@@ -985,9 +1011,9 @@ int fifo_is_full(int core_id) {
 uint32_t fifo_pop(int core_id) {
     if (core_id >= NUM_CORES) return 0;
 
-    /* Wait for data to be available */
-    while (fifo[core_id].count == 0) {
-        /* Spin-wait */
+    if (fifo[core_id].count == 0) {
+        printf("[FIFO] WARNING: Pop on empty FIFO for core %d\n", core_id);
+        return 0;
     }
 
     uint32_t val = fifo[core_id].messages[fifo[core_id].read_ptr];
@@ -1000,9 +1026,9 @@ uint32_t fifo_pop(int core_id) {
 void fifo_push(int core_id, uint32_t val) {
     if (core_id >= NUM_CORES) return;
 
-    /* Wait for space */
-    while (fifo[core_id].count >= FIFO_DEPTH) {
-        /* Spin-wait */
+    if (fifo[core_id].count >= FIFO_DEPTH) {
+        printf("[FIFO] WARNING: Push on full FIFO for core %d, dropping\n", core_id);
+        return;
     }
 
     fifo[core_id].messages[fifo[core_id].write_ptr] = val;

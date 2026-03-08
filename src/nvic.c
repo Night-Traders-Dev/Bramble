@@ -171,7 +171,7 @@ uint32_t nvic_read_register(uint32_t addr) {
             
         case SCB_VTOR:
             /* Vector Table Offset Register */
-            return 0x10000000;  /* Start of flash */
+            return cpu.vtor;
             
         default:
             return 0;
