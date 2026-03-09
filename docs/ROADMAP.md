@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.20.0
+## Current State: v0.21.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -277,12 +277,29 @@ on M0+. The original roadmap incorrectly listed these.
 - `machine.freq()` returns actual configured frequency instead of hardcoded 125MHz
 - Defaults to 125MHz when PLL not yet configured
 
-### 5.4 Remaining for MicroPython
+### 5.4 USB Device Enumeration [COMPLETE]
 
-- USB device enumeration (host-side emulation needed for full USB)
-- Flash filesystem (littlefs over flash write)
+- Full USB host simulation state machine:
+  - Bus reset → GET_DEVICE_DESCRIPTOR → SET_ADDRESS → GET_CONFIGURATION_DESCRIPTOR
+  - SET_CONFIGURATION → CDC SET_LINE_CODING → SET_CONTROL_LINE_STATE (DTR+RTS)
+- SIE_STATUS properly reflects VBUS_DETECTED, CONNECTED, BUS_RESET, SETUP_REC
+- BUFF_STATUS tracking with W1C, INTR/INTS dynamic computation
+- CDC bulk endpoint detection via configuration descriptor parsing
+- CDC data output: bulk IN endpoint data printed to stdout
+- CDC data input: `usb_cdc_rx_push()` injects stdin bytes into bulk OUT endpoint
+- `usb_step()` called from main loop, advances enumeration and CDC data transfer
+- `stdio_usb_connected()` returns true after full enumeration
 
-### 5.5 Nice to Have
+### 5.5 Flash Persistence [COMPLETE]
+
+- `-flash <path>` option for persistent flash storage
+- On startup: loads flash file, restores non-firmware sectors (preserves UF2 firmware, restores filesystem)
+- On exit: saves full 2MB flash image to file
+- Enables littlefs/FAT filesystem persistence across emulator runs
+- Smart sector detection: compares 4KB sectors against erased state to identify firmware vs filesystem
+
+### 5.6 Nice to Have
+
 - RTC with actual time ticking
 - Dormant/sleep mode
 - Double-precision ROM functions (currently stubs but untested)

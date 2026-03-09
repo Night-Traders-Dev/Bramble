@@ -68,7 +68,7 @@ static void uart_stdin_cleanup(void) {
     }
 }
 
-/* Poll stdin and push any available bytes into UART0 RX FIFO.
+/* Poll stdin and push any available bytes into UART0 RX FIFO and USB CDC.
  * Called periodically from the main execution loop. */
 static void uart_stdin_poll(void) {
     struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
@@ -78,6 +78,7 @@ static void uart_stdin_poll(void) {
         if (n > 0) {
             for (ssize_t i = 0; i < n; i++) {
                 uart_rx_push(0, buf[i]);
+                usb_cdc_rx_push(buf[i]);
             }
         }
     }
@@ -100,6 +101,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
+        fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
         return EXIT_FAILURE;
     }
 
@@ -111,6 +113,7 @@ int main(int argc, char **argv) {
     int gdb_enabled = 0;
     int gdb_port = GDB_DEFAULT_PORT;
     int no_boot2 = 0;
+    char *flash_path = NULL;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-debug") == 0) {
@@ -137,6 +140,10 @@ int main(int argc, char **argv) {
             no_boot2 = 1;
         } else if (strcmp(argv[i], "-debug-mem") == 0) {
             mem_debug_unmapped = 1;
+        } else if (strcmp(argv[i], "-flash") == 0) {
+            if (i + 1 < argc) {
+                flash_path = argv[++i];
+            }
         }
     }
 
@@ -185,6 +192,35 @@ int main(int argc, char **argv) {
     }
 
     printf("[Init] Firmware loaded successfully\n");
+
+    /* Flash persistence: restore non-firmware sectors from flash file */
+    if (flash_path) {
+        /* Determine which 4KB sectors contain firmware data */
+        uint8_t fw_sectors[FLASH_SIZE / 4096];
+        for (int i = 0; i < (int)(FLASH_SIZE / 4096); i++) {
+            fw_sectors[i] = 0;
+            for (int j = 0; j < 4096; j++) {
+                if (cpu.flash[i * 4096 + j] != 0xFF) {
+                    fw_sectors[i] = 1;
+                    break;
+                }
+            }
+        }
+        /* Load flash file and restore non-firmware sectors */
+        FILE *ff = fopen(flash_path, "rb");
+        if (ff) {
+            uint8_t sector[4096];
+            for (int i = 0; i < (int)(FLASH_SIZE / 4096); i++) {
+                size_t n = fread(sector, 1, 4096, ff);
+                if (n < 4096) break;
+                if (!fw_sectors[i]) {
+                    memcpy(&cpu.flash[i * 4096], sector, 4096);
+                }
+            }
+            fclose(ff);
+            printf("[Init] Flash file loaded: %s (non-firmware sectors restored)\n", flash_path);
+        }
+    }
 
     /* Detect boot2 in firmware */
     if (!no_boot2 && cpu_has_boot2()) {
@@ -263,12 +299,15 @@ int main(int argc, char **argv) {
 
         dual_core_step();
         pio_step();
+        usb_step();
         instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
         step_count++;
 
         /* Poll stdin for UART Rx data every 1024 steps */
         if (stdin_enabled && (step_count & 0x3FF) == 0) {
             uart_stdin_poll();
+            /* Also push stdin bytes to USB CDC if enumerated */
+            /* (uart_stdin_poll already handles UART; USB CDC uses same stdin) */
         }
 
         if (show_status && (step_count % 1000 == 0)) {
@@ -318,6 +357,18 @@ int main(int argc, char **argv) {
 
     if (stdin_enabled) {
         uart_stdin_cleanup();
+    }
+
+    /* Save flash to file if persistence enabled */
+    if (flash_path) {
+        FILE *ff = fopen(flash_path, "wb");
+        if (ff) {
+            fwrite(cpu.flash, 1, FLASH_SIZE, ff);
+            fclose(ff);
+            printf("[Flash] Saved to %s\n", flash_path);
+        } else {
+            fprintf(stderr, "[Flash] Failed to save: %s\n", flash_path);
+        }
     }
 
     printf("\n");
