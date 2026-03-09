@@ -77,8 +77,11 @@ static void uart_stdin_poll(void) {
         ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
         if (n > 0) {
             for (ssize_t i = 0; i < n; i++) {
-                uart_rx_push(0, buf[i]);
-                usb_cdc_rx_push(buf[i]);
+                uint8_t ch = buf[i];
+                /* Translate LF→CR: serial devices expect CR as line ending */
+                if (ch == '\n') ch = '\r';
+                uart_rx_push(0, ch);
+                usb_cdc_rx_push(ch);
             }
         }
     }
