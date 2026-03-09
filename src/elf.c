@@ -128,8 +128,19 @@ int load_elf(const char *filename) {
         printf("[ELF] LOAD segment %d: vaddr=0x%08X paddr=0x%08X filesz=%u memsz=%u\n",
                i, phdr.p_vaddr, phdr.p_paddr, phdr.p_filesz, phdr.p_memsz);
 
-        /* Determine target address (use physical address for flash loading) */
-        uint32_t target = phdr.p_paddr;
+        /* Load segments to their runtime virtual address.
+         *
+         * Pico SDK ELFs commonly use p_paddr as the load memory address (LMA)
+         * in flash for initialized RAM data, while p_vaddr is the execution
+         * address. Using p_paddr for all segments traps startup in crt0's
+         * data copy loop because .data never actually appears in RAM.
+         *
+         * However, crt0 still copies initialized RAM data from the flash LMA.
+         * For RAM segments with a flash p_paddr, we therefore need both:
+         *   1. the runtime bytes present in SRAM at p_vaddr, and
+         *   2. the same file bytes mirrored into flash at p_paddr.
+         */
+        uint32_t target = phdr.p_vaddr;
 
         /* Load into flash */
         if (target >= FLASH_BASE && target + phdr.p_memsz <= FLASH_BASE + FLASH_SIZE) {
@@ -177,6 +188,27 @@ int load_elf(const char *filename) {
             }
 
             printf("[ELF] Loaded %u bytes to RAM[0x%08X]\n", phdr.p_filesz, ram_offset);
+
+            if (phdr.p_paddr >= FLASH_BASE &&
+                phdr.p_paddr + phdr.p_filesz <= FLASH_BASE + FLASH_SIZE &&
+                phdr.p_paddr != phdr.p_vaddr) {
+                uint32_t flash_offset = phdr.p_paddr - FLASH_BASE;
+
+                if (fseek(f, (long)phdr.p_offset, SEEK_SET) != 0) {
+                    printf("[ELF] ERROR: Failed to seek to RAM LMA data\n");
+                    continue;
+                }
+
+                size_t read = fread(&cpu.flash[flash_offset], 1, phdr.p_filesz, f);
+                if (read != phdr.p_filesz) {
+                    printf("[ELF] WARNING: Only mirrored %zu of %u bytes to flash LMA\n",
+                           read, phdr.p_filesz);
+                } else {
+                    printf("[ELF] Mirrored %u RAM-init bytes to flash[0x%08X]\n",
+                           phdr.p_filesz, flash_offset);
+                }
+            }
+
             segments_loaded++;
         }
         else {

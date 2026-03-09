@@ -94,6 +94,12 @@
 
 /* PSM - Power State Machine (0x40010000) */
 #define PSM_BASE                0x40010000
+#define PSM_FRCE_ON_OFFSET      0x00
+#define PSM_FRCE_OFF_OFFSET     0x04
+#define PSM_WDSEL_OFFSET        0x08
+#define PSM_DONE_OFFSET         0x0C
+#define PSM_ALL_MASK            0x0001FFFF
+#define PSM_FRCE_OFF_PROC1_BITS (1u << 16)
 
 /* PLL state (shared between PLL_SYS and PLL_USB) */
 typedef struct {
@@ -127,6 +133,11 @@ typedef struct {
     uint32_t wdog_load;
     uint32_t wdog_scratch[WATCHDOG_NUM_SCRATCH];
     uint32_t wdog_tick;
+
+    /* PSM */
+    uint32_t psm_frce_on;
+    uint32_t psm_frce_off;
+    uint32_t psm_wdsel;
 } clocks_state_t;
 
 /* Functions */

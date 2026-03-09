@@ -43,6 +43,7 @@
 #define XIP_CTRL_BASE        0x14000000  /* XIP cache control registers */
 #define XIP_SRAM_BASE        0x15000000  /* XIP cache as SRAM (16KB) */
 #define XIP_SRAM_SIZE        (16 * 1024)
+#define XIP_SSI_BASE         0x18000000  /* XIP SSI (flash serial interface) */
 
 /* Emulator guard (not a hardware boundary) */
 #define MEM_END         0x30000000
@@ -268,6 +269,7 @@ void cpu_exception_return_dual(int core_id, uint32_t lr_value);
 uint32_t sio_get_core_id(void);
 void sio_set_core1_reset(int assert_reset);
 void sio_set_core1_stall(int stall);
+int sio_core1_bootrom_handle_fifo_write(uint32_t val);
 
 /* Debugging */
 void dual_core_status(void);

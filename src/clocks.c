@@ -34,6 +34,11 @@ void clocks_reset(void) {
 
     /* Watchdog tick disabled at reset */
     clocks_state.wdog_tick = 0;
+
+    /* PSM defaults: everything powered on, nothing watchdog-selected */
+    clocks_state.psm_frce_on = 0;
+    clocks_state.psm_frce_off = 0;
+    clocks_state.psm_wdsel = 0;
 }
 
 /* ========================================================================
@@ -109,7 +114,13 @@ static uint32_t clocks_domain_read(uint32_t addr) {
             case CLK_DIV_OFFSET:
                 return clocks_state.clk_div[gen];
             case CLK_SELECTED_OFFSET:
-                /* Always return 1 = clock source selected/stable */
+                if (gen == CLK_REF) {
+                    return 1u << (clocks_state.clk_ctrl[gen] & 0x3u);
+                }
+                if (gen == CLK_SYS) {
+                    return 1u << (clocks_state.clk_ctrl[gen] & 0x1u);
+                }
+                /* Non-glitchless clocks are hardwired to selected=1. */
                 return 0x1;
             default:
                 return 0;
@@ -293,6 +304,52 @@ static void watchdog_write(uint32_t addr, uint32_t val, uint32_t alias) {
 }
 
 /* ========================================================================
+ * PSM (Power State Machine)
+ * ======================================================================== */
+
+static uint32_t psm_read(uint32_t addr) {
+    uint32_t offset = addr & 0xFFF;
+
+    switch (offset) {
+        case PSM_FRCE_ON_OFFSET:
+            return clocks_state.psm_frce_on;
+        case PSM_FRCE_OFF_OFFSET:
+            return clocks_state.psm_frce_off;
+        case PSM_WDSEL_OFFSET:
+            return clocks_state.psm_wdsel;
+        case PSM_DONE_OFFSET:
+            return (~clocks_state.psm_frce_off) & PSM_ALL_MASK;
+        default:
+            return 0;
+    }
+}
+
+static void psm_write(uint32_t addr, uint32_t val, uint32_t alias) {
+    uint32_t offset = addr & 0xFFF;
+    uint32_t prev_proc1 = clocks_state.psm_frce_off & PSM_FRCE_OFF_PROC1_BITS;
+
+    switch (offset) {
+        case PSM_FRCE_ON_OFFSET:
+            clocks_state.psm_frce_on = apply_alias_write(
+                clocks_state.psm_frce_on, val, alias) & PSM_ALL_MASK;
+            break;
+        case PSM_FRCE_OFF_OFFSET:
+            clocks_state.psm_frce_off = apply_alias_write(
+                clocks_state.psm_frce_off, val, alias) & PSM_ALL_MASK;
+            if ((clocks_state.psm_frce_off & PSM_FRCE_OFF_PROC1_BITS) != prev_proc1) {
+                sio_set_core1_reset((clocks_state.psm_frce_off & PSM_FRCE_OFF_PROC1_BITS) != 0);
+            }
+            break;
+        case PSM_WDSEL_OFFSET:
+            clocks_state.psm_wdsel = apply_alias_write(
+                clocks_state.psm_wdsel, val, alias) & PSM_ALL_MASK;
+            break;
+        default:
+            break;
+    }
+}
+
+/* ========================================================================
  * Top-level dispatch (called from membus.c)
  * ======================================================================== */
 
@@ -318,7 +375,7 @@ uint32_t clocks_read32(uint32_t addr) {
     if (base_aligned == WATCHDOG_BASE)
         return watchdog_read(canonical);
     if (base_aligned == PSM_BASE)
-        return 0; /* PSM stub */
+        return psm_read(canonical);
 
     return 0;
 }
@@ -340,5 +397,6 @@ void clocks_write32(uint32_t addr, uint32_t val) {
         pll_write(&clocks_state.pll_usb, canonical & 0xFFF, val, alias);
     else if (base_aligned == WATCHDOG_BASE)
         watchdog_write(canonical, val, alias);
-    /* PSM writes silently accepted */
+    else if (base_aligned == PSM_BASE)
+        psm_write(canonical, val, alias);
 }

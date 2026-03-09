@@ -7,6 +7,10 @@
 /* pc_updated flag: instruction handlers set this when they modify cpu.r[15] */
 extern int pc_updated;
 
+static unsigned low_rom_branch_log_count = 0;
+static unsigned rom_lookup_epilogue_log_count = 0;
+static unsigned rom_lookup_entry_log_count = 0;
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
@@ -271,6 +275,13 @@ void instr_push(uint16_t instr) {
 
     uint32_t sp = cpu.r[13];
 
+    if (cpu.r[15] == 0x1000148c && rom_lookup_entry_log_count < 8) {
+        printf("[TRACE] PUSH rom_funcs_lookup sp=0x%08X lr=0x%08X r0=0x%08X r1=0x%08X r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X r7=0x%08X r8=0x%08X r9=0x%08X\n",
+               sp, cpu.r[14], cpu.r[0], cpu.r[1], cpu.r[3], cpu.r[4], cpu.r[5],
+               cpu.r[6], cpu.r[7], cpu.r[8], cpu.r[9]);
+        rom_lookup_entry_log_count++;
+    }
+
     if (M) {
         sp -= 4;
         mem_write32(sp, cpu.r[14]);
@@ -292,6 +303,13 @@ void instr_pop(uint16_t instr) {
 
     uint32_t sp = cpu.r[13];
 
+    if (cpu.r[15] >= 0x100014c0 && cpu.r[15] <= 0x100014c8 &&
+        rom_lookup_epilogue_log_count < 16) {
+        printf("[TRACE] POP pc=0x%08X sp=0x%08X reglist=0x%02X P=%u\n",
+               cpu.r[15], sp, reglist, P);
+        rom_lookup_epilogue_log_count++;
+    }
+
     if (cpu.debug_asm) {
         printf("[POP] SP=0x%08X reglist=0x%02X P=%d current_irq=%d\n",
                sp, reglist, P, cpu.current_irq);
@@ -310,6 +328,17 @@ void instr_pop(uint16_t instr) {
 
     if (P) {
         uint32_t pc_val = mem_read32(sp);
+        if (cpu.r[15] == 0x100014c8 && rom_lookup_epilogue_log_count < 32) {
+            printf("[TRACE] POPPC sp=0x%08X pc=0x%08X stack=[0x%08X 0x%08X 0x%08X 0x%08X 0x%08X 0x%08X]\n",
+                   sp, pc_val,
+                   mem_read32(cpu.r[13] + 0),
+                   mem_read32(cpu.r[13] + 4),
+                   mem_read32(cpu.r[13] + 8),
+                   mem_read32(cpu.r[13] + 12),
+                   mem_read32(cpu.r[13] + 16),
+                   mem_read32(cpu.r[13] + 20));
+            rom_lookup_epilogue_log_count++;
+        }
         if (cpu.debug_asm) {
             printf("[POP]   PC @ 0x%08X = 0x%08X (magic check: 0x%08X)\n",
                    sp, pc_val, pc_val & 0xFFFFFFF0);
@@ -458,6 +487,17 @@ void instr_bx(uint16_t instr) {
         return;
     }
 
+    if ((target & ~1u) == 0x1000148c && rom_lookup_entry_log_count < 8) {
+        printf("[TRACE] BX->rom_funcs_lookup pc=0x%08X rm=R%u target=0x%08X lr=0x%08X r0=0x%08X r1=0x%08X r3=0x%08X\n",
+               cpu.r[15], rm, target, cpu.r[14], cpu.r[0], cpu.r[1], cpu.r[3]);
+    }
+
+    if (target < 0x1000 && low_rom_branch_log_count < 32) {
+        printf("[TRACE] BX pc=0x%08X rm=R%u target=0x%08X next=0x%08X r0=0x%08X r1=0x%08X r4=0x%08X\n",
+               cpu.r[15], rm, target, target & ~1u, cpu.r[0], cpu.r[1], cpu.r[4]);
+        low_rom_branch_log_count++;
+    }
+
     cpu.r[15] = target & ~1u;
     pc_updated = 1;
 }
@@ -466,6 +506,12 @@ void instr_bx(uint16_t instr) {
 void instr_blx(uint16_t instr) {
     uint8_t rm = (instr >> 3) & 0x0F;
     uint32_t target = cpu.r[rm];
+
+    if (target < 0x1000 && low_rom_branch_log_count < 32) {
+        printf("[TRACE] BLX pc=0x%08X rm=R%u target=0x%08X lr=0x%08X next=0x%08X r0=0x%08X r1=0x%08X r4=0x%08X\n",
+               cpu.r[15], rm, target, (cpu.r[15] + 2) | 1u, target & ~1u, cpu.r[0], cpu.r[1], cpu.r[4]);
+        low_rom_branch_log_count++;
+    }
 
     cpu.r[14] = (cpu.r[15] + 2) | 1;
     cpu.r[15] = target & ~1;
@@ -870,7 +916,27 @@ void instr_cmp_high_reg(uint16_t instr) {
 }
 
 void instr_mov_high_reg(uint16_t instr) {
-    instr_mov_reg(instr);
+    uint8_t reg_src = (instr >> 3) & 0x0F;
+    uint8_t reg_dst = ((instr >> 4) & 0x08) | (instr & 0x07);
+    uint32_t value = cpu.r[reg_src];
+
+    if (cpu.r[15] >= 0x100014c0 && cpu.r[15] <= 0x100014c8 &&
+        rom_lookup_epilogue_log_count < 16) {
+        printf("[TRACE] MOVH pc=0x%08X r%u<=r%u value=0x%08X\n",
+               cpu.r[15], reg_dst, reg_src, value);
+        rom_lookup_epilogue_log_count++;
+    }
+
+    if (reg_src == 15) {
+        value = (cpu.r[15] + 4) & ~1u;
+    }
+
+    if (reg_dst == 15) {
+        cpu.r[15] = value & ~1u;
+        pc_updated = 1;
+    } else {
+        cpu.r[reg_dst] = value;
+    }
 }
 
 /**

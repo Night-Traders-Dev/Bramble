@@ -24,6 +24,14 @@
 
 cpu_state_t cpu = {0};
 int pc_updated = 0;
+static int main_probe_logged = 0;
+static int kernel_main_probe_logged = 0;
+static int clock_wait_probe_logged = 0;
+static int clock_ref_wait_probe_logged = 0;
+static int busy_wait_probe_logged = 0;
+static int busy_wait_calc_probe_logged = 0;
+static int uart_div_probe_logged = 0;
+static int uart_wait_probe_logged = 0;
 
 /* ========================================================================
  * Cycle-Accurate Timing
@@ -332,7 +340,7 @@ static void init_dispatch_table(void) {
     /* Special data / branch exchange: 010001xx */
     dispatch_table[0x44] = instr_add_reg_high;
     dispatch_table[0x45] = instr_cmp_reg_reg;
-    dispatch_table[0x46] = instr_mov_reg;
+    dispatch_table[0x46] = instr_mov_high_reg;
     dispatch_table[0x47] = dispatch_special_47;
 
     /* LDR Rd, [PC, #imm8]: 01001xxx */
@@ -648,6 +656,73 @@ static void timing_tick(uint32_t cycles) {
 void cpu_step(void) {
     uint32_t pc = cpu.r[15];
 
+    if (!main_probe_logged && pc == 0x10000320) {
+        printf("[TRACE] ENTER main pc=0x%08X sp=0x%08X lr=0x%08X\n",
+               pc, cpu.r[13], cpu.r[14]);
+        main_probe_logged = 1;
+    }
+    if (!kernel_main_probe_logged && pc == 0x10004cbc) {
+        printf("[TRACE] ENTER kernel_main pc=0x%08X sp=0x%08X lr=0x%08X\n",
+               pc, cpu.r[13], cpu.r[14]);
+        kernel_main_probe_logged = 1;
+    }
+    if (!busy_wait_probe_logged && pc == 0x10000fba) {
+        printf("[TRACE] busy_wait loop pc=0x%08X time_us=%llu rawh=0x%08X rawl=0x%08X "
+               "target_hi=0x%08X target_lo=0x%08X r0=0x%08X r1=0x%08X\n",
+               pc,
+               (unsigned long long)timer_state.time_us,
+               timer_read32(TIMER_TIMERAWH),
+               timer_read32(TIMER_TIMERAWL),
+               cpu.r[2],
+               cpu.r[4],
+               cpu.r[0],
+               cpu.r[1]);
+        busy_wait_probe_logged = 1;
+    }
+    if (!busy_wait_calc_probe_logged && pc == 0x10000fa0) {
+        printf("[TRACE] busy_wait calc pc=0x%08X time_us=%llu rawh=0x%08X rawl=0x%08X "
+               "r1_hi=0x%08X r6_lo=0x%08X arg_lo=0x%08X arg_hi=0x%08X xpsr=0x%08X\n",
+               pc,
+               (unsigned long long)timer_state.time_us,
+               timer_read32(TIMER_TIMERAWH),
+               timer_read32(TIMER_TIMERAWL),
+               cpu.r[1],
+               cpu.r[6],
+               cpu.r[4],
+               cpu.r[5],
+               cpu.xpsr);
+        busy_wait_calc_probe_logged = 1;
+    }
+    if (!uart_div_probe_logged && pc == 0x100010de) {
+        printf("[TRACE] uart div1 pc=0x%08X clk_hz=0x%08X divisor=0x%08X configured_freq[6]=0x%08X\n",
+               pc,
+               cpu.r[0],
+               cpu.r[1],
+               mem_read32(0x20004aa4 + 6 * 4));
+        uart_div_probe_logged = 1;
+    }
+    if (!uart_wait_probe_logged && pc == 0x100010e8) {
+        printf("[TRACE] uart div2 pc=0x%08X brdiv_scaled=0x%08X scaled_freq=0x%08X\n",
+               pc,
+               cpu.r[0],
+               cpu.r[1]);
+        uart_wait_probe_logged = 1;
+    }
+    if (!clock_ref_wait_probe_logged && pc == 0x100012ce) {
+        printf("[TRACE] CLK wait(ref/sys switch-away) pc=0x%08X clock_reg=0x%08X ctrl=0x%08X selected=0x%08X\n",
+               pc, cpu.r[4], mem_read32(cpu.r[4]), mem_read32(cpu.r[4] + 8));
+        clock_ref_wait_probe_logged = 1;
+    }
+    if (!clock_wait_probe_logged && pc == 0x100012fe) {
+        uint32_t clock_reg = cpu.r[4];
+        uint32_t ctrl = mem_read32(clock_reg);
+        uint32_t selected = mem_read32(clock_reg + 8);
+        uint32_t src = cpu.r[8];
+        printf("[TRACE] CLK wait(selected) pc=0x%08X clock_reg=0x%08X src=%u mask=0x%08X ctrl=0x%08X selected=0x%08X\n",
+               pc, clock_reg, src, 1u << src, ctrl, selected);
+        clock_wait_probe_logged = 1;
+    }
+
     /* Stop if PC already out of range */
     if (pc == 0xFFFFFFFF) {
         return;
@@ -827,11 +902,8 @@ void dual_core_init(void) {
         printf("[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
     }
 
-    /* Copy RAM from single-core to core 0 (flash is shared via cpu.flash) */
-    memcpy(cores[CORE0].ram, cpu.ram, CORE_RAM_SIZE);
-
-    printf("[Boot] Firmware in shared flash (%u bytes), RAM copied to CORE0 (%u bytes)\n",
-           FLASH_SIZE, CORE_RAM_SIZE);
+    printf("[Boot] Firmware in shared flash (%u bytes), SRAM shared across both cores (%u bytes)\n",
+           FLASH_SIZE, RAM_SIZE);
 
     /* Read vector table from flash */
     uint32_t vector_table = FLASH_BASE + 0x100;
@@ -867,9 +939,9 @@ void dual_core_init(void) {
 /*
  * Context-switch a specific core into the single-core engine.
  *
- * Zero-copy approach: Instead of copying 132KB RAM, we just redirect
- * the memory bus pointer to the core's RAM array. Only lightweight
- * register state (64 bytes) is swapped.
+ * Register state is per-core, but RP2040 SRAM is shared across both cores.
+ * Keep the active memory bus pointed at the full shared SRAM image while
+ * swapping only the lightweight CPU register state.
  */
 static void cpu_step_core_via_single(int core_id) {
     if (core_id >= NUM_CORES) return;
@@ -898,9 +970,8 @@ static void cpu_step_core_via_single(int core_id) {
     cpu.primask      = cores[core_id].primask;
     cpu.control      = cores[core_id].control;
 
-    /* 3. Redirect memory bus to this core's RAM (zero-copy!) */
-    uint32_t ram_base = (core_id == CORE0) ? CORE0_RAM_START : CORE1_RAM_START;
-    mem_set_ram_ptr(cores[core_id].ram, ram_base, CORE_RAM_SIZE);
+    /* 3. Point the memory bus at shared SRAM for all cores */
+    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
 
     /* 4. Set active core for SIO routing */
     set_active_core(core_id);
@@ -1079,6 +1150,14 @@ void cpu_set_debug_core(int core_id, int enabled) {
  * SIO (Single-Cycle I/O) Operations
  * ======================================================================== */
 
+typedef struct {
+    int waiting_for_launch;
+    uint32_t launch_words[6];
+    uint32_t launch_count;
+} core1_bootrom_state_t;
+
+static core1_bootrom_state_t core1_bootrom = {0};
+
 uint32_t sio_get_core_id(void) {
     return get_active_core();
 }
@@ -1086,13 +1165,48 @@ uint32_t sio_get_core_id(void) {
 void sio_set_core1_reset(int assert_reset) {
     if (assert_reset) {
         cores[CORE1].is_halted = 1;
+        core1_bootrom.waiting_for_launch = 0;
+        core1_bootrom.launch_count = 0;
+        memset(&fifo[CORE1], 0, sizeof(fifo[CORE1]));
     } else {
-        cores[CORE1].is_halted = 0;
+        cores[CORE1].is_halted = 1;
+        core1_bootrom.waiting_for_launch = 1;
+        core1_bootrom.launch_count = 0;
+        memset(&fifo[CORE1], 0, sizeof(fifo[CORE1]));
+        fifo_try_push(CORE0, 0);
     }
 }
 
 void sio_set_core1_stall(int stall) {
     (void)stall;
+}
+
+int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
+    if (!core1_bootrom.waiting_for_launch) {
+        return 0;
+    }
+
+    fifo_try_push(CORE0, val);
+
+    if (core1_bootrom.launch_count < 6) {
+        core1_bootrom.launch_words[core1_bootrom.launch_count++] = val;
+    }
+
+    if (core1_bootrom.launch_count == 6) {
+        memset(cores[CORE1].r, 0, sizeof(cores[CORE1].r));
+        cores[CORE1].vtor = core1_bootrom.launch_words[3];
+        cores[CORE1].r[13] = core1_bootrom.launch_words[4];
+        cores[CORE1].r[15] = core1_bootrom.launch_words[5] & ~1u;
+        cores[CORE1].xpsr = 0x01000000;
+        cores[CORE1].current_irq = 0xFFFFFFFF;
+        cores[CORE1].primask = 0;
+        cores[CORE1].control = 0;
+        cores[CORE1].is_halted = 0;
+        core1_bootrom.waiting_for_launch = 0;
+        core1_bootrom.launch_count = 0;
+    }
+
+    return 1;
 }
 
 /* ========================================================================
@@ -1107,7 +1221,7 @@ uint32_t spinlock_acquire(uint32_t lock_num) {
     }
 
     spinlocks[lock_num] = SPINLOCK_VALID | SPINLOCK_LOCKED;
-    return spinlocks[lock_num];
+    return 1u << lock_num;
 }
 
 void spinlock_release(uint32_t lock_num) {

@@ -5,13 +5,15 @@
 /* Two UART instances */
 uart_state_t uart_state[2];
 
+static void uart_reset_instance(uart_state_t *u) {
+    memset(u, 0, sizeof(*u));
+    u->ifls = 0x12;  /* Reset FIFO trigger levels */
+    u->enabled = 0;
+}
+
 void uart_init(void) {
-    memset(uart_state, 0, sizeof(uart_state));
     for (int i = 0; i < 2; i++) {
-        uart_state[i].cr    = UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE;
-        uart_state[i].ifls  = 0x12;  /* Default: 1/2 full */
-        uart_state[i].ris   = UART_INT_TX;  /* TX FIFO empty from start */
-        uart_state[i].enabled = 1;
+        uart_reset_instance(&uart_state[i]);
     }
 }
 

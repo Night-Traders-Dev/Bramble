@@ -14,22 +14,10 @@ Build/*
 Build/
 test-firmware/build
 test-firmware/build/*
-./bramble
-# CLion
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#cmake-build-*
-build/.cmake/api/v1/reply/toolchains-v1-233b591ee3c7afd52083.json
-build/.cmake/api/v1/reply/target-bramble-Debug-af07590869091430b033.json
-build/.cmake/api/v1/reply/target-bramble_tests-Debug-736c9ed159fb924fa505.json
-build/.cmake/api/v1/reply/directory-.-Debug-ad06d8e5d3272349de13.json
-build/.cmake/api/v1/reply/index-2026-03-08T22-46-07-0130.json
-build/.cmake/api/v1/reply/codemodel-v2-71e173e6eb5f06d91415.json
-build/.cmake/api/v1/reply/cmakeFiles-v1-5c1860ff51918cef60d4.json
-build/.cmake/api/v1/reply/cache-v2-cb31720bcdc5d7d7e3d9.json
-build/.cmake/api/v1/query/client-vscode/query.json
+bramble
 build/build.ninja
 build/.ninja_log
 build/.ninja_deps
+bramble
+build/
+build/*
