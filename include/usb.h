@@ -145,6 +145,12 @@ typedef struct {
     uint8_t in_accum[256];   /* Accumulated IN data */
     int in_accum_len;        /* Bytes accumulated so far */
     int in_expected_len;     /* Total bytes expected (wLength from setup) */
+
+    /* CDC RX FIFO (stdin → device OUT endpoint) */
+    uint8_t cdc_rx_fifo[256];
+    int cdc_rx_head;
+    int cdc_rx_tail;
+    int cdc_rx_count;
 } usb_state_t;
 
 extern usb_state_t usb_state;

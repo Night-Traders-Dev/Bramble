@@ -422,21 +422,45 @@ void usb_cdc_rx_push(uint8_t byte) {
     if (usb_state.enum_state != USB_ENUM_ACTIVE) return;
     if (usb_state.cdc_out_ep == 0) return;
 
+    /* Queue into CDC RX FIFO */
+    if (usb_state.cdc_rx_count < (int)sizeof(usb_state.cdc_rx_fifo)) {
+        usb_state.cdc_rx_fifo[usb_state.cdc_rx_head] = byte;
+        usb_state.cdc_rx_head = (usb_state.cdc_rx_head + 1) % (int)sizeof(usb_state.cdc_rx_fifo);
+        usb_state.cdc_rx_count++;
+    }
+}
+
+/* Drain CDC RX FIFO into the OUT endpoint when firmware has buffer available */
+static void usb_cdc_rx_drain(void) {
+    if (usb_state.cdc_rx_count == 0) return;
+    if (usb_state.cdc_out_ep == 0) return;
+
     int ep = usb_state.cdc_out_ep;
     uint32_t buf_ctrl_off = USB_DPRAM_BUF_CTRL + ep * 8 + 4;  /* OUT */
     uint32_t buf_ctrl = dpram_read32(buf_ctrl_off);
 
     if (buf_ctrl & USB_BUF_CTRL_AVAILABLE) {
-        /* Get buffer address */
+        /* Get buffer address and max packet size */
         uint32_t ep_ctrl_off = USB_DPRAM_EP_CTRL + (ep - 1) * 8 + 4;  /* OUT control */
         uint32_t ep_ctrl = dpram_read32(ep_ctrl_off);
         uint32_t buf_addr = ep_ctrl & 0xFFC0;
+        int max_pkt = buf_ctrl & USB_BUF_CTRL_LEN_MASK;
+        if (max_pkt == 0) max_pkt = 64;
 
         if (buf_addr > 0 && buf_addr < USBCTRL_DPRAM_SIZE) {
-            usb_state.dpram[buf_addr] = byte;
+            /* Copy as many bytes as possible from FIFO into the buffer */
+            int len = 0;
+            while (len < max_pkt && usb_state.cdc_rx_count > 0 &&
+                   buf_addr + len < USBCTRL_DPRAM_SIZE) {
+                usb_state.dpram[buf_addr + len] = usb_state.cdc_rx_fifo[usb_state.cdc_rx_tail];
+                usb_state.cdc_rx_tail = (usb_state.cdc_rx_tail + 1) % (int)sizeof(usb_state.cdc_rx_fifo);
+                usb_state.cdc_rx_count--;
+                len++;
+            }
+
             buf_ctrl &= ~USB_BUF_CTRL_AVAILABLE;
             buf_ctrl |= USB_BUF_CTRL_FULL;
-            buf_ctrl = (buf_ctrl & ~USB_BUF_CTRL_LEN_MASK) | 1;
+            buf_ctrl = (buf_ctrl & ~USB_BUF_CTRL_LEN_MASK) | len;
             dpram_write32(buf_ctrl_off, buf_ctrl);
             usb_state.buff_status |= (1u << (ep * 2 + 1));  /* EPn_OUT */
             usb_fire_irq();
@@ -469,6 +493,7 @@ void usb_step(void) {
     /* Handle CDC data when active */
     if (usb_state.enum_state == USB_ENUM_ACTIVE) {
         usb_handle_cdc();
+        usb_cdc_rx_drain();
     }
 }
 
