@@ -1,5 +1,54 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.18.0] - 2026-03-08
+
+### Added - ADC FIFO, USB Module, README Refactor
+
+**ADC FIFO and Round-Robin**:
+
+- 4-deep FIFO with circular buffer (push on conversion, pop on FIFO register read)
+- FCS register: EN, SHIFT (12->8 bit), ERR, DREQ_EN, THRESH, LEVEL, EMPTY, FULL
+- Overflow (sample dropped when full) and underflow (read from empty) sticky flags (W1C)
+- Round-robin channel cycling via RROBIN mask in CS register
+- START_ONCE triggers immediate conversion with FIFO push
+- FIFO interrupt when level >= threshold
+
+**USB Controller Module**:
+
+- Extracted from inline membus stubs into proper `usb.c`/`usb.h` module
+- 4KB DPRAM backed by real memory (endpoint descriptors writable/readable)
+- Register-level handling: MAIN_CTRL, SIE_CTRL, USB_MUXING, USB_PWR, INTE, INTF
+- SIE_STATUS returns 0 (disconnected); SDK falls back to UART
+- Atomic register aliases (SET/CLR/XOR)
+
+**README Refactor**:
+
+- Replaced wall-of-text Current Status section with clean tables
+- Coverage table (CPU, Memory Map, Peripherals, Boot, etc.)
+- Peripheral table with addresses and emulation level
+- Removed outdated Known Limitations (PIO clkdiv now done)
+
+### Testing
+
+- **10 new tests** (228 total, up from 218)
+- ADC FIFO: push/pop, overflow, underflow, shift, W1C flags, round-robin, START_ONCE
+- USB Controller: DPRAM readback, SIE_STATUS disconnected, MAIN_CTRL readback
+
+### Files Modified
+
+- `include/adc.h` - FCS bit defines, FIFO state in `adc_state_t`, `adc_do_conversion()` API
+- `src/adc.c` - Complete rewrite: FIFO engine, round-robin, FCS status bits
+- `include/usb.h` - New: USB register offsets, `usb_state_t`, API
+- `src/usb.c` - New: USB module with DPRAM, register read/write, atomic aliases
+- `src/membus.c` - Replaced inline USB stubs with `usb_match()`/`usb_read32()`/`usb_write32()`
+- `src/main.c` - Added `usb_init()` call
+- `include/emulator.h` - Removed USB base address defines (now in usb.h)
+- `CMakeLists.txt` - Added usb.c to both SOURCES and LIB_SOURCES
+- `tests/test_suite.c` - 10 new tests, usb.h include
+- `README.md` - Refactored Current Status into tables
+
+---
+
 ## [0.17.0] - 2026-03-08
 
 ### Added - Boot2, SIO Hardware Divider, PIO Clock Division

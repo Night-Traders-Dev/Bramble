@@ -34,6 +34,7 @@
 #include "dma.h"
 #include "pio.h"
 #include "gdb.h"
+#include "usb.h"
 
 
 int any_core_running(void);
@@ -161,6 +162,7 @@ int main(int argc, char **argv) {
     pio_init();
     clocks_init();
     adc_init();
+    usb_init();
 
     int loaded = 0;
     size_t path_len = strlen(firmware_path);

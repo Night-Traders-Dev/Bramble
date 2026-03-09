@@ -6,7 +6,7 @@
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~90% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (4KB) |
-| Peripherals | ~92% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog, ADC, SIO divider, USB stub |
+| Peripherals | ~95% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog, ADC (FIFO + round-robin), SIO divider, USB (disconnected stub with DPRAM) |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
 | Boot | ~90% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect |
 
@@ -142,10 +142,16 @@ on M0+. The original roadmap incorrectly listed these.
 - Global INTR (W1C), INTE0/1, INTF0/1, INTS0/1, MULTI_CHAN_TRIGGER
 - Atomic register aliases (SET/CLR/XOR)
 
-### 3.6 ADC (0x4004C000) [LOW]
-- Return configurable analog values
-- FIFO support
-- Temperature sensor channel
+### 3.6 ADC (0x4004C000) [COMPLETE]
+
+~~Return configurable analog values, FIFO support, temperature sensor channel~~
+
+- CS, RESULT, FCS, FIFO, DIV, interrupt registers with atomic aliases
+- 4-deep FIFO with EN, SHIFT (12->8 bit), overflow/underflow flags (W1C)
+- Round-robin channel cycling (RROBIN mask in CS)
+- START_ONCE triggers immediate conversion and FIFO push
+- Temperature sensor channel 4 (~27C default)
+- FCS.LEVEL, EMPTY, FULL computed from actual FIFO state
 
 ### 3.7 PIO (0x50200000 / 0x50300000) [COMPLETE]
 ~~State machine instruction execution~~
@@ -158,9 +164,15 @@ on M0+. The original roadmap incorrectly listed these.
 - DBG_CFGINFO, interrupt registers, atomic aliases
 - Per-SM fractional clock divider (16.8 fixed-point, CLKDIV_RESTART strobe)
 
-### 3.8 USB (0x50110000) [LOW]
-- Device mode endpoint handling
-- Very complex - defer unless needed
+### 3.8 USB (0x50110000) [COMPLETE]
+
+~~Device mode endpoint handling~~
+
+- Proper USB module (usb.c/usb.h) with register-level emulation
+- 4KB DPRAM backed by real memory (endpoint descriptors writable/readable)
+- MAIN_CTRL, SIE_CTRL, USB_MUXING, USB_PWR writable with atomic aliases
+- SIE_STATUS always returns 0 (no VBUS, not connected)
+- SDK's stdio_usb_init() times out gracefully and falls back to UART
 
 ---
 

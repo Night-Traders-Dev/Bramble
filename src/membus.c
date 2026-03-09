@@ -14,6 +14,7 @@
 #include "pwm.h"
 #include "dma.h"
 #include "pio.h"
+#include "usb.h"
 
 /* ========================================================================
  * XIP Cache Control State (0x14000000)
@@ -797,9 +798,9 @@ void mem_write32(uint32_t addr, uint32_t val) {
         }
     }
 
-    /* USB controller - accept writes silently (no emulation) */
-    if ((addr >= USBCTRL_DPRAM_BASE && addr < USBCTRL_DPRAM_BASE + 0x1000) ||
-        (addr >= USBCTRL_REGS_BASE && addr < USBCTRL_REGS_BASE + 0x1000)) {
+    /* USB controller */
+    if (usb_match(addr)) {
+        usb_write32(addr, val);
         return;
     }
 
@@ -1039,12 +1040,9 @@ uint32_t mem_read32(uint32_t addr) {
         }
     }
 
-    /* USB controller stub - return "disconnected" state.
-     * SIE_STATUS (0x50110050): all zeros = no VBUS, not connected.
-     * SDK's stdio_usb_init() times out after 500ms and falls back to UART. */
-    if ((addr >= USBCTRL_DPRAM_BASE && addr < USBCTRL_DPRAM_BASE + 0x1000) ||
-        (addr >= USBCTRL_REGS_BASE && addr < USBCTRL_REGS_BASE + 0x1000)) {
-        return 0;
+    /* USB controller */
+    if (usb_match(addr)) {
+        return usb_read32(addr);
     }
 
     /* Stub peripheral reads: return 0 for now. */

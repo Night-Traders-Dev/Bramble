@@ -34,6 +34,7 @@ set(SOURCES
     src/dma.c
     src/pio.c
     src/gdb.c
+    src/usb.c
 )
 
 # Executable
@@ -61,6 +62,7 @@ set(LIB_SOURCES
     src/pwm.c
     src/dma.c
     src/pio.c
+    src/usb.c
 )
 
 # Test executable

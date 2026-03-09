@@ -81,9 +81,7 @@ uint32_t timing_instruction_cycles_32(uint16_t upper, uint16_t lower);
 
 /* Peripherals - see individual headers (uart.h, spi.h, i2c.h, pwm.h) */
 
-/* USB */
-#define USBCTRL_DPRAM_BASE  0x50100000  /* USB dual-port RAM (4KB) */
-#define USBCTRL_REGS_BASE   0x50110000  /* USB controller registers */
+/* USB — see usb.h for full register definitions */
 
 /* ========================================================================
  * Single-Core CPU State (Base)

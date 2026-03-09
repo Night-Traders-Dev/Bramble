@@ -2,183 +2,54 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.16.0 - Production Ready** ✅
+## Current Status: v0.17.0
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO with full instruction execution** (2 blocks, 4 SMs each, all 9 PIO opcodes), **SRAM aliasing** (0x21000000 mirror), **XIP cache control** with flash aliases and 16KB XIP SRAM, **GDB remote debugging** via RSP, **cycle-accurate timing** with configurable clock frequency and per-instruction cycle costs, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **212-test verbose unit test suite** across 45+ categories.
+218 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation.
 
-### ✅ What Works
+### Coverage
 
-- **Complete RP2040 Memory Map**: Flash (0x10000000) with XIP aliases (0x11-0x13), SRAM (0x20000000) with alias mirror (0x21000000), XIP cache control (0x14000000), XIP SRAM (0x15000000, 16KB), SIO (0xD0000000), and APB peripherals
-- **UF2 & ELF Firmware Loading**: Parses UF2 blocks or ELF32 ARM binaries into flash/RAM with proper address validation
-- **O(1) Instruction Dispatch**: 256-entry lookup table indexed by `instr >> 8` with secondary dispatchers for ALU/misc blocks
-- **Full ARM Cortex-M0+ Thumb Instruction Set**: 65+ instructions across 4 phases:
+| Area | Status | Details |
+|------|--------|---------|
+| CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
+| Dual-Core | Complete | Zero-copy context switching, per-core RAM, shared FIFO, spinlocks |
+| Memory Map | ~90% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (4KB) |
+| Boot | Complete | Vector table, boot2 auto-detect, ROM function table, SDK peripherals |
+| Exceptions | ~70% | NVIC priority preemption, SysTick, PendSV, SVCall, PRIMASK |
+| Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
+| Debugging | GDB RSP | Breakpoints, single-step, register/memory access (`-gdb`) |
+| Tests | 218 | CTest integrated, 45+ categories |
 
-  **Phase 1 - Foundational (Bootloader Essential):**
-  - Data movement: MOVS, MOV (with high register support)
-  - Arithmetic: ADDS/SUBS (imm3, imm8, register)
-  - Comparison: CMP (imm8, register with high regs)
-  - Load/Store: LDR/STR (imm5, reg offset, PC-relative, SP-relative)
-  - Stack: PUSH/POP (with LR/PC support)
-  - Branches: B, Bcond (all 14 conditions), BL, BX, BLX
+### Peripherals
 
-  **Phase 2 - Essential (Program Execution):**
-  - Byte operations: LDRB/STRB (imm5, reg), LDRSB (sign-extended)
-  - Halfword operations: LDRH/STRH (imm5, reg), LDRSH (sign-extended)
-  - Shifts: LSLS, LSRS, ASRS, RORS (immediate and register)
-  - Logical: ANDS, EORS, ORRS, BICS, MVNS
-  - Multiplication: MULS
-  - Carry arithmetic: ADCS, SBCS, RSBS (negate)
-  - Multiple load/store: LDMIA, STMIA
+| Peripheral | Address | Emulation Level |
+|------------|---------|-----------------|
+| GPIO | `0x40014000` / `0xD0000000` | Full (30 pins, SIO, IO_BANK0, PADS, interrupts) |
+| UART | `0x40034000` / `0x40038000` | Full (dual PL011, Tx+Rx, 16-deep FIFO, stdin polling) |
+| SPI | `0x4003C000` / `0x40040000` | Registers (dual PL022, status, peripheral ID) |
+| I2C | `0x40044000` / `0x40048000` | Registers (dual DW_apb_i2c, status, component ID) |
+| Timer | `0x40054000` | Full (64-bit counter, 4 alarms, interrupts) |
+| PWM | `0x40050000` | Full (8 slices, CSR/DIV/CTR/CC/TOP, interrupts) |
+| ADC | `0x4004C000` | Full (5 channels, temp sensor, FIFO, round-robin) |
+| DMA | `0x50000000` | Full (12 channels, chaining, 4 alias layouts) |
+| PIO | `0x50200000` / `0x50300000` | Full (2 blocks, all 9 opcodes, FIFOs, clock divider) |
+| SysTick | `0xE000E010` | Full (CSR/RVR/CVR/CALIB, TICKINT, COUNTFLAG) |
+| NVIC | `0xE000E100` | Full (priority preemption, 4 levels, SCB_SHPR) |
+| Resets | `0x4000C000` | Full (reset/unreset, RESET_DONE tracking) |
+| Clocks | `0x40008000` | Full (10 generators, FC0, SELECTED) |
+| XOSC/PLLs | `0x40024000` | Full (STATUS.STABLE, CS.LOCK) |
+| Watchdog | `0x40058000` | Full (CTRL, TICK, SCRATCH[0-7]) |
+| SIO | `0xD0000000` | Full (GPIO, FIFO, spinlocks, hardware divider) |
+| ROM | `0x00000000` | Full (4KB, function table, Thumb code stubs) |
+| USB | `0x50110000` | Stub (returns disconnected, SDK falls back to UART) |
+| XIP Cache | `0x14000000` | Stub (always ready) + 16KB XIP SRAM |
 
-  **Phase 3 - Important (Advanced Features):**
-  - Special comparison: CMN, TST
-  - System: SVC (triggers SVCall exception)
-  - 32-bit instructions: MSR/MRS (PRIMASK, CONTROL, xPSR, MSP), DSB/DMB/ISB
-  - High register operations
-  - PRIMASK support: CPSID/CPSIE control interrupt delivery
+All peripherals support RP2040 atomic register aliases (SET/CLR/XOR).
 
-  **Phase 4 - Optional (Optimization & Polish):**
-  - Hints: NOP, YIELD, WFE, WFI, SEV, IT
-  - Sign/zero extend: SXTB, SXTH, UXTB, UXTH
-  - Byte reverse: REV, REV16, REVSH
-  - Address generation: ADR, ADD/SUB SP
-  - Interrupt control: CPSID, CPSIE
-  - Debug: BKPT, UDF
+### Known Limitations
 
-- **Accurate Flag Handling**: N, Z, C, V flags with proper carry/overflow detection
-- **UART Emulation**: Dual PL011 UARTs (UART0 + UART1) with full register state (DR, RSR, IBRD, FBRD, LCR_H, CR, IFLS, IMSC, RIS, MIS, ICR), TX output via `putchar()`, **16-deep RX FIFO** with `uart_rx_push()` injection API, configurable FIFO-level RX interrupts, PL011 peripheral ID, and atomic aliases
-- **GPIO Emulation**: Complete 30-pin GPIO peripheral with:
-  - SIO fast GPIO access (direct read/write, atomic operations)
-  - IO_BANK0 per-pin configuration (function select, control)
-  - PADS_BANK0 pad control (pull-up/down, drive strength)
-  - Interrupt registers (enable, force, status)
-  - All 10 GPIO functions supported (SIO, UART, SPI, I2C, PWM, PIO, etc.)
-- **✨ SysTick Timer**: Full ARM SysTick implementation with:
-  - SYST_CSR, SYST_RVR, SYST_CVR, SYST_CALIB registers
-  - Counter decrements every CPU step, reloads from RVR on wrap
-  - COUNTFLAG (bit 16) set on underflow, cleared on CSR read
-  - TICKINT generates SysTick exception through NVIC priority system
-- **✨ NVIC Priority Preemption**: Proper interrupt priority enforcement:
-  - 4 priority levels via bits [7:6] (Cortex-M0+ compliant)
-  - Pending IRQs only preempt if strictly higher priority than active exception
-  - SCB_SHPR2/SHPR3 for SVCall, PendSV, SysTick priority configuration
-  - PendSV set/clear via SCB_ICSR
-- **✨ Hardware Timer**: Full 64-bit microsecond timer with:
-  - 64-bit counter incrementing with CPU cycles
-  - 4 independent alarm channels (ALARM0-3)
-  - Interrupt generation on alarm match
-  - Pause/resume functionality
-  - Write-1-to-clear interrupt handling
-  - Cycle-accurate timing simulation
-- **✨ Dual-Core Support**: Full second Cortex-M0+ core emulation with:
-  - Independent Core 0 and Core 1 state machines
-  - Zero-copy context switching via pointer-based memory bus routing
-  - Shared flash memory (2 MB, single copy)
-  - Separate core-local RAM (132 KB each)
-  - Shared RAM (64 KB for inter-core communication)
-  - Dual FIFO channels for core-to-core messaging
-  - Spinlock support for synchronization
-  - SIO (Single-cycle I/O) for atomic operations
-- **✨ SDK Boot Peripherals**: Complete peripheral stubs for SDK initialization:
-  - Resets (0x4000C000): reset/unreset with RESET_DONE tracking
-  - Clocks (0x40008000): 10 clock generators with CTRL/DIV/SELECTED
-  - XOSC (0x40024000): STATUS.STABLE=1, STATUS.ENABLED=1
-  - PLL_SYS/PLL_USB: CS.LOCK=1 (always locked)
-  - Watchdog (0x40058000): CTRL, TICK, SCRATCH[0-7], REASON
-  - PSM (Power State Machine): stub
-  - RP2040 atomic register aliases: SET (+0x2000), CLR (+0x3000), XOR (+0x1000)
-- **✨ ADC**: 5-channel ADC with temperature sensor:
-  - CS, RESULT, FIFO, DIV registers
-  - Channel 4 = internal temperature sensor (~27C default)
-  - Configurable channel values for testing
-- **✨ ROM Function Table**: 4KB ROM at 0x00000000 with:
-  - RP2040-compatible layout (magic, function/data table pointers)
-  - Executable Thumb code: `rom_table_lookup`, `memcpy`, `memset`, `popcount32`, `clz32`, `ctz32`
-  - Flash function no-op stubs (connect, exit_xip, erase, program, flush, enter_xip)
-- **✨ USB Controller Stub**: Reads return 0 (disconnected), writes accepted silently; SDK falls back to UART
-- **✨ SPI Emulation**: Dual PL022 controllers (SPI0 + SPI1) with register state (CR0, CR1, CPSR, IMSC, status), PL022 peripheral ID, and atomic aliases
-- **✨ I2C Emulation**: Dual DW_apb_i2c controllers (I2C0 + I2C1) with full register set (CON, TAR, SAR, SCL timing, ENABLE, status), component ID registers, and atomic aliases
-- **✨ PWM Emulation**: 8 independent slices with CSR, DIV, CTR, CC, TOP registers, global EN/INTR/INTE/INTF/INTS, and atomic aliases
-- **✨ DMA Controller**: 12 independent channels with:
-  - READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG per channel
-  - 4 alias register layouts (AL1-AL3) with trigger-on-last-write
-  - Immediate synchronous transfers: byte, halfword, word sizes
-  - INCR_READ / INCR_WRITE address auto-increment
-  - CHAIN_TO for automatic channel chaining on completion
-  - IRQ_QUIET, MULTI_CHAN_TRIGGER, interrupt status registers
-  - Atomic register aliases (SET/CLR/XOR)
-- **✨ PIO Emulation**: Full instruction execution for 2 PIO blocks (PIO0 + PIO1):
-  - 4 state machines per block with full register set and runtime state
-  - All 9 PIO instructions: JMP, WAIT, IN, OUT, PUSH, PULL, MOV, IRQ, SET
-  - Per-SM scratch registers (X, Y), ISR/OSR with shift counters, 4-deep TX/RX FIFOs
-  - JMP conditions, autopush/autopull, blocking/non-blocking FIFO ops, force-exec
-  - PC wrapping via EXECCTRL, GPIO pin integration via PINCTRL
-  - 32-word instruction memory per block, FSTAT/FLEVEL reflect actual FIFO state
-  - Atomic register aliases (SET/CLR/XOR)
-- **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ GDB Remote Debugging**: TCP server implementing GDB RSP:
-  - Register read/write (R0-R15 + xPSR), memory read/write
-  - Up to 16 software/hardware breakpoints
-  - Single-step and continue, vCont support, Ctrl-C interrupt
-  - Usage: `./bramble firmware.uf2 -gdb` then `target remote :3333`
-- **✨ Cycle-Accurate Timing**: Configurable clock frequency with per-instruction cycle costs:
-  - ARMv6-M timing table (ALU=1, LDR/STR=2, BX=3, BL=4, PUSH/POP=1+N cycles)
-  - Cycle accumulator converts CPU cycles to microseconds for timer
-  - SysTick counts in raw CPU cycles (correct per ARM spec)
-  - Usage: `./bramble firmware.uf2 -clock 125` for real RP2040 timing
-- **✨ Unit Test Suite**: 212 tests across 45+ categories with verbose per-category reporting, integrated with CTest
-- **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
-- **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
-
-### 📊 Test Results
-
-**hello_world.uf2** (Assembly version):
-```
-Total steps: 187
-Output: "Hello from ASM!" ✅
-Halt: Clean BKPT #0 at 0x1000005A ✅
-```
-
-**gpio_test.uf2** (GPIO test):
-```
-GPIO Test Starting...
-GPIO 25 configured as output
-LED ON / LED OFF (x5 cycles) ✅
-Final state: LED OFF ✅
-GPIO Test Complete!
-Total steps: 2,001,191 ✅
-```
-
-**timer_test.uf2** (Timer test):
-```
-Timer Test Starting...
-Timer value 1: 99 us ✅
-Timer value 2: 10,224 us ✅
-Elapsed time: ~10,125 us ✅
-Timer Test Complete!
-Total steps: 20,808 ✅
-```
-
-**alarm_test.uf2** (Timer alarm test):
-```
-Timer Alarm Test Starting...
-Alarm set for +1000us ✅
-SUCCESS: Alarm fired! ✅
-Interrupt cleared ✅
-Timer Alarm Test Complete!
-Total steps: 1,948 ✅
-```
-
-All registers preserved correctly, flags set accurately, GPIO state properly managed, timer counting accurately!
-
-### ⚠️ Known Limitations
-
-- **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (SDK falls back to UART)
-- **PIO**: Full instruction execution engine; clock division not yet emulated
-- **Missing Peripherals**: USB is stub-only (disconnected state)
-- **Cycle Timing**: Configurable via `-clock <MHz>` (default 1 MHz for fast-forward; use `-clock 125` for real RP2040 timing)
-- **UART Rx**: Receive FIFO works via `uart_rx_push()` API; stdin polling available with `-stdin` flag
-- See [ROADMAP](docs/ROADMAP.md) for full status and next phases
+- **USB**: Stub only (returns disconnected state). SDK gracefully falls back to UART.
+- **Cycle timing**: Default 1 MHz (fast-forward). Use `-clock 125` for real RP2040 timing.
+- See [ROADMAP](docs/ROADMAP.md) for detailed status.
 
 ## Building and Running
 
@@ -387,7 +258,7 @@ Bramble/
 │   ├── pio.h           # PIO register definitions
 │   └── gdb.h           # GDB RSP stub definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (212 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (218+ tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -667,23 +538,17 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ## Future Work
 
-### Medium Priority
-
 1. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
-
-### Low Priority
-
-1. **USB Device Mode**: Endpoint handling (complex - stub already returns disconnected)
-2. **PIO Clock Division**: Per-SM fractional clock divider emulation
+2. **USB Device Mode**: Full endpoint handling (stub returns disconnected; SDK falls back to UART)
 3. **Performance**: JIT compilation for hot loops, instruction caching
 
 ## Contributing
 
 The Bramble project is open for contributions! Areas that need help:
 
-1. **Peripheral Emulation**: USB device mode, PIO clock division
+1. **Peripheral Emulation**: USB device mode
 2. **Testing**: New test firmware, edge cases, performance benchmarks
-3. **Debugging**: GDB remote stub, hardware breakpoints
+3. **Debugging**: GDB watchpoints, Core 1 debugging
 4. **Documentation**: Register descriptions, usage examples, architecture guides
 
 Run `ctest` to verify changes don't break existing tests. See [CHANGELOG.md](CHANGELOG.md) for recent updates and [docs/](docs/) for detailed technical documentation.

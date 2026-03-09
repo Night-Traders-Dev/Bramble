@@ -28,6 +28,7 @@
 #include "pwm.h"
 #include "dma.h"
 #include "pio.h"
+#include "usb.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -768,6 +769,153 @@ TEST(test_adc_set_channel_value) {
     adc_set_channel_value(0, 0x0ABC);
     adc_write32(ADC_BASE + 0x00, (0u << 12) | (1u << 0));
     ASSERT_EQ(0x0ABC, adc_read32(ADC_BASE + 0x04), "ADC ch0 injected");
+    PASS();
+}
+
+/* ========================================================================
+ * ADC FIFO Tests
+ * ======================================================================== */
+
+TEST(test_adc_fifo_push_pop) {
+    adc_init();
+    adc_set_channel_value(0, 0x0ABC);
+    /* Enable ADC, select channel 0 */
+    adc_state.cs = ADC_CS_EN | (0u << ADC_CS_AINSEL_SHIFT);
+    /* Enable FIFO */
+    adc_state.fcs = ADC_FCS_EN;
+
+    /* Trigger conversion */
+    adc_do_conversion();
+
+    /* FIFO level should be 1 */
+    uint32_t fcs = adc_read32(ADC_BASE + 0x08);
+    uint32_t level = (fcs >> ADC_FCS_LEVEL_SHIFT) & 0xF;
+    ASSERT_EQ(1, level, "FIFO level should be 1 after one conversion");
+
+    /* Pop from FIFO */
+    uint32_t val = adc_read32(ADC_BASE + 0x0C);
+    ASSERT_EQ(0x0ABC, val, "FIFO pop should return channel value");
+
+    /* FIFO should be empty now */
+    fcs = adc_read32(ADC_BASE + 0x08);
+    ASSERT_TRUE(fcs & ADC_FCS_EMPTY, "FIFO should be empty after pop");
+    PASS();
+}
+
+TEST(test_adc_fifo_overflow) {
+    adc_init();
+    adc_set_channel_value(0, 100);
+    adc_state.cs = ADC_CS_EN | (0u << ADC_CS_AINSEL_SHIFT);
+    adc_state.fcs = ADC_FCS_EN;
+
+    /* Push 4 entries (full) */
+    for (int i = 0; i < 4; i++) {
+        adc_do_conversion();
+    }
+
+    uint32_t fcs = adc_read32(ADC_BASE + 0x08);
+    ASSERT_TRUE(fcs & ADC_FCS_FULL, "FIFO should be full at depth 4");
+
+    /* 5th conversion should overflow */
+    adc_do_conversion();
+    fcs = adc_read32(ADC_BASE + 0x08);
+    ASSERT_TRUE(fcs & ADC_FCS_OVER, "Overflow flag should be set");
+    PASS();
+}
+
+TEST(test_adc_fifo_underflow) {
+    adc_init();
+    adc_state.fcs = ADC_FCS_EN;
+
+    /* Read from empty FIFO */
+    adc_read32(ADC_BASE + 0x0C);
+
+    uint32_t fcs = adc_read32(ADC_BASE + 0x08);
+    ASSERT_TRUE(fcs & ADC_FCS_UNDER, "Underflow flag should be set");
+    PASS();
+}
+
+TEST(test_adc_fifo_shift) {
+    adc_init();
+    adc_set_channel_value(0, 0x0FFF);  /* 12-bit max */
+    adc_state.cs = ADC_CS_EN | (0u << ADC_CS_AINSEL_SHIFT);
+    adc_state.fcs = ADC_FCS_EN | ADC_FCS_SHIFT;  /* Enable shift (12-bit -> 8-bit) */
+
+    adc_do_conversion();
+    uint32_t val = adc_read32(ADC_BASE + 0x0C);
+    /* 0x0FFF >> 4 = 0xFF */
+    ASSERT_EQ(0xFF, val, "Shifted result should be 8-bit (0xFF)");
+    PASS();
+}
+
+TEST(test_adc_fifo_w1c_flags) {
+    adc_init();
+    adc_state.fcs = ADC_FCS_EN;
+    adc_state.fifo_over = 1;
+    adc_state.fifo_under = 1;
+
+    /* Verify flags are set */
+    uint32_t fcs = adc_read32(ADC_BASE + 0x08);
+    ASSERT_TRUE(fcs & ADC_FCS_OVER, "OVER flag set");
+    ASSERT_TRUE(fcs & ADC_FCS_UNDER, "UNDER flag set");
+
+    /* W1C: clear OVER */
+    adc_write32(ADC_BASE + 0x08, ADC_FCS_OVER);
+    fcs = adc_read32(ADC_BASE + 0x08);
+    ASSERT_TRUE(!(fcs & ADC_FCS_OVER), "OVER flag cleared by W1C");
+    ASSERT_TRUE(fcs & ADC_FCS_UNDER, "UNDER flag still set");
+    PASS();
+}
+
+TEST(test_adc_rrobin) {
+    adc_init();
+    adc_set_channel_value(0, 100);
+    adc_set_channel_value(2, 200);
+    /* Enable channels 0 and 2 in round-robin, start on channel 0 */
+    adc_state.cs = ADC_CS_EN |
+                   (0u << ADC_CS_AINSEL_SHIFT) |
+                   ((1u << 0 | 1u << 2) << ADC_CS_RROBIN_SHIFT);
+    adc_state.fcs = ADC_FCS_EN;
+
+    /* First conversion: channel 0 */
+    adc_do_conversion();
+    uint32_t val0 = adc_read32(ADC_BASE + 0x0C);
+    ASSERT_EQ(100, val0, "First conversion should be channel 0");
+
+    /* AINSEL should now be 2 */
+    uint32_t ainsel = (adc_state.cs & ADC_CS_AINSEL_MASK) >> ADC_CS_AINSEL_SHIFT;
+    ASSERT_EQ(2, ainsel, "AINSEL should advance to channel 2");
+
+    /* Second conversion: channel 2 */
+    adc_do_conversion();
+    uint32_t val2 = adc_read32(ADC_BASE + 0x0C);
+    ASSERT_EQ(200, val2, "Second conversion should be channel 2");
+
+    /* AINSEL should wrap back to 0 */
+    ainsel = (adc_state.cs & ADC_CS_AINSEL_MASK) >> ADC_CS_AINSEL_SHIFT;
+    ASSERT_EQ(0, ainsel, "AINSEL should wrap back to channel 0");
+    PASS();
+}
+
+TEST(test_adc_start_once_triggers_conversion) {
+    adc_init();
+    adc_set_channel_value(1, 0x0555);
+    adc_state.cs = ADC_CS_EN | (1u << ADC_CS_AINSEL_SHIFT);
+    adc_state.fcs = ADC_FCS_EN;
+
+    /* Write START_ONCE via CS register */
+    adc_write32(ADC_BASE + 0x00, adc_state.cs | ADC_CS_START_ONCE);
+
+    /* FIFO should have one entry */
+    uint32_t fcs = adc_read32(ADC_BASE + 0x08);
+    uint32_t level = (fcs >> ADC_FCS_LEVEL_SHIFT) & 0xF;
+    ASSERT_EQ(1, level, "START_ONCE should trigger one conversion");
+
+    uint32_t val = adc_read32(ADC_BASE + 0x0C);
+    ASSERT_EQ(0x0555, val, "FIFO should contain channel 1 value");
+
+    /* START_ONCE should be auto-cleared */
+    ASSERT_TRUE(!(adc_state.cs & ADC_CS_START_ONCE), "START_ONCE should auto-clear");
     PASS();
 }
 
@@ -2113,6 +2261,35 @@ TEST(test_usb_write_no_crash) {
     PASS();
 }
 
+TEST(test_usb_dpram_readback) {
+    reset_cpu();
+    /* DPRAM is real memory — writes should be readable */
+    mem_write32(USBCTRL_DPRAM_BASE + 0x80, 0xCAFEBABE);
+    ASSERT_EQ(0xCAFEBABE, mem_read32(USBCTRL_DPRAM_BASE + 0x80),
+              "USB DPRAM should retain written data");
+    PASS();
+}
+
+TEST(test_usb_sie_status_disconnected) {
+    reset_cpu();
+    /* SIE_STATUS should always return 0 (no VBUS, not connected) */
+    ASSERT_EQ(0, mem_read32(USBCTRL_REGS_BASE + USB_SIE_STATUS),
+              "SIE_STATUS should be 0 (disconnected)");
+    /* Even after writing MAIN_CTRL to enable */
+    mem_write32(USBCTRL_REGS_BASE + USB_MAIN_CTRL, 1);
+    ASSERT_EQ(0, mem_read32(USBCTRL_REGS_BASE + USB_SIE_STATUS),
+              "SIE_STATUS still 0 after enable");
+    PASS();
+}
+
+TEST(test_usb_main_ctrl_readback) {
+    reset_cpu();
+    mem_write32(USBCTRL_REGS_BASE + USB_MAIN_CTRL, 0x01);
+    ASSERT_EQ(0x01, mem_read32(USBCTRL_REGS_BASE + USB_MAIN_CTRL),
+              "MAIN_CTRL should retain written value");
+    PASS();
+}
+
 /* ========================================================================
  * Flash ROM Function Tests
  * ======================================================================== */
@@ -2883,6 +3060,15 @@ int main(void) {
     RUN_TEST(test_adc_set_channel_value);
     END_CATEGORY("ADC");
 
+    BEGIN_CATEGORY("ADC FIFO");
+    RUN_TEST(test_adc_fifo_push_pop);
+    RUN_TEST(test_adc_fifo_overflow);
+    RUN_TEST(test_adc_fifo_underflow);
+    RUN_TEST(test_adc_fifo_shift);
+    RUN_TEST(test_adc_fifo_w1c_flags);
+    RUN_TEST(test_adc_rrobin);
+    RUN_TEST(test_adc_start_once_triggers_conversion);
+    END_CATEGORY("ADC FIFO");
 
     BEGIN_CATEGORY("Timer");
     RUN_TEST(test_timer_alarm_arm_on_write);
@@ -2990,7 +3176,10 @@ int main(void) {
     RUN_TEST(test_usb_regs_read_zero);
     RUN_TEST(test_usb_dpram_read_zero);
     RUN_TEST(test_usb_write_no_crash);
-    END_CATEGORY("USB Controller Stub");
+    RUN_TEST(test_usb_dpram_readback);
+    RUN_TEST(test_usb_sie_status_disconnected);
+    RUN_TEST(test_usb_main_ctrl_readback);
+    END_CATEGORY("USB Controller");
 
     BEGIN_CATEGORY("Flash ROM Functions");
     RUN_TEST(test_rom_flash_functions_in_table);
