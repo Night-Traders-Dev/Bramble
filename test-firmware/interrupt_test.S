@@ -34,6 +34,8 @@
 
 /* UART0 */
 .equ UART0_DR,          0x40034000
+.equ UART0_CR,          0x40034030
+.equ UART_CR_EN,        0x0301        /* UARTEN | TXE | RXE */
 
 /* RAM */
 .equ RAM_TOP,           0x20042000
@@ -64,6 +66,11 @@ reset_handler:
     /* Initialize SP using temp register (sp = R13 can't use = directly) */
     ldr r7, =RAM_TOP
     mov sp, r7
+
+    /* Enable UART0 */
+    ldr r4, =UART0_CR
+    ldr r5, =UART_CR_EN
+    str r5, [r4]
 
     /* Print startup */
     ldr r0, =msg_start
@@ -128,21 +135,22 @@ reset_handler:
 
 timer_isr:
     /* This runs in handler mode with stacked context */
-    
+    push {lr}
+
     ldr r0, =msg_in_isr
     bl print_string
-    
+
     /* Clear the interrupt (write 1 to clear bit 0) */
     ldr r0, =TIMER_INTR
     movs r1, #1
     str r1, [r0]
-    
+
     ldr r0, =msg_isr_cleared
     bl print_string
-    
+
     /* Return from ISR - Cortex-M automatically unstacks context */
     /* The special return value in LR (0xFFFFFFF9) tells CPU to return to thread mode */
-    bx lr
+    pop {pc}
 
 /* Print string via UART0 */
 .thumb_func

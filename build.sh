@@ -10,5 +10,6 @@ echo "running cmake and make...bramble\n"
 cmake .. && make -j$(nproc)
 echo "moving bramble binary and removing build directory...\n"
 mv ./bramble ../bramble
+mv ./bramble_tests ../bramble_tests
 cd ../ && rm -rf build
 echo "*==Bramble Build Complete==*\n"

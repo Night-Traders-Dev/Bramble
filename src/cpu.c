@@ -24,14 +24,6 @@
 
 cpu_state_t cpu = {0};
 int pc_updated = 0;
-static int main_probe_logged = 0;
-static int kernel_main_probe_logged = 0;
-static int clock_wait_probe_logged = 0;
-static int clock_ref_wait_probe_logged = 0;
-static int busy_wait_probe_logged = 0;
-static int busy_wait_calc_probe_logged = 0;
-static int uart_div_probe_logged = 0;
-static int uart_wait_probe_logged = 0;
 
 /* ========================================================================
  * Cycle-Accurate Timing
@@ -655,73 +647,6 @@ static void timing_tick(uint32_t cycles) {
 
 void cpu_step(void) {
     uint32_t pc = cpu.r[15];
-
-    if (!main_probe_logged && pc == 0x10000320) {
-        printf("[TRACE] ENTER main pc=0x%08X sp=0x%08X lr=0x%08X\n",
-               pc, cpu.r[13], cpu.r[14]);
-        main_probe_logged = 1;
-    }
-    if (!kernel_main_probe_logged && pc == 0x10004cbc) {
-        printf("[TRACE] ENTER kernel_main pc=0x%08X sp=0x%08X lr=0x%08X\n",
-               pc, cpu.r[13], cpu.r[14]);
-        kernel_main_probe_logged = 1;
-    }
-    if (!busy_wait_probe_logged && pc == 0x10000fba) {
-        printf("[TRACE] busy_wait loop pc=0x%08X time_us=%llu rawh=0x%08X rawl=0x%08X "
-               "target_hi=0x%08X target_lo=0x%08X r0=0x%08X r1=0x%08X\n",
-               pc,
-               (unsigned long long)timer_state.time_us,
-               timer_read32(TIMER_TIMERAWH),
-               timer_read32(TIMER_TIMERAWL),
-               cpu.r[2],
-               cpu.r[4],
-               cpu.r[0],
-               cpu.r[1]);
-        busy_wait_probe_logged = 1;
-    }
-    if (!busy_wait_calc_probe_logged && pc == 0x10000fa0) {
-        printf("[TRACE] busy_wait calc pc=0x%08X time_us=%llu rawh=0x%08X rawl=0x%08X "
-               "r1_hi=0x%08X r6_lo=0x%08X arg_lo=0x%08X arg_hi=0x%08X xpsr=0x%08X\n",
-               pc,
-               (unsigned long long)timer_state.time_us,
-               timer_read32(TIMER_TIMERAWH),
-               timer_read32(TIMER_TIMERAWL),
-               cpu.r[1],
-               cpu.r[6],
-               cpu.r[4],
-               cpu.r[5],
-               cpu.xpsr);
-        busy_wait_calc_probe_logged = 1;
-    }
-    if (!uart_div_probe_logged && pc == 0x100010de) {
-        printf("[TRACE] uart div1 pc=0x%08X clk_hz=0x%08X divisor=0x%08X configured_freq[6]=0x%08X\n",
-               pc,
-               cpu.r[0],
-               cpu.r[1],
-               mem_read32(0x20004aa4 + 6 * 4));
-        uart_div_probe_logged = 1;
-    }
-    if (!uart_wait_probe_logged && pc == 0x100010e8) {
-        printf("[TRACE] uart div2 pc=0x%08X brdiv_scaled=0x%08X scaled_freq=0x%08X\n",
-               pc,
-               cpu.r[0],
-               cpu.r[1]);
-        uart_wait_probe_logged = 1;
-    }
-    if (!clock_ref_wait_probe_logged && pc == 0x100012ce) {
-        printf("[TRACE] CLK wait(ref/sys switch-away) pc=0x%08X clock_reg=0x%08X ctrl=0x%08X selected=0x%08X\n",
-               pc, cpu.r[4], mem_read32(cpu.r[4]), mem_read32(cpu.r[4] + 8));
-        clock_ref_wait_probe_logged = 1;
-    }
-    if (!clock_wait_probe_logged && pc == 0x100012fe) {
-        uint32_t clock_reg = cpu.r[4];
-        uint32_t ctrl = mem_read32(clock_reg);
-        uint32_t selected = mem_read32(clock_reg + 8);
-        uint32_t src = cpu.r[8];
-        printf("[TRACE] CLK wait(selected) pc=0x%08X clock_reg=0x%08X src=%u mask=0x%08X ctrl=0x%08X selected=0x%08X\n",
-               pc, clock_reg, src, 1u << src, ctrl, selected);
-        clock_wait_probe_logged = 1;
-    }
 
     /* Stop if PC already out of range */
     if (pc == 0xFFFFFFFF) {

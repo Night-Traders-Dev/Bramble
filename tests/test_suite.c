@@ -774,6 +774,10 @@ TEST(test_adc_set_channel_value) {
 TEST(test_uart_registers) {
     reset_cpu();
     ASSERT_EQ(0x00000090, mem_read32(UART0_BASE + 0x018), "UART FR");
+    /* UART starts disabled per PL011 hardware reset */
+    ASSERT_EQ(0, mem_read32(UART0_BASE + 0x030), "UART CR: disabled at reset");
+    /* Enable UART with TXE + RXE */
+    mem_write32(UART0_BASE + UART_CR, UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE);
     uint32_t cr = mem_read32(UART0_BASE + 0x030);
     ASSERT_TRUE(cr & 1, "UART CR: UARTEN");
     ASSERT_TRUE(cr & (1u << 8), "UART CR: TXE");
@@ -816,10 +820,12 @@ TEST(test_uart_cr_readback) {
 
 TEST(test_uart_imsc_icr) {
     reset_cpu();
+    /* Enable UART so TX empty interrupt is asserted */
+    mem_write32(UART0_BASE + UART_CR, UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE);
     /* Set TX interrupt mask */
     mem_write32(UART0_BASE + UART_IMSC, UART_INT_TX);
     ASSERT_EQ(UART_INT_TX, mem_read32(UART0_BASE + UART_IMSC), "IMSC TX set");
-    /* RIS has TX set at init (FIFO empty), so MIS should show it */
+    /* RIS has TX set (FIFO empty), so MIS should show it */
     uint32_t mis = mem_read32(UART0_BASE + UART_MIS);
     ASSERT_TRUE(mis & UART_INT_TX, "MIS TX active");
     /* Clear TX interrupt */
@@ -831,7 +837,9 @@ TEST(test_uart_imsc_icr) {
 
 TEST(test_uart_atomic_set_clr) {
     reset_cpu();
-    /* CLR alias: clear RXE (bit 9) from default CR */
+    /* Enable UART with TXE + RXE first */
+    mem_write32(UART0_BASE + UART_CR, UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE);
+    /* CLR alias: clear RXE (bit 9) */
     mem_write32(UART0_BASE + 0x3000 + UART_CR, UART_CR_RXE);
     uint32_t cr = mem_read32(UART0_BASE + UART_CR);
     ASSERT_TRUE(!(cr & UART_CR_RXE), "CLR alias cleared RXE");

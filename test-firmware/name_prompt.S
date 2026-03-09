@@ -16,7 +16,9 @@
 /* UART0 */
 .equ UART0_DR,          0x40034000
 .equ UART0_FR,          0x40034018
+.equ UART0_CR,          0x40034030
 .equ UART_FR_RXFE,      0x10
+.equ UART_CR_EN,        0x0301        /* UARTEN | TXE | RXE */
 
 /* RAM
  * Use Core 0 private RAM top for stack safety in Bramble's dual-core mode.
@@ -48,6 +50,11 @@ _vectors:
 reset_handler:
     ldr r7, =RAM_TOP
     mov sp, r7
+
+    /* Enable UART0 */
+    ldr r4, =UART0_CR
+    ldr r5, =UART_CR_EN
+    str r5, [r4]
 
     ldr r0, =prompt_msg
     bl print_string

@@ -10,14 +10,8 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 CMakeUserPresets.json
-Build/*
 Build/
-test-firmware/build
-test-firmware/build/*
-bramble
-build/build.ninja
-build/.ninja_log
-build/.ninja_deps
-bramble
 build/
-build/*
+test-firmware/build/
+bramble
+bramble_tests

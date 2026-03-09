@@ -450,6 +450,12 @@ static void sio_divider_run_signed(sio_divider_state_t *div) {
         return;
     }
 
+    /* INT32_MIN / -1 is undefined in C but wraps on RP2040 hardware */
+    if (dividend == INT32_MIN && divisor == -1) {
+        sio_divider_finish(div, 0x80000000u, 0);
+        return;
+    }
+
     sio_divider_finish(div,
                        (uint32_t)(dividend / divisor),
                        (uint32_t)(dividend % divisor));

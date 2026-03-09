@@ -181,6 +181,10 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
     case UART_CR:
         u->cr = val & 0xFFFF;
         u->enabled = (val & UART_CR_UARTEN) ? 1 : 0;
+        if (u->enabled) {
+            /* TX FIFO is always empty (instant TX), so assert TX interrupt */
+            u->ris |= UART_INT_TX;
+        }
         break;
 
     case UART_IFLS:

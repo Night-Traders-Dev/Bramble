@@ -22,6 +22,8 @@
 .equ TIMER_TIMELR,      0x4005400C    /* Read low word of timer */
 .equ TIMER_TIMEHR,      0x40054008    /* Read high word of timer */
 .equ UART0_DR,          0x40034000    /* UART0 data register */
+.equ UART0_CR,          0x40034030    /* UART0 control register */
+.equ UART_CR_EN,        0x0301        /* UARTEN | TXE | RXE */
 
 /* RAM Addresses */
 .equ RAM_TOP,           0x20042000    /* Initial SP (top of 264 KB RAM) */
@@ -51,7 +53,12 @@ reset_handler:
     /* Initialize SP using temp register (sp = R13 can't use = directly) */
     ldr r7, =RAM_TOP
     mov sp, r7
-    
+
+    /* Enable UART0 */
+    ldr r4, =UART0_CR
+    ldr r5, =UART_CR_EN
+    str r5, [r4]
+
     /* Print startup message */
     ldr r0, =msg_start
     bl print_string

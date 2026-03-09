@@ -16,6 +16,8 @@
 /* Peripheral Addresses */
 .equ UART0_DR,          0x40034000   /* UART Data Register */
 .equ UART0_FR,          0x40034018   /* UART Flag Register */
+.equ UART0_CR,          0x40034030   /* UART Control Register */
+.equ UART_CR_EN,        0x0301       /* UARTEN | TXE | RXE */
 
 .equ RAM_TOP,           0x20042000   /* Top of RAM (264 KB) */
 
@@ -44,7 +46,12 @@ reset_handler:
     /* Initialize stack pointer using temp register (sp = R13 can't use = directly) */
     ldr r7, =RAM_TOP
     mov sp, r7
-    
+
+    /* Enable UART0 */
+    ldr r4, =UART0_CR
+    ldr r5, =UART_CR_EN
+    str r5, [r4]
+
     /* Load message address */
     ldr r0, =message
     
