@@ -7,7 +7,7 @@ git submodule update --init --recursive --remote
 echo "*==Bramble RP2040 Emulator==*\n"
 mkdir -p build && cd build
 echo "running cmake and make...bramble\n"
-cmake .. && make -j$(nproc)
+cmake .. && make CORES=2 -j$(nproc)
 echo "moving bramble binary and removing build directory...\n"
 mv ./bramble ../bramble
 mv ./bramble_tests ../bramble_tests

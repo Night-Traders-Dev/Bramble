@@ -243,11 +243,17 @@ void instr_stmia(uint16_t instr) {
 void instr_ldmia(uint16_t instr) {
     uint8_t reg_base = (instr >> 8) & 0x07;
     uint8_t rlist = instr & 0xFF;
+    uint32_t addr = cpu.r[reg_base];
+    int base_in_list = (rlist >> reg_base) & 1;
     for (int i = 0; i < 8; i++) {
         if (rlist & (1 << i)) {
-            cpu.r[i] = mem_read32(cpu.r[reg_base]);
-            cpu.r[reg_base] += 4;
+            cpu.r[i] = mem_read32(addr);
+            addr += 4;
         }
+    }
+    /* ARMv6-M: writeback only if base register is NOT in the register list */
+    if (!base_in_list) {
+        cpu.r[reg_base] = addr;
     }
 }
 

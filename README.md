@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.17.0
+## Current Status: v0.18.0
 
-218 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation.
+228 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation.
 
 ### Coverage
 

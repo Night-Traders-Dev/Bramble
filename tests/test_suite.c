@@ -2030,6 +2030,37 @@ TEST(test_stmia_ldmia_roundtrip) {
     PASS();
 }
 
+TEST(test_ldmia_base_in_reglist) {
+    /* ARMv6-M: when base register is in the register list, writeback is
+     * NOT applied — the loaded value wins.  This is the pattern used by
+     * Pico SDK boot2: LDM R0!, {R0, R1} to load SP and entry point. */
+    reset_cpu();
+    uint32_t addr = RAM_BASE + 0x400;
+    mem_write32(addr + 0, 0xDEADBEEF);  /* value for R0 */
+    mem_write32(addr + 4, 0x10001234);  /* value for R1 */
+    cpu.r[0] = addr;
+    /* 0xC803 = LDMIA R0!, {R0, R1} */
+    instr_ldmia(0xC803);
+    ASSERT_EQ(0xDEADBEEF, cpu.r[0], "LDMIA base-in-list: R0 gets loaded value, not writeback");
+    ASSERT_EQ(0x10001234, cpu.r[1], "LDMIA base-in-list: R1 loaded correctly");
+    PASS();
+}
+
+TEST(test_ldmia_base_not_in_reglist_writeback) {
+    /* When base register is NOT in the list, writeback IS applied */
+    reset_cpu();
+    uint32_t addr = RAM_BASE + 0x400;
+    mem_write32(addr + 0, 0xAAAAAAAA);
+    mem_write32(addr + 4, 0xBBBBBBBB);
+    cpu.r[2] = addr;
+    /* 0xCA03 = LDMIA R2!, {R0, R1} */
+    instr_ldmia(0xCA03);
+    ASSERT_EQ(0xAAAAAAAA, cpu.r[0], "LDMIA writeback: R0 loaded");
+    ASSERT_EQ(0xBBBBBBBB, cpu.r[1], "LDMIA writeback: R1 loaded");
+    ASSERT_EQ(addr + 8, cpu.r[2], "LDMIA writeback: base advanced by 8");
+    PASS();
+}
+
 TEST(test_muls) {
     reset_cpu();
     cpu.r[0] = 7; cpu.r[1] = 6;
@@ -3128,6 +3159,8 @@ int main(void) {
 
     BEGIN_CATEGORY("STMIA/LDMIA");
     RUN_TEST(test_stmia_ldmia_roundtrip);
+    RUN_TEST(test_ldmia_base_in_reglist);
+    RUN_TEST(test_ldmia_base_not_in_reglist_writeback);
     END_CATEGORY("STMIA/LDMIA");
 
     BEGIN_CATEGORY("MUL");
