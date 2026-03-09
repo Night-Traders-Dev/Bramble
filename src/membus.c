@@ -1215,6 +1215,17 @@ void mem_write16(uint32_t addr, uint16_t val) {
         return;
     }
 
+    /* USB DPRAM/registers - subword access support */
+    if (usb_match(addr)) {
+        uint32_t a32 = addr & ~0x3;
+        uint32_t cur = usb_read32(a32);
+        uint32_t bo = addr & 0x2;  /* halfword offset: 0 or 2 */
+        uint32_t mask = 0xFFFF << (bo * 8);
+        uint32_t new_val = (cur & ~mask) | ((uint32_t)val << (bo * 8));
+        usb_write32(a32, new_val);
+        return;
+    }
+
     /* GPIO */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
@@ -1243,6 +1254,17 @@ void mem_write8(uint32_t addr, uint8_t val) {
 
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
         get_ram()[addr - active_ram_base] = val;
+        return;
+    }
+
+    /* USB DPRAM/registers - subword access support */
+    if (usb_match(addr)) {
+        uint32_t a32 = addr & ~0x3;
+        uint32_t cur = usb_read32(a32);
+        uint32_t bo = addr & 0x3;
+        uint32_t mask8 = 0xFF << (bo * 8);
+        uint32_t new_val = (cur & ~mask8) | ((uint32_t)val << (bo * 8));
+        usb_write32(a32, new_val);
         return;
     }
 
@@ -1502,6 +1524,13 @@ uint16_t mem_read16(uint32_t addr) {
         return (uint16_t)(val32 & 0xFFFF);
     }
 
+    /* USB DPRAM/registers */
+    if (usb_match(addr)) {
+        uint32_t val32 = usb_read32(addr & ~0x3);
+        uint32_t bo = addr & 0x2;
+        return (uint16_t)((val32 >> (bo * 8)) & 0xFFFF);
+    }
+
     /* No 16-bit peripheral emulation yet. */
     return 0;
 }
@@ -1542,6 +1571,13 @@ uint8_t mem_read8(uint32_t addr) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         uint8_t byte_offset = addr & 0x3;
         return (uint8_t)((val32 >> (byte_offset * 8)) & 0xFF);
+    }
+
+    /* USB DPRAM/registers */
+    if (usb_match(addr)) {
+        uint32_t val32 = usb_read32(addr & ~0x3);
+        uint32_t bo = addr & 0x3;
+        return (uint8_t)((val32 >> (bo * 8)) & 0xFF);
     }
 
     return 0xFF;  /* Unmapped reads return 0xFF */

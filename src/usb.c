@@ -109,7 +109,6 @@ static void usb_complete_ep0_out(uint8_t *data, int len) {
 
 static void usb_ctrl_step(void) {
     uint32_t buf_ctrl;
-
     switch (usb_state.ctrl_state) {
     case USB_CTRL_IDLE:
     case USB_CTRL_DONE:
@@ -127,7 +126,9 @@ static void usb_ctrl_step(void) {
                 /* No data phase — wait for status IN (ZLP) */
                 usb_state.ctrl_state = USB_CTRL_WAIT_STATUS_IN;
             } else if (bmRequestType & 0x80) {
-                /* IN transfer (device → host) */
+                /* IN transfer (device → host) — track expected length for multi-packet */
+                usb_state.in_accum_len = 0;
+                usb_state.in_expected_len = wLength;
                 usb_state.ctrl_state = USB_CTRL_WAIT_DATA_IN;
             } else {
                 /* OUT transfer (host → device) */
@@ -139,9 +140,35 @@ static void usb_ctrl_step(void) {
     case USB_CTRL_WAIT_DATA_IN:
         buf_ctrl = dpram_read32(USB_DPRAM_BUF_CTRL);  /* EP0 IN */
         if ((buf_ctrl & USB_BUF_CTRL_AVAILABLE) && (buf_ctrl & USB_BUF_CTRL_FULL)) {
-            /* Firmware has data ready */
+            /* Firmware has data ready — accumulate into in_accum buffer */
+            int pkt_len = buf_ctrl & USB_BUF_CTRL_LEN_MASK;
+            if (pkt_len > 0 && usb_state.in_accum_len + pkt_len <= (int)sizeof(usb_state.in_accum)) {
+                memcpy(&usb_state.in_accum[usb_state.in_accum_len],
+                       &usb_state.dpram[USB_DPRAM_EP0_BUF], pkt_len);
+                usb_state.in_accum_len += pkt_len;
+            }
             usb_complete_ep0_in();
-            usb_state.ctrl_state = USB_CTRL_WAIT_STATUS_OUT;
+
+            /* Check if transfer is complete:
+             * - received all expected bytes, OR
+             * - short packet (less than max packet size = 64), OR
+             * - zero-length packet */
+            if (usb_state.in_accum_len >= usb_state.in_expected_len ||
+                pkt_len < 64 || pkt_len == 0) {
+                /* Copy accumulated data back to EP0 buffer for descriptor parsing */
+                int copy_len = usb_state.in_accum_len;
+                if (copy_len > (int)sizeof(usb_state.dpram) - USB_DPRAM_EP0_BUF)
+                    copy_len = (int)sizeof(usb_state.dpram) - USB_DPRAM_EP0_BUF;
+                memcpy(&usb_state.dpram[USB_DPRAM_EP0_BUF],
+                       usb_state.in_accum, copy_len);
+                /* Update buf_ctrl with total length for parsers */
+                uint32_t final_bc = dpram_read32(USB_DPRAM_BUF_CTRL);
+                final_bc = (final_bc & ~USB_BUF_CTRL_LEN_MASK) |
+                           (copy_len & USB_BUF_CTRL_LEN_MASK);
+                dpram_write32(USB_DPRAM_BUF_CTRL, final_bc);
+                usb_state.ctrl_state = USB_CTRL_WAIT_STATUS_OUT;
+            }
+            /* else: wait for next packet */
         }
         break;
 
@@ -306,10 +333,14 @@ static void usb_enum_step(void) {
         if (usb_state.ctrl_state == USB_CTRL_DONE) {
             /* Parse config descriptor for CDC endpoints */
             usb_parse_config_desc();
+            /* If parsing didn't find CDC endpoints (truncated descriptor),
+             * use standard CDC-ACM defaults: EP2 IN, EP2 OUT */
+            if (usb_state.cdc_in_ep == 0) usb_state.cdc_in_ep = 2;
+            if (usb_state.cdc_out_ep == 0) usb_state.cdc_out_ep = 2;
             usb_state.ctrl_state = USB_CTRL_IDLE;
             /* SET_CONFIGURATION 1 */
             usb_send_setup(0x00, 9, 1, 0, 0);
-            usb_state.enum_state = USB_ENUM_CDC_SET_LINE_CODING;
+            usb_state.enum_state = USB_ENUM_ACTIVE;
         }
         break;
 

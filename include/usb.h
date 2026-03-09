@@ -63,11 +63,16 @@
 #define USB_INTR_BUS_RESET      (1u << 12)
 #define USB_INTR_SETUP_REQ      (1u << 16)
 
-/* Buffer control bits */
-#define USB_BUF_CTRL_FULL       (1u << 31)
-#define USB_BUF_CTRL_LAST       (1u << 30)
-#define USB_BUF_CTRL_DATA_PID   (1u << 29)
-#define USB_BUF_CTRL_AVAILABLE  (1u << 26)
+/* Buffer control bits (BUFFER0, single-buffered mode)
+ * RP2040 DPRAM EP buffer control register layout:
+ *   [31:16] = BUFFER1 (for double-buffered EPs)
+ *   [15:0]  = BUFFER0 (always used for single-buffered) */
+#define USB_BUF_CTRL_FULL       (1u << 15)
+#define USB_BUF_CTRL_LAST       (1u << 14)
+#define USB_BUF_CTRL_DATA_PID   (1u << 13)
+#define USB_BUF_CTRL_RESET      (1u << 12)
+#define USB_BUF_CTRL_STALL      (1u << 11)
+#define USB_BUF_CTRL_AVAILABLE  (1u << 10)
 #define USB_BUF_CTRL_LEN_MASK   0x3FF
 
 /* DPRAM layout */
@@ -135,6 +140,11 @@ typedef struct {
     /* OUT data for control transfers */
     uint8_t out_data[64];
     int out_data_len;
+
+    /* Multi-packet IN accumulation */
+    uint8_t in_accum[256];   /* Accumulated IN data */
+    int in_accum_len;        /* Bytes accumulated so far */
+    int in_expected_len;     /* Total bytes expected (wLength from setup) */
 } usb_state_t;
 
 extern usb_state_t usb_state;

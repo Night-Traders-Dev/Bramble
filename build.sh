@@ -1,6 +1,6 @@
 #!/bin/sh
 
-make clean
+rm -rf build bramble bramble_tests
 git pull origin main
 git submodule update --init --recursive --remote
 
@@ -11,5 +11,5 @@ cmake .. && make CORES=2 -j$(nproc)
 echo "moving bramble binary and removing build directory...\n"
 mv ./bramble ../bramble
 mv ./bramble_tests ../bramble_tests
-cd ../ && rm -rf build
+cd ../
 echo "*==Bramble Build Complete==*\n"
