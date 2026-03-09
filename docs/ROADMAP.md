@@ -1,14 +1,14 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.16.0
+## Current State: v0.17.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~85% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + SRAM + SRAM alias + ROM (4KB) |
-| Peripherals | ~90% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full instruction execution), Resets, Clocks, XOSC, PLLs, Watchdog, ADC, USB stub |
+| Memory Map | ~90% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (4KB) |
+| Peripherals | ~92% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog, ADC, SIO divider, USB stub |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
-| Boot | ~80% | Vector table + SDK boot peripherals + ROM function table |
+| Boot | ~90% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect |
 
 ---
 
@@ -156,6 +156,7 @@ on M0+. The original roadmap incorrectly listed these.
 - PC wrapping, autopush/autopull, blocking/non-blocking FIFO ops, force-exec
 - FSTAT/FLEVEL reflect actual FIFO state, GPIO pin integration via PINCTRL
 - DBG_CFGINFO, interrupt registers, atomic aliases
+- Per-SM fractional clock divider (16.8 fixed-point, CLKDIV_RESTART strobe)
 
 ### 3.8 USB (0x50110000) [LOW]
 - Device mode endpoint handling
@@ -177,8 +178,13 @@ on M0+. The original roadmap incorrectly listed these.
 - XIP SRAM at 0x15000000 (16KB cache memory usable as general SRAM)
 - XIP flash aliases: 0x11 (NOALLOC), 0x12 (NOCACHE), 0x13 (NOCACHE_NOALLOC)
 
-### 4.3 ROM Bootloader
-- Full boot2 simulation or skip-to-application shortcut
+### 4.3 ROM Bootloader [COMPLETE]
+
+~~Full boot2 simulation or skip-to-application shortcut~~
+
+- Auto-detection of boot2 in first 256 bytes of flash
+- Core 0 starts at 0x10000000 when boot2 present, 0x10000100 otherwise
+- `-no-boot2` CLI flag to skip boot2 execution
 
 ### 4.4 Cycle-Accurate Timing [COMPLETE]
 ~~Configurable cycles-per-microsecond ratio~~

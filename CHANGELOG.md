@@ -1,5 +1,67 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.17.0] - 2026-03-08
+
+### Added - Boot2, SIO Hardware Divider, PIO Clock Division
+
+**Boot2 Support**:
+
+- Auto-detection of second-stage bootloader in firmware (first 256 bytes of flash)
+- When detected, Core 0 starts execution at 0x10000000 (boot2 entry) instead of 0x10000100
+- `-no-boot2` CLI flag to skip boot2 execution
+- `cpu_has_boot2()` / `cpu_set_boot2()` API
+
+**SIO Hardware Divider**:
+
+- Per-core signed and unsigned 32-bit divider
+- Registers: DIV_UDIVIDEND, DIV_UDIVISOR, DIV_SDIVIDEND, DIV_SDIVISOR
+- QUOTIENT, REMAINDER, CSR (READY always 1, DIRTY tracking)
+- Division-by-zero returns 0xFFFFFFFF quotient, dividend as remainder
+- INT32_MIN / -1 wraps to 0x80000000 (matches RP2040 hardware, avoids C UB)
+
+**XIP SSI Flash Interface (0x18000000)**:
+
+- CTRLR0, CTRLR1, SSIENR, SER, BAUDR, TXFTLR, RXFTLR, SR, DR0 registers
+- TX/RX FIFOs (16-deep each)
+- Flash read commands (0x03) with 24-bit address decoding
+
+**PIO Clock Division**:
+
+- Per-SM fractional clock divider (16.8 fixed-point)
+- CLKDIV register: bits[31:16]=INT, bits[15:8]=FRAC
+- INT=0 treated as 65536, INT=1/FRAC=0 runs every cycle (no division)
+- CLKDIV_RESTART strobe (CTRL bits[11:8]) resets accumulator
+- Force-exec bypasses clock divider
+- Default CLKDIV set to 1.0 at init
+
+### Fixed
+
+- **UART PL011 hardware reset state**: UART now starts disabled (CR=0, RIS=0). TX RIS bit auto-asserted when UART is enabled via CR write.
+- **Signed divider INT32_MIN / -1**: Explicit check prevents C undefined behavior
+- **Interrupt test ISR**: Fixed LR clobber by adding push/pop around bl calls
+- **Test firmware UART enable**: All 5 assembly test firmwares now enable UART before writing
+- Removed dead `instr_mov_reg` function and all TRACE probe variables
+
+### Testing
+
+- **6 new tests** (218 total, up from 212)
+- PIO Clock Division category: default 1:1, divide-by-2, fractional 1.5, CLKDIV_RESTART, SM_RESTART clears accumulator, force-exec bypasses divider
+- 3 existing UART tests updated for hardware reset state
+
+### Files Modified
+
+- `src/pio.c` - Clock division in `pio_step()`, default CLKDIV=1.0, CLKDIV_RESTART handler
+- `include/pio.h` - `clk_frac_acc` widened to uint32_t
+- `src/cpu.c` - Boot2 detection, removed TRACE probes
+- `src/membus.c` - XIP SSI, SIO divider, INT32_MIN/-1 fix
+- `src/uart.c` - PL011 hardware reset state (starts disabled)
+- `src/main.c` - `-no-boot2` CLI flag
+- `src/instructions.c` - Removed TRACE probes and dead code
+- `include/emulator.h` - Boot2 API declarations
+- `tests/test_suite.c` - 6 new PIO clkdiv tests, 3 updated UART tests
+
+---
+
 ## [0.16.0] - 2026-03-08
 
 ### Added - PIO Instruction Execution

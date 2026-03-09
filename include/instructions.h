@@ -9,8 +9,6 @@
 
 // Data Movement
 void instr_movs_imm8(uint16_t instr);              // MOVS Rd, #imm8 [EXISTING]
-void instr_mov_reg(uint16_t instr);                // MOV Rd, Rm (high register support)
-
 // Arithmetic Operations
 void instr_adds_imm3(uint16_t instr);              // ADDS Rd, Rn, #imm3 [EXISTING]
 void instr_adds_imm8(uint16_t instr);              // ADDS Rd, #imm8 [EXISTING]

@@ -144,8 +144,8 @@ typedef struct {
     pio_fifo_t tx_fifo;     /* TX: CPU writes, SM pulls */
     pio_fifo_t rx_fifo;     /* RX: SM pushes, CPU reads */
 
-    /* Clock divider fractional accumulator */
-    uint16_t clk_frac_acc;
+    /* Clock divider accumulator (16.8 fixed-point) */
+    uint32_t clk_frac_acc;
 } pio_sm_t;
 
 /* ========================================================================

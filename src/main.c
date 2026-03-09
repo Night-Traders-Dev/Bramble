@@ -96,6 +96,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -stdin     Enable stdin polling for UART0 Rx input\n");
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
+        fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         return EXIT_FAILURE;
     }
 
@@ -106,6 +107,7 @@ int main(int argc, char **argv) {
     int show_status = 0;
     int gdb_enabled = 0;
     int gdb_port = GDB_DEFAULT_PORT;
+    int no_boot2 = 0;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-debug") == 0) {
@@ -128,6 +130,8 @@ int main(int argc, char **argv) {
                 uint32_t mhz = (uint32_t)atoi(argv[++i]);
                 timing_set_clock_mhz(mhz);
             }
+        } else if (strcmp(argv[i], "-no-boot2") == 0) {
+            no_boot2 = 1;
         }
     }
 
@@ -174,6 +178,12 @@ int main(int argc, char **argv) {
     }
 
     printf("[Init] Firmware loaded successfully\n");
+
+    /* Detect boot2 in firmware */
+    if (!no_boot2 && cpu_has_boot2()) {
+        cpu_set_boot2(1);
+        printf("[Init] Boot2 detected in firmware (first 256 bytes)\n");
+    }
 
     printf("[Init] Initializing dual-core RP2040 emulator...\n");
     dual_core_init();

@@ -111,20 +111,6 @@ void instr_movs_imm8(uint16_t instr) {
     update_nz_flags(imm);
 }
 
-void instr_mov_reg(uint16_t instr) {
-    uint8_t rd = ((instr >> 4) & 0x8) | (instr & 0x7);
-    uint8_t rm = (instr >> 3) & 0xF;
-
-    uint32_t value = cpu.r[rm];
-
-    if (rd == 15) {
-        cpu.r[15] = value & ~1;
-        pc_updated = 1;
-    } else {
-        cpu.r[rd] = value;
-    }
-}
-
 void instr_adds_reg_reg(uint16_t instr) {
     uint8_t rm = (instr >> 6) & 0x07;
     uint8_t rn = (instr >> 3) & 0x07;

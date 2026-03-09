@@ -271,6 +271,10 @@ void sio_set_core1_reset(int assert_reset);
 void sio_set_core1_stall(int stall);
 int sio_core1_bootrom_handle_fifo_write(uint32_t val);
 
+/* Boot2 detection */
+int cpu_has_boot2(void);
+void cpu_set_boot2(int enable);
+
 /* Debugging */
 void dual_core_status(void);
 void cpu_set_debug_core(int core_id, int enabled);

@@ -482,11 +482,27 @@ void pio_step(void) {
             if (!(p->ctrl & (1u << sm))) continue;  /* SM not enabled */
             pio_sm_t *s = &p->sm[sm];
 
-            /* Check for forced execution (SM_INSTR write) */
+            /* Check for forced execution (SM_INSTR write) — bypasses clock divider */
             if (s->exec_pending) {
                 s->exec_pending = 0;
                 pio_sm_exec(b, sm, s->instr & 0xFFFF);
                 continue;
+            }
+
+            /* Clock division: CLKDIV register is INT[31:16].FRAC[15:8] */
+            uint16_t clk_int = (s->clkdiv >> 16) & 0xFFFF;
+            uint8_t clk_frac = (s->clkdiv >> 8) & 0xFF;
+
+            /* INT=0 means 65536 per RP2040 spec; INT=1,FRAC=0 means every cycle */
+            if (clk_int != 1 || clk_frac != 0) {
+                uint32_t effective_int = (clk_int == 0) ? 65536u : clk_int;
+                uint32_t divisor_fp = (effective_int << 8) | clk_frac;
+
+                s->clk_frac_acc += 256;  /* Add 1.0 in 16.8 fixed-point */
+                if (s->clk_frac_acc < divisor_fp) {
+                    continue;  /* Not time to execute yet */
+                }
+                s->clk_frac_acc -= divisor_fp;
             }
 
             /* Skip if stalled */
@@ -513,6 +529,8 @@ void pio_init(void) {
     memset(pio_state, 0, sizeof(pio_state));
     for (int b = 0; b < PIO_NUM_BLOCKS; b++) {
         for (int sm = 0; sm < PIO_NUM_SM; sm++) {
+            /* Default CLKDIV: INT=1, FRAC=0 (run every cycle) */
+            pio_state[b].sm[sm].clkdiv = (1u << 16);
             /* Default EXECCTRL: WRAP_TOP=31, STATUS_SEL=0 */
             pio_state[b].sm[sm].execctrl = (31u << 12);  /* wrap_top=31 */
             /* Default SHIFTCTRL: PULL_THRESH=0, PUSH_THRESH=0, both autopush/pull off */
@@ -677,8 +695,17 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
                 s->isr_count = 0;
                 s->osr_count = 0;
                 s->exec_pending = 0;
+                s->clk_frac_acc = 0;
                 memset(&s->tx_fifo, 0, sizeof(pio_fifo_t));
                 memset(&s->rx_fifo, 0, sizeof(pio_fifo_t));
+            }
+        }
+
+        /* CLKDIV_RESTART [11:8]: restart clock dividers (strobe, self-clearing) */
+        uint8_t clkdiv_restart = (val >> 8) & 0x0F;
+        for (int sm = 0; sm < PIO_NUM_SM; sm++) {
+            if (clkdiv_restart & (1u << sm)) {
+                p->sm[sm].clk_frac_acc = 0;
             }
         }
         break;

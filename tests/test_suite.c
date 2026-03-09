@@ -2439,6 +2439,171 @@ TEST(test_pio_flevel_reflects_fifo) {
 }
 
 /* ========================================================================
+ * PIO Clock Division Tests
+ * ======================================================================== */
+
+TEST(test_pio_clkdiv_default_runs_every_cycle) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* Default clkdiv should be 1.0 (INT=1, FRAC=0) — execute every cycle */
+    ASSERT_EQ(1u << 16, s->clkdiv, "Default CLKDIV should be 1.0");
+
+    /* SET X, N: opcode=7, dest=5(X), data=N => pio_enc(7, 0, (5<<5)|N) */
+    uint16_t set_x_5 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 5);
+    uint16_t set_x_6 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 6);
+    p->instr_mem[0] = set_x_5;
+    p->instr_mem[1] = set_x_6;
+    s->pc = 0;
+    s->execctrl = (1u << 12);  /* wrap_top=1 */
+
+    /* Enable SM0 */
+    p->ctrl = 1;
+
+    /* One step should execute SET X, 5 */
+    pio_step();
+    ASSERT_EQ(5, s->x, "X should be 5 after one step at clkdiv=1");
+
+    /* Next step should execute SET X, 6 */
+    pio_step();
+    ASSERT_EQ(6, s->x, "X should be 6 after second step at clkdiv=1");
+    PASS();
+}
+
+TEST(test_pio_clkdiv_divide_by_2) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* Set CLKDIV to 2.0 (INT=2, FRAC=0) — execute every other cycle */
+    s->clkdiv = 2u << 16;
+    s->clk_frac_acc = 0;
+
+    uint16_t set_x_5 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 5);
+    uint16_t set_x_6 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 6);
+    p->instr_mem[0] = set_x_5;
+    p->instr_mem[1] = set_x_6;
+    s->pc = 0;
+    s->execctrl = (1u << 12);  /* wrap_top=1 */
+
+    /* Enable SM0 */
+    p->ctrl = 1;
+
+    /* First step: accumulator=256, divisor=512, not time yet */
+    pio_step();
+    ASSERT_EQ(0, s->x, "X should still be 0 after 1st step at clkdiv=2");
+
+    /* Second step: accumulator=512 >= 512, executes SET X, 5 */
+    pio_step();
+    ASSERT_EQ(5, s->x, "X should be 5 after 2nd step at clkdiv=2");
+
+    /* Third step: accumulator=256, not time yet */
+    pio_step();
+    ASSERT_EQ(5, s->x, "X should still be 5 after 3rd step");
+
+    /* Fourth step: executes SET X, 6 */
+    pio_step();
+    ASSERT_EQ(6, s->x, "X should be 6 after 4th step at clkdiv=2");
+    PASS();
+}
+
+TEST(test_pio_clkdiv_fractional) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* Set CLKDIV to 1.5 (INT=1, FRAC=128 which is 128/256=0.5) */
+    /* Fixed-point divisor = (1 << 8) | 128 = 384 */
+    s->clkdiv = (1u << 16) | (128u << 8);
+    s->clk_frac_acc = 0;
+
+    uint16_t set_x_5 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 5);
+    uint16_t set_x_6 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 6);
+    uint16_t set_x_7 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 7);
+    p->instr_mem[0] = set_x_5;
+    p->instr_mem[1] = set_x_6;
+    p->instr_mem[2] = set_x_7;
+    s->pc = 0;
+    s->execctrl = (2u << 12);  /* wrap_top=2 */
+
+    p->ctrl = 1;
+
+    /* Step 1: acc=256 >= 384? No */
+    pio_step();
+    ASSERT_EQ(0, s->x, "Step 1: X should be 0 (1.5 divider)");
+
+    /* Step 2: acc=512 >= 384? Yes -> execute, acc=512-384=128 */
+    pio_step();
+    ASSERT_EQ(5, s->x, "Step 2: X should be 5 (first exec at 1.5 divider)");
+
+    /* Step 3: acc=128+256=384 >= 384? Yes -> execute, acc=0 */
+    pio_step();
+    ASSERT_EQ(6, s->x, "Step 3: X should be 6 (second exec at 1.5 divider)");
+
+    /* Step 4: acc=256 >= 384? No */
+    pio_step();
+    ASSERT_EQ(6, s->x, "Step 4: X should still be 6");
+
+    /* Step 5: acc=512 >= 384? Yes -> execute */
+    pio_step();
+    ASSERT_EQ(7, s->x, "Step 5: X should be 7 (third exec at 1.5 divider)");
+    PASS();
+}
+
+TEST(test_pio_clkdiv_restart_resets_accumulator) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* Set clkdiv=2 and accumulate some */
+    s->clkdiv = 2u << 16;
+    s->clk_frac_acc = 200;
+
+    /* CLKDIV_RESTART for SM0 (bit 8 of CTRL) */
+    pio_write32(0, PIO_CTRL, (1u << 8));
+
+    ASSERT_EQ(0, s->clk_frac_acc, "clk_frac_acc should be 0 after CLKDIV_RESTART");
+    PASS();
+}
+
+TEST(test_pio_sm_restart_clears_clkdiv_acc) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    s->clk_frac_acc = 500;
+
+    /* SM_RESTART for SM0 (bit 4 of CTRL) */
+    pio_write32(0, PIO_CTRL, (1u << 4));
+
+    ASSERT_EQ(0, s->clk_frac_acc, "clk_frac_acc should be 0 after SM_RESTART");
+    PASS();
+}
+
+TEST(test_pio_force_exec_bypasses_clkdiv) {
+    reset_cpu();
+    pio_block_t *p = &pio_state[0];
+    pio_sm_t *s = &p->sm[0];
+
+    /* Set very slow clock: INT=100 */
+    s->clkdiv = 100u << 16;
+    s->clk_frac_acc = 0;
+
+    /* Enable SM0 */
+    p->ctrl = 1;
+
+    /* Force-exec SET X, 9 via SM_INSTR write */
+    uint16_t set_x_9 = pio_enc(PIO_OP_SET, 0, (5 << 5) | 9);
+    pio_write32(0, PIO_SM0_CLKDIV + 0x10, set_x_9);
+
+    /* One step should execute the forced instruction despite slow clock */
+    pio_step();
+    ASSERT_EQ(9, s->x, "Force-exec should bypass clock divider");
+    PASS();
+}
+
+/* ========================================================================
  * Cycle Timing Tests
  * ======================================================================== */
 
@@ -2922,6 +3087,15 @@ int main(void) {
     RUN_TEST(test_pio_sm_restart_clears_state);
     RUN_TEST(test_pio_flevel_reflects_fifo);
     END_CATEGORY("PIO Execution");
+
+    BEGIN_CATEGORY("PIO Clock Division");
+    RUN_TEST(test_pio_clkdiv_default_runs_every_cycle);
+    RUN_TEST(test_pio_clkdiv_divide_by_2);
+    RUN_TEST(test_pio_clkdiv_fractional);
+    RUN_TEST(test_pio_clkdiv_restart_resets_accumulator);
+    RUN_TEST(test_pio_sm_restart_clears_clkdiv_acc);
+    RUN_TEST(test_pio_force_exec_bypasses_clkdiv);
+    END_CATEGORY("PIO Clock Division");
 
     BEGIN_CATEGORY("SRAM Aliasing");
     RUN_TEST(test_sram_alias_write_read);

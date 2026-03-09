@@ -950,6 +950,40 @@ int cpu_is_halted_core(int core_id) {
     return cores[core_id].is_halted;
 }
 
+/* ========================================================================
+ * Boot2 Detection
+ *
+ * RP2040 flash layout: first 256 bytes (offset 0x000-0x0FF) are the
+ * second-stage bootloader (boot2).  The application vector table lives
+ * at offset 0x100.  If boot2 is present we start execution from
+ * 0x10000000 so the real boot2 code configures XIP/SSI before jumping
+ * to the application.  Otherwise we skip straight to the app.
+ *
+ * Detection: boot2 is present when the first flash word is non-trivial
+ * (not 0x00000000 or 0xFFFFFFFF) and the vector table at +0x100 also
+ * contains a plausible initial SP (in RAM range).
+ * ======================================================================== */
+
+static int boot2_detected = 0;
+
+int cpu_has_boot2(void) {
+    uint32_t first_word;
+    memcpy(&first_word, &cpu.flash[0], 4);
+
+    if (first_word == 0x00000000 || first_word == 0xFFFFFFFF) {
+        return 0;
+    }
+
+    /* Also verify the vector table at +0x100 looks valid */
+    uint32_t sp_word;
+    memcpy(&sp_word, &cpu.flash[0x100], 4);
+    if (sp_word < RAM_BASE || sp_word > RAM_BASE + RAM_SIZE) {
+        return 0;
+    }
+
+    return 1;
+}
+
 void cpu_reset_core(int core_id) {
     if (core_id >= NUM_CORES) return;
 
@@ -964,18 +998,32 @@ void cpu_reset_core(int core_id) {
     c->primask = 0;
 
     if (core_id == CORE0) {
-        uint32_t vector_table = FLASH_BASE + 0x100;
-        uint32_t initial_sp = mem_read32(vector_table);
-        uint32_t reset_vector = mem_read32(vector_table + 4);
+        if (boot2_detected) {
+            /* Boot2 present: start from flash base, boot2 sets up XIP
+             * and eventually jumps to the application at +0x100.
+             * Use top of SRAM as initial SP (boot2 sets its own). */
+            c->r[13] = RAM_BASE + RAM_SIZE;
+            c->r[15] = FLASH_BASE;
+            printf("[Boot2] Starting boot2 from 0x%08X\n", FLASH_BASE);
+        } else {
+            /* No boot2: read vector table directly from +0x100 */
+            uint32_t vector_table = FLASH_BASE + 0x100;
+            uint32_t initial_sp = mem_read32(vector_table);
+            uint32_t reset_vector = mem_read32(vector_table + 4);
 
-        c->r[13] = initial_sp;
-        c->r[15] = reset_vector & ~1;
+            c->r[13] = initial_sp;
+            c->r[15] = reset_vector & ~1;
+        }
 
         if (c->debug_enabled) {
             printf("[CORE%d] Reset to PC=0x%08X SP=0x%08X\n",
                    core_id, c->r[15], c->r[13]);
         }
     }
+}
+
+void cpu_set_boot2(int enable) {
+    boot2_detected = enable;
 }
 
 /* ========================================================================
