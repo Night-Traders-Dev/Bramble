@@ -312,6 +312,8 @@ void instr_pop(uint16_t instr) {
             if (cpu.debug_asm) {
                 printf("[POP] *** MAGIC VALUE DETECTED - EXCEPTION RETURN ***\n");
             }
+            sp += 4;  /* Account for the PC pop */
+            cpu.r[13] = sp;  /* Update SP before exception return */
             cpu_exception_return(pc_val);
             pc_updated = 1;
             return;

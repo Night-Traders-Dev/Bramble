@@ -46,6 +46,113 @@ static uint8_t xip_sram[XIP_SRAM_SIZE];
 int mem_debug_unmapped = 0;  /* Set via -debug-mem flag */
 
 /* ========================================================================
+ * SYSINFO Registers (0x40000000)
+ *
+ * Returns chip identification information.
+ * ======================================================================== */
+
+#define SYSINFO_BASE        0x40000000
+#define SYSINFO_CHIP_ID     0x00
+#define SYSINFO_PLATFORM    0x04
+#define SYSINFO_GITREF      0x40  /* ROM version git hash */
+
+/* RP2040-B2: REVISION=2, PART=0x0002, MANUFACTURER=Raspberry Pi (0x927) */
+#define RP2040_CHIP_ID      ((2u << 28) | (0x0002u << 12) | (0x927u << 1) | 1u)
+#define RP2040_PLATFORM     0x00000002  /* ASIC=1, FPGA=0 */
+
+static uint32_t sysinfo_read(uint32_t offset) {
+    switch (offset) {
+    case SYSINFO_CHIP_ID:  return RP2040_CHIP_ID;
+    case SYSINFO_PLATFORM: return RP2040_PLATFORM;
+    case SYSINFO_GITREF:   return 0x00000001;  /* Bootrom version */
+    default:               return 0;
+    }
+}
+
+/* ========================================================================
+ * IO_QSPI Registers (0x40018000)
+ *
+ * Minimal stub for QSPI pad GPIO control (6 pins: SCLK, SS, SD0-SD3).
+ * Each pin has STATUS (read-only) + CTRL (read/write) = 8 bytes per pin.
+ * Total pin registers: 6 * 8 = 48 bytes (0x00-0x2F)
+ * Plus INTR/INTE/INTF/INTS at 0x30-0x3C
+ * ======================================================================== */
+
+#define IO_QSPI_BASE        0x40018000
+#define IO_QSPI_BLOCK_SIZE  0x60
+
+/* Store CTRL registers for 6 QSPI GPIOs + interrupt registers */
+static uint32_t io_qspi_ctrl[6];     /* CTRL for SCLK, SS, SD0-SD3 */
+static uint32_t io_qspi_inte;
+static uint32_t io_qspi_intf;
+
+static int io_qspi_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000;
+    return (base >= IO_QSPI_BASE && base < IO_QSPI_BASE + IO_QSPI_BLOCK_SIZE);
+}
+
+static uint32_t io_qspi_read(uint32_t offset) {
+    /* Pin registers: each pin has STATUS at +0, CTRL at +4, 8 bytes apart */
+    if (offset < 0x30) {
+        uint32_t pin = offset / 8;
+        uint32_t reg = offset % 8;
+        if (pin < 6) {
+            if (reg == 0) return 0;  /* STATUS: always 0 */
+            if (reg == 4) return io_qspi_ctrl[pin];
+        }
+        return 0;
+    }
+    switch (offset) {
+    case 0x30: return 0;              /* INTR (raw) */
+    case 0x34: return io_qspi_inte;   /* INTE */
+    case 0x38: return io_qspi_intf;   /* INTF */
+    case 0x3C: return 0;              /* INTS */
+    default:   return 0;
+    }
+}
+
+static void io_qspi_write(uint32_t offset, uint32_t val) {
+    if (offset < 0x30) {
+        uint32_t pin = offset / 8;
+        uint32_t reg = offset % 8;
+        if (pin < 6 && reg == 4) {
+            io_qspi_ctrl[pin] = val;
+        }
+        return;
+    }
+    switch (offset) {
+    case 0x34: io_qspi_inte = val; break;
+    case 0x38: io_qspi_intf = val; break;
+    default: break;
+    }
+}
+
+/* ========================================================================
+ * PADS_QSPI Registers (0x40020000)
+ *
+ * Minimal stub for QSPI pad electrical control.
+ * ======================================================================== */
+
+#define PADS_QSPI_BASE        0x40020000
+#define PADS_QSPI_BLOCK_SIZE  0x20
+
+static uint32_t pads_qspi_regs[8];  /* VOLTAGE_SELECT + 6 pads + spare */
+
+static int pads_qspi_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000;
+    return (base >= PADS_QSPI_BASE && base < PADS_QSPI_BASE + PADS_QSPI_BLOCK_SIZE);
+}
+
+static uint32_t pads_qspi_read(uint32_t offset) {
+    if (offset < sizeof(pads_qspi_regs)) return pads_qspi_regs[offset / 4];
+    return 0;
+}
+
+static void pads_qspi_write(uint32_t offset, uint32_t val) {
+    if (offset < sizeof(pads_qspi_regs)) pads_qspi_regs[offset / 4] = val;
+}
+
+/* ========================================================================
  * XIP SSI State (0x18000000)
  *
  * This is a minimal emulation of the RP2040 flash serial interface. It only
@@ -823,9 +930,22 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* XIP SSI registers */
-    if (addr >= XIP_SSI_BASE && addr < XIP_SSI_BASE + 0x1000) {
-        xip_ssi_write(addr - XIP_SSI_BASE, val);
+    /* XIP SSI registers (including atomic aliases: XOR +0x1000, SET +0x2000, CLR +0x3000) */
+    if (addr >= XIP_SSI_BASE && addr < XIP_SSI_BASE + 0x4000) {
+        uint32_t alias = (addr - XIP_SSI_BASE) & 0x3000;
+        uint32_t offset = (addr - XIP_SSI_BASE) & 0xFFF;
+        if (alias == 0x0000) {
+            xip_ssi_write(offset, val);
+        } else if (alias == 0x2000) {  /* SET */
+            uint32_t cur = xip_ssi_read(offset);
+            xip_ssi_write(offset, cur | val);
+        } else if (alias == 0x3000) {  /* CLR */
+            uint32_t cur = xip_ssi_read(offset);
+            xip_ssi_write(offset, cur & ~val);
+        } else {  /* XOR 0x1000 */
+            uint32_t cur = xip_ssi_read(offset);
+            xip_ssi_write(offset, cur ^ val);
+        }
         return;
     }
 
@@ -1013,6 +1133,41 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+    /* SYSINFO (read-only, writes ignored) */
+    if (addr >= SYSINFO_BASE && addr < SYSINFO_BASE + 0x4000) return;
+
+    /* IO_QSPI registers (including atomic aliases) */
+    if (io_qspi_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t offset = addr & 0xFFF;
+        if (alias == 0x0000) {
+            io_qspi_write(offset, val);
+        } else if (alias == 0x2000) {
+            io_qspi_write(offset, io_qspi_read(offset) | val);
+        } else if (alias == 0x3000) {
+            io_qspi_write(offset, io_qspi_read(offset) & ~val);
+        } else {
+            io_qspi_write(offset, io_qspi_read(offset) ^ val);
+        }
+        return;
+    }
+
+    /* PADS_QSPI registers (including atomic aliases) */
+    if (pads_qspi_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t offset = addr & 0xFFF;
+        if (alias == 0x0000) {
+            pads_qspi_write(offset, val);
+        } else if (alias == 0x2000) {
+            pads_qspi_write(offset, pads_qspi_read(offset) | val);
+        } else if (alias == 0x3000) {
+            pads_qspi_write(offset, pads_qspi_read(offset) & ~val);
+        } else {
+            pads_qspi_write(offset, pads_qspi_read(offset) ^ val);
+        }
+        return;
+    }
+
     /* Stub out other peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) {
         if (mem_debug_unmapped)
@@ -1163,9 +1318,10 @@ uint32_t mem_read32(uint32_t addr) {
         return val;
     }
 
-    /* XIP SSI registers */
-    if (addr >= XIP_SSI_BASE && addr < XIP_SSI_BASE + 0x1000) {
-        return xip_ssi_read(addr - XIP_SSI_BASE);
+    /* XIP SSI registers (including atomic aliases) */
+    if (addr >= XIP_SSI_BASE && addr < XIP_SSI_BASE + 0x4000) {
+        uint32_t offset = (addr - XIP_SSI_BASE) & 0xFFF;
+        return xip_ssi_read(offset);
     }
 
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
@@ -1266,6 +1422,21 @@ uint32_t mem_read32(uint32_t addr) {
     /* RTC */
     if (rtc_match(addr)) {
         return rtc_read32(addr & 0xFFF);
+    }
+
+    /* SYSINFO */
+    if (addr >= SYSINFO_BASE && addr < SYSINFO_BASE + 0x4000) {
+        return sysinfo_read(addr & 0xFFF);
+    }
+
+    /* IO_QSPI */
+    if (io_qspi_match(addr)) {
+        return io_qspi_read(addr & 0xFFF);
+    }
+
+    /* PADS_QSPI */
+    if (pads_qspi_match(addr)) {
+        return pads_qspi_read(addr & 0xFFF);
     }
 
     /* Stub peripheral reads: return 0 for now. */

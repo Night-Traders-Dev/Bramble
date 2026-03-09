@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-/* ROM is mapped at 0x00000000, 4KB */
+/* ROM is mapped at 0x00000000, 16KB (matches real RP2040 bootrom size) */
 #define ROM_BASE    0x00000000
-#define ROM_SIZE    0x1000
+#define ROM_SIZE    0x4000
 
 /* ROM layout offsets */
 #define ROM_MAGIC_OFFSET    0x10    /* 'M', 'u', version */
