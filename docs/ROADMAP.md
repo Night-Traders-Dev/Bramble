@@ -1,17 +1,19 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.26.0
+## Current State: v0.28.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~95% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) |
 | Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin+TCP), SPI (FIFOs+device cb), I2C (FIFO+device cb), PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, ROSC, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC + multi-packet IN), RTC (ticking), SYSINFO, IO_QSPI, PADS_QSPI |
+| Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
 | Exceptions | ~90% | Entry/return, priority preemption, SysTick, PendSV, HardFault, exception nesting |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
 | Firmware | MicroPython + CircuitPython | MicroPython v1.27.0 REPL + CircuitPython 10.1.3 code.py via USB CDC |
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
+| Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 
 ---
 
@@ -396,6 +398,41 @@ on M0+. The original roadmap incorrectly listed these.
 - SPI devices: W5500 (Ethernet), SD card, SPI flash, OLED displays
 - I2C devices: BME280/BMP280, MPU6050, EEPROM, RTC modules
 - Each device is a self-contained `.c` file implementing the callback interface
+
+---
+
+## Phase 7: Storage & Runtime Access
+
+### 7.1 Flash Write-Through Persistence [COMPLETE]
+
+- Every `flash_range_erase` and `flash_range_program` immediately syncs to disk file
+- Enables external mounting of flash filesystem at runtime (no need to wait for emulator exit)
+- New module: `storage.c` / `storage.h`
+
+### 7.2 SD Card SPI Emulation [COMPLETE]
+
+- Full SPI-mode protocol state machine for SDHC cards
+- CSD v2.0 and CID register emulation
+- Commands: CMD0/8/9/10/12/13/16/17/18/24/25/55/58, ACMD41
+- Single-block and multi-block read/write with file-backed storage
+- CLI: `-sdcard <path>`, `-sdcard-spi <0|1>`, `-sdcard-size <MB>`
+- Attaches to SPI1 by default via `spi_attach_device()` callback
+- New module: `sdcard.c` / `sdcard.h`
+
+### 7.3 eMMC SPI Emulation [COMPLETE]
+
+- CMD1 initialization, EXT_CSD via CMD8
+- Sector addressing for large storage
+- File-backed storage image
+- CLI: `-emmc <path>`, `-emmc-spi <0|1>`, `-emmc-size <MB>`
+- Attaches to SPI0 by default via `spi_attach_device()` callback
+- New module: `emmc.c` / `emmc.h`
+
+### 7.4 Future: FUSE Mount
+
+- Mount flash filesystem from host OS via FUSE for live file access
+- Would allow `cp code.py /mnt/bramble/` while emulator is running
+- Depends on flash write-through persistence (7.1) for real-time sync
 
 ---
 

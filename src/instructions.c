@@ -986,17 +986,31 @@ void instr_isb(uint32_t instr) { (void)instr; }
 
 void instr_wfi(uint16_t instr) {
     (void)instr;
+    /* Mark active core as sleeping — dual_core_step will skip until interrupt */
+    int c = get_active_core();
+    if (c < NUM_CORES) {
+        cores[c].is_wfi = 1;
+    }
     if (cpu.debug_enabled) {
-        printf("[CPU] WFI - Will check for interrupt on next cycle\n");
+        printf("[CPU] WFI - Core %d sleeping until interrupt\n", c);
     }
 }
 
 void instr_wfe(uint16_t instr) {
     (void)instr;
+    /* WFE: sleep until event (treated same as WFI for now) */
+    int c = get_active_core();
+    if (c < NUM_CORES) {
+        cores[c].is_wfi = 1;
+    }
 }
 
 void instr_sev(uint16_t instr) {
     (void)instr;
+    /* SEV: wake all cores from WFE */
+    for (int i = 0; i < NUM_CORES; i++) {
+        cores[i].is_wfi = 0;
+    }
 }
 
 void instr_yield(uint16_t instr) {

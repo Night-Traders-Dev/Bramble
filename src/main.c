@@ -41,6 +41,8 @@
 #include "storage.h"
 #include "sdcard.h"
 #include "emmc.h"
+#include "fuse_mount.h"
+#include "corepool.h"
 
 
 int any_core_running(void);
@@ -107,9 +109,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -stdin     Enable stdin polling for UART0 Rx input\n");
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
+        fprintf(stderr, "  -cores <N|auto> Active cores per instance (1, 2, or auto; default: 2)\n");
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
+        fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash)\n");
         fprintf(stderr, "\nStorage:\n");
         fprintf(stderr, "  -sdcard <path>              Attach SD card image to SPI1\n");
         fprintf(stderr, "  -sdcard-spi <0|1>           SPI bus for SD card (default: 1)\n");
@@ -138,12 +142,15 @@ int main(int argc, char **argv) {
     int gdb_port = GDB_DEFAULT_PORT;
     int no_boot2 = 0;
     char *flash_path = NULL;
+    char *mount_path = NULL;
     char *sdcard_path = NULL;
     int sdcard_spi = 1;
     size_t sdcard_size = SD_DEFAULT_SIZE;
     char *emmc_path = NULL;
     int emmc_spi = 0;
     size_t emmc_size = EMMC_DEFAULT_SIZE;
+    int threaded_mode = 0;   /* Use pthread-per-core execution */
+    int cores_auto = 0;     /* -cores auto requested */
     static sdcard_t sdcard;
     static emmc_t emmc_dev;
 
@@ -168,6 +175,23 @@ int main(int argc, char **argv) {
                 uint32_t mhz = (uint32_t)atoi(argv[++i]);
                 timing_set_clock_mhz(mhz);
             }
+        } else if (strcmp(argv[i], "-cores") == 0) {
+            if (i + 1 < argc) {
+                i++;
+                if (strcmp(argv[i], "auto") == 0) {
+                    cores_auto = 1;
+                    threaded_mode = 1;
+                } else {
+                    int n = atoi(argv[i]);
+                    if (n >= 1 && n <= MAX_CORES) {
+                        num_active_cores = n;
+                    } else {
+                        fprintf(stderr, "[Error] -cores must be 1, 2, or auto\n");
+                        return EXIT_FAILURE;
+                    }
+                    threaded_mode = 1;
+                }
+            }
         } else if (strcmp(argv[i], "-no-boot2") == 0) {
             no_boot2 = 1;
         } else if (strcmp(argv[i], "-debug-mem") == 0) {
@@ -175,6 +199,10 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-flash") == 0) {
             if (i + 1 < argc) {
                 flash_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-mount") == 0) {
+            if (i + 1 < argc) {
+                mount_path = argv[++i];
             }
         } else if (strcmp(argv[i], "-sdcard") == 0) {
             if (i + 1 < argc) {
@@ -253,8 +281,19 @@ int main(int argc, char **argv) {
      * Initialization Phase
      * ======================================================================== */
 
+    /* Initialize core pool (detect host CPUs, set up threading) */
+    corepool_init();
+
+    if (cores_auto) {
+        num_active_cores = corepool_query_cores();
+        fprintf(stderr, "[CorePool] Auto-detected: %d core(s) for this instance\n",
+                num_active_cores);
+    }
+
     fprintf(stderr,"\n╔════════════════════════════════════════════════════════════╗\n");
-    fprintf(stderr,"║       Bramble RP2040 Emulator - Dual-Core Mode           ║\n");
+    fprintf(stderr,"║       Bramble RP2040 Emulator - %s Mode%s          ║\n",
+            num_active_cores == 1 ? "Single-Core" : "Dual-Core",
+            threaded_mode ? " (threaded)" : "          ");
     fprintf(stderr,"╚════════════════════════════════════════════════════════════╝\n\n");
 
 
@@ -325,6 +364,18 @@ int main(int argc, char **argv) {
         /* Enable write-through persistence */
         flash_persist_set_path(flash_path);
         flash_persist_open();
+    }
+
+    /* FUSE mount: expose flash filesystem as host directory */
+    if (mount_path) {
+        if (!flash_path) {
+            fprintf(stderr, "[Error] -mount requires -flash <path>\n");
+            return EXIT_FAILURE;
+        }
+        /* CircuitPython filesystem starts at 1MB offset in flash */
+        uint32_t fs_offset = 0x100000;
+        uint32_t fs_size = FLASH_SIZE - fs_offset;
+        fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);
     }
 
     /* Detect boot2 in firmware */
@@ -398,10 +449,15 @@ int main(int argc, char **argv) {
     cpu_reset_core(CORE0);
     fprintf(stderr,"[Boot] Core 0 SP = 0x%08X\n", cores[CORE0].r[13]);
     fprintf(stderr,"[Boot] Core 0 PC = 0x%08X\n", cores[CORE0].r[15]);
-    cpu_reset_core(CORE1);
-    fprintf(stderr,"[Boot] Core 1 SP = 0x%08X\n", cores[CORE1].r[13]);
-    fprintf(stderr,"[Boot] Core 1 PC = 0x%08X\n", cores[CORE1].r[15]);
+    if (num_active_cores > 1) {
+        cpu_reset_core(CORE1);
+        fprintf(stderr,"[Boot] Core 1 SP = 0x%08X\n", cores[CORE1].r[13]);
+        fprintf(stderr,"[Boot] Core 1 PC = 0x%08X\n", cores[CORE1].r[15]);
+    }
     fprintf(stderr,"\n");
+
+    /* Register with core pool for multi-instance coordination */
+    corepool_register(num_active_cores);
 
     /* GDB server initialization */
     if (gdb_enabled) {
@@ -422,77 +478,156 @@ int main(int argc, char **argv) {
     fprintf(stderr,"Executing...\n");
     fprintf(stderr,"═══════════════════════════════════════════════════════════\n\n");
 
-    /* Dual-core execution loop */
+    /* Execution loop */
     uint32_t instruction_count = 0;
     uint32_t step_count = 0;
 
-    while (any_core_running()) {
+    if (threaded_mode && !gdb_enabled) {
+        /* ====== Threaded execution: one host pthread per emulated core ====== */
+        fprintf(stderr, "[CorePool] Host CPUs: %d, emulated cores: %d\n",
+                corepool.host_cpus, num_active_cores);
 
-        /* GDB: check for breakpoint or single-step before executing */
-        if (gdb_enabled && gdb.active && gdb_should_stop(cores[CORE0].r[15])) {
-            int result = gdb_handle();
-            if (result < 0) {
-                gdb_enabled = 0;  /* Detached or killed */
+        corepool_start_threads();
+
+        /* Main thread handles I/O polling and watchdog */
+        while (any_core_running() && corepool.running) {
+            usleep(1000);  /* 1ms polling interval */
+
+            /* Poll stdin */
+            if (stdin_enabled) {
+                corepool_lock();
+                uart_stdin_poll();
+                corepool_unlock();
             }
-        }
 
-        dual_core_step();
-        pio_step();
-        usb_step();
-        instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
-        step_count++;
-
-        /* Poll stdin for UART Rx data every 1024 steps */
-        if (stdin_enabled && (step_count & 0x3FF) == 0) {
-            uart_stdin_poll();
-        }
-
-        /* Poll network bridges and wire links every 1024 steps */
-        if ((step_count & 0x3FF) == 0) {
+            /* Poll network and wire */
+            corepool_lock();
             net_bridge_poll();
             wire_poll();
-        }
+            corepool_unlock();
 
-        /* Flush dirty storage devices every ~1M steps */
-        if ((step_count & 0xFFFFF) == 0) {
-            if (sdcard_path) sdcard_flush(&sdcard);
-            if (emmc_path) emmc_flush(&emmc_dev);
-        }
-
-        if (show_status && (step_count % 1000 == 0)) {
-            fprintf(stderr,"[Status] Step %u (Inst %u)\n", step_count, instruction_count);
-            fprintf(stderr," Core 0: PC=0x%08X SP=0x%08X %s\n",
-                   cores[CORE0].r[15], cores[CORE0].r[13],
-                   cores[CORE0].is_halted ? "(halted)" : "(running)");
-            fprintf(stderr," Core 1: PC=0x%08X SP=0x%08X %s\n",
-                   cores[CORE1].r[15], cores[CORE1].r[13],
-                   cores[CORE1].is_halted ? "(halted)" : "(running)");
-            fprintf(stderr," FIFO0: %u messages, FIFO1: %u messages\n",
-                   fifo[CORE0].count, fifo[CORE1].count);
-            fprintf(stderr,"\n");
-        }
-
-        /* Watchdog reboot: reset all cores and re-start from flash */
-        if (watchdog_reboot_pending) {
-            fprintf(stderr,"[Watchdog] Reboot triggered\n");
-            watchdog_reboot_pending = 0;
-            clocks_state.wdog_ctrl &= ~(1u << 31);  /* Clear trigger bit */
-            dual_core_init();
-            nvic_init();
-            timer_init();
-            rom_init();
-            if (no_boot2 || !cpu_has_boot2()) {
-                cpu_reset_core(CORE0);
+            /* Periodic storage flush */
+            step_count++;
+            if ((step_count & 0x3FF) == 0) {
+                if (sdcard_path) sdcard_flush(&sdcard);
+                if (emmc_path) emmc_flush(&emmc_dev);
             }
-            instruction_count = 0;
-            step_count = 0;
-            continue;
+
+            /* Watchdog reboot */
+            if (watchdog_reboot_pending) {
+                corepool_stop_threads();
+                fprintf(stderr,"[Watchdog] Reboot triggered\n");
+                watchdog_reboot_pending = 0;
+                clocks_state.wdog_ctrl &= ~(1u << 31);
+                dual_core_init();
+                nvic_init();
+                timer_init();
+                rom_init();
+                if (no_boot2 || !cpu_has_boot2()) {
+                    cpu_reset_core(CORE0);
+                }
+                corepool_start_threads();
+            }
+
+            /* Status reporting */
+            if (show_status && (step_count % 1000 == 0)) {
+                fprintf(stderr,"[Status] Core 0: PC=0x%08X %s%s  Core 1: PC=0x%08X %s%s\n",
+                       cores[CORE0].r[15],
+                       cores[CORE0].is_halted ? "halted" : "run",
+                       cores[CORE0].is_wfi ? "/wfi" : "",
+                       cores[CORE1].r[15],
+                       cores[CORE1].is_halted ? "halted" : "run",
+                       cores[CORE1].is_wfi ? "/wfi" : "");
+            }
+
+            /* Safety limit */
+            if (!stdin_enabled && step_count > 1000000) {
+                /* Approximate: each poll ~= 1000 instructions */
+                instruction_count = cores[CORE0].step_count + cores[CORE1].step_count;
+                if (instruction_count > 1000000000) {
+                    fprintf(stderr,"[Warning] Instruction limit reached (1B)\n");
+                    break;
+                }
+            }
         }
 
-        /* Safety limit: prevent infinite loops (disabled in interactive/GDB mode) */
-        if (!gdb_enabled && !stdin_enabled && instruction_count > 1000000000) {
-            fprintf(stderr,"[Warning] Instruction limit reached (1B)\n");
-            break;
+        corepool_stop_threads();
+        instruction_count = cores[CORE0].step_count + cores[CORE1].step_count;
+
+    } else {
+        /* ====== Cooperative execution: original single-threaded round-robin ====== */
+        while (any_core_running()) {
+
+            /* GDB: check for breakpoint or single-step before executing */
+            if (gdb_enabled && gdb.active && gdb_should_stop(cores[CORE0].r[15])) {
+                int result = gdb_handle();
+                if (result < 0) {
+                    gdb_enabled = 0;  /* Detached or killed */
+                }
+            }
+
+            dual_core_step();
+            pio_step();
+            usb_step();
+            instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
+            step_count++;
+
+            /* Poll stdin for UART Rx data every 1024 steps */
+            if (stdin_enabled && (step_count & 0x3FF) == 0) {
+                uart_stdin_poll();
+            }
+
+            /* Poll network bridges and wire links every 1024 steps */
+            if ((step_count & 0x3FF) == 0) {
+                net_bridge_poll();
+                wire_poll();
+            }
+
+            /* Flush dirty storage devices every ~1M steps */
+            if ((step_count & 0xFFFFF) == 0) {
+                if (sdcard_path) sdcard_flush(&sdcard);
+                if (emmc_path) emmc_flush(&emmc_dev);
+            }
+
+            if (show_status && (step_count % 1000 == 0)) {
+                fprintf(stderr,"[Status] Step %u (Inst %u)\n", step_count, instruction_count);
+                fprintf(stderr," Core 0: PC=0x%08X SP=0x%08X %s%s\n",
+                       cores[CORE0].r[15], cores[CORE0].r[13],
+                       cores[CORE0].is_halted ? "(halted)" : "(running)",
+                       cores[CORE0].is_wfi ? " [WFI]" : "");
+                if (num_active_cores > 1) {
+                    fprintf(stderr," Core 1: PC=0x%08X SP=0x%08X %s%s\n",
+                           cores[CORE1].r[15], cores[CORE1].r[13],
+                           cores[CORE1].is_halted ? "(halted)" : "(running)",
+                           cores[CORE1].is_wfi ? " [WFI]" : "");
+                }
+                fprintf(stderr," FIFO0: %u messages, FIFO1: %u messages\n",
+                       fifo[CORE0].count, fifo[CORE1].count);
+                fprintf(stderr,"\n");
+            }
+
+            /* Watchdog reboot: reset all cores and re-start from flash */
+            if (watchdog_reboot_pending) {
+                fprintf(stderr,"[Watchdog] Reboot triggered\n");
+                watchdog_reboot_pending = 0;
+                clocks_state.wdog_ctrl &= ~(1u << 31);  /* Clear trigger bit */
+                dual_core_init();
+                nvic_init();
+                timer_init();
+                rom_init();
+                if (no_boot2 || !cpu_has_boot2()) {
+                    cpu_reset_core(CORE0);
+                }
+                instruction_count = 0;
+                step_count = 0;
+                continue;
+            }
+
+            /* Safety limit: prevent infinite loops (disabled in interactive/GDB mode) */
+            if (!gdb_enabled && !stdin_enabled && instruction_count > 1000000000) {
+                fprintf(stderr,"[Warning] Instruction limit reached (1B)\n");
+                break;
+            }
         }
     }
 
@@ -511,6 +646,11 @@ int main(int argc, char **argv) {
     net_bridge_cleanup();
     wire_cleanup();
 
+    /* Unmount FUSE filesystem */
+    if (mount_path) {
+        fuse_mount_stop();
+    }
+
     /* Flush and cleanup storage devices */
     if (sdcard_path) {
         sdcard_cleanup(&sdcard);
@@ -524,6 +664,9 @@ int main(int argc, char **argv) {
         flash_persist_save_all();
         flash_persist_close();
     }
+
+    /* Core pool cleanup */
+    corepool_cleanup();
 
     fprintf(stderr,"\n");
     fprintf(stderr,"═══════════════════════════════════════════════════════════\n");

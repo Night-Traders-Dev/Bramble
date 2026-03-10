@@ -1,5 +1,101 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.28.0] - 2026-03-09
+
+### Added - Host-Threaded Execution & Dynamic Core Allocation
+
+**pthread-per-core Execution Model:**
+
+- Each emulated RP2040 core runs in its own host pthread for true parallelism
+- Big lock (mutex) synchronizes shared peripheral state between core threads
+- WFI/WFE instructions put host threads to sleep (condition variable, zero CPU usage)
+- Interrupt delivery (NVIC pend, SysTick, PendSV) wakes sleeping threads via condvar signal
+- SEV instruction wakes all sleeping cores
+- Cooperative round-robin still available as fallback (default when no `-cores` flag)
+
+**Runtime Core Configuration:**
+
+- `-cores N` flag: 1 for single-core, 2 for dual-core (default: 2)
+- `-cores auto`: queries core pool for optimal allocation based on host CPUs and running instances
+- Threaded mode automatically enabled when `-cores` is specified
+
+**Multi-Instance Core Pool:**
+
+- File-based registry (`/tmp/bramble-corepool.reg`) tracks running bramble instances
+- Each instance registers its PID and allocated core count
+- `corepool_query_cores()` recommends cores based on host CPU count minus active allocations
+- Stale entries (dead PIDs) automatically cleaned on each access
+- Process-safe via `flock()` file locking
+
+### Files Added
+
+- `include/corepool.h` + `src/corepool.c` - Core pool manager (threading + multi-instance)
+
+### Files Modified
+
+- `include/emulator.h` - `MAX_CORES`, `num_active_cores`, `is_wfi` flag in `cpu_state_dual_t`
+- `src/cpu.c` - WFI-aware `dual_core_step()`, `corepool_wake_cores()` on core1 launch
+- `src/instructions.c` - WFI/WFE set `is_wfi` flag, SEV clears all
+- `src/nvic.c` - `corepool_wake_cores()` on interrupt pend (NVIC, SysTick, PendSV)
+- `src/main.c` - `-cores` flag, threaded execution loop, core pool init/register/cleanup
+- `CMakeLists.txt` - Added corepool.c, pthread linkage
+- `tests/test_suite.c` - 6 new tests (host CPU detection, pool register/unregister, query, WFI flag)
+
+### Tests
+
+- 255 tests passing (249 + 6 new core pool/threading tests)
+
+---
+
+## [0.27.0] - 2026-03-09
+
+### Added - Storage Devices & Flash Write-Through
+
+**Flash Write-Through Persistence:**
+
+- Every `flash_range_erase` and `flash_range_program` immediately syncs to disk file
+- Enables external mounting of flash filesystem at runtime (no need to wait for emulator exit)
+- New module: `storage.c` / `storage.h`
+
+**SD Card SPI Emulation:**
+
+- Full SPI-mode protocol state machine for SDHC cards
+- CSD v2.0 and CID register emulation
+- Commands: CMD0/8/9/10/12/13/16/17/18/24/25/55/58, ACMD41
+- Single-block and multi-block read/write
+- File-backed storage image
+- CLI: `-sdcard <path>`, `-sdcard-spi <0|1>`, `-sdcard-size <MB>`
+- Defaults to SPI1 via `spi_attach_device()` callback
+- New module: `sdcard.c` / `sdcard.h`
+
+**eMMC SPI Emulation:**
+
+- CMD1 initialization, EXT_CSD via CMD8
+- Sector addressing for large storage
+- File-backed storage image
+- CLI: `-emmc <path>`, `-emmc-spi <0|1>`, `-emmc-size <MB>`
+- Defaults to SPI0 via `spi_attach_device()` callback
+- New module: `emmc.c` / `emmc.h`
+
+**General:**
+
+- Periodic flush every ~1M steps + flush on exit for both SD and eMMC
+- Both storage devices attach via `spi_attach_device()` callbacks
+
+### Files Added
+
+- `include/storage.h` + `src/storage.c` - Flash write-through persistence
+- `include/sdcard.h` + `src/sdcard.c` - SD card SPI emulation
+- `include/emmc.h` + `src/emmc.c` - eMMC SPI emulation
+
+### Files Modified
+
+- `src/rom.c` - Flash write-through integration
+- `src/main.c` - CLI flags for `-sdcard`, `-emmc`, init/cleanup/flush
+- `CMakeLists.txt` - Added storage.c, sdcard.c, emmc.c
+
+---
+
 ## [0.26.0] - 2026-03-09
 
 ### Added - Networking, Device Callbacks, Multi-Instance Wiring

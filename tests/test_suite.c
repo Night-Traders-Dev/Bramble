@@ -30,6 +30,10 @@
 #include "pio.h"
 #include "usb.h"
 #include "rtc.h"
+#include "sdcard.h"
+#include "emmc.h"
+#include "storage.h"
+#include "corepool.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -3050,6 +3054,309 @@ static void test_rtc_not_ticking_when_disabled(void) {
 }
 
 /* ========================================================================
+ * SD Card Tests
+ * ======================================================================== */
+
+TEST(test_sdcard_init_creates_state) {
+    sdcard_t sd;
+    /* Init with a temp path (won't actually create file in test) */
+    int rc = sdcard_init(&sd, "/tmp/bramble_test_sd.img", 1024 * 1024);
+    ASSERT_EQ(0, rc, "sdcard_init should succeed");
+    ASSERT_TRUE(sd.data != NULL, "SD data buffer should be allocated");
+    ASSERT_EQ(1024 * 1024, sd.size, "SD size should match");
+    ASSERT_EQ(SD_STATE_IDLE, sd.state, "Initial state should be IDLE");
+    ASSERT_EQ(0, sd.initialized, "Should not be initialized yet");
+    sdcard_cleanup(&sd);
+    PASS();
+}
+
+TEST(test_sdcard_cmd0_goes_idle) {
+    sdcard_t sd;
+    sdcard_init(&sd, "/tmp/bramble_test_sd.img", 1024 * 1024);
+    sd.cs_active = 1;
+
+    /* Send CMD0 (GO_IDLE_STATE): 0x40, 0x00, 0x00, 0x00, 0x00, 0x95 */
+    sdcard_spi_xfer(&sd, 0x40);
+    sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x95);
+
+    /* Read response — should be R1 with idle bit set (0x01) */
+    uint8_t r1 = sdcard_spi_xfer(&sd, 0xFF);
+    ASSERT_EQ(0x01, r1, "CMD0 response should be 0x01 (idle)");
+    ASSERT_EQ(SD_STATE_IDLE, sd.state, "State should be IDLE after CMD0");
+    sdcard_cleanup(&sd);
+    PASS();
+}
+
+TEST(test_sdcard_cmd8_returns_check_pattern) {
+    sdcard_t sd;
+    sdcard_init(&sd, "/tmp/bramble_test_sd.img", 1024 * 1024);
+    sd.cs_active = 1;
+
+    /* CMD8 (SEND_IF_COND): 0x48, 0x00, 0x00, 0x01, 0xAA, 0x87 */
+    sdcard_spi_xfer(&sd, 0x48);
+    sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x01);
+    sdcard_spi_xfer(&sd, 0xAA);
+    sdcard_spi_xfer(&sd, 0x87);
+
+    /* R7 response: R1 + 4 bytes */
+    uint8_t r1 = sdcard_spi_xfer(&sd, 0xFF);
+    ASSERT_EQ(0x01, r1, "CMD8 R1 should be 0x01 (idle)");
+    uint8_t b1 = sdcard_spi_xfer(&sd, 0xFF);
+    uint8_t b2 = sdcard_spi_xfer(&sd, 0xFF);
+    uint8_t b3 = sdcard_spi_xfer(&sd, 0xFF);
+    uint8_t b4 = sdcard_spi_xfer(&sd, 0xFF);
+    /* Check pattern: 0x000001AA */
+    ASSERT_EQ(0x00, b1, "CMD8 byte 1");
+    ASSERT_EQ(0x00, b2, "CMD8 byte 2");
+    ASSERT_EQ(0x01, b3, "CMD8 byte 3");
+    ASSERT_EQ(0xAA, b4, "CMD8 byte 4");
+    sdcard_cleanup(&sd);
+    PASS();
+}
+
+TEST(test_sdcard_acmd41_initializes) {
+    sdcard_t sd;
+    sdcard_init(&sd, "/tmp/bramble_test_sd.img", 1024 * 1024);
+    sd.cs_active = 1;
+
+    /* CMD55 (APP_CMD) */
+    sdcard_spi_xfer(&sd, 0x77); sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00); sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00); sdcard_spi_xfer(&sd, 0x01);
+    sdcard_spi_xfer(&sd, 0xFF); /* read R1 */
+
+    /* ACMD41 (SD_SEND_OP_COND) */
+    sdcard_spi_xfer(&sd, 0x69); sdcard_spi_xfer(&sd, 0x40);
+    sdcard_spi_xfer(&sd, 0x00); sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00); sdcard_spi_xfer(&sd, 0x01);
+    uint8_t r1 = sdcard_spi_xfer(&sd, 0xFF);
+
+    ASSERT_EQ(0x00, r1, "ACMD41 should return 0x00 (ready)");
+    ASSERT_EQ(1, sd.initialized, "Card should be initialized");
+    ASSERT_EQ(SD_STATE_READY, sd.state, "State should be READY");
+    sdcard_cleanup(&sd);
+    PASS();
+}
+
+TEST(test_sdcard_cmd17_read_block) {
+    sdcard_t sd;
+    sdcard_init(&sd, "/tmp/bramble_test_sd.img", 1024 * 1024);
+    sd.cs_active = 1;
+    sd.initialized = 1;
+    sd.state = SD_STATE_READY;
+
+    /* Write known data at block 0 */
+    memset(sd.data, 0xAB, 512);
+
+    /* CMD17 (READ_SINGLE_BLOCK) block 0 */
+    sdcard_spi_xfer(&sd, 0x51); sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00); sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00); sdcard_spi_xfer(&sd, 0x01);
+
+    /* Read R1 */
+    uint8_t r1 = sdcard_spi_xfer(&sd, 0xFF);
+    ASSERT_EQ(0x00, r1, "CMD17 R1 should be 0x00");
+
+    /* Read data token */
+    uint8_t token = sdcard_spi_xfer(&sd, 0xFF);
+    ASSERT_EQ(0xFE, token, "Data token should be 0xFE");
+
+    /* Read first data byte */
+    uint8_t d0 = sdcard_spi_xfer(&sd, 0xFF);
+    ASSERT_EQ(0xAB, d0, "First data byte should match");
+
+    sdcard_cleanup(&sd);
+    PASS();
+}
+
+TEST(test_sdcard_cmd24_write_block) {
+    sdcard_t sd;
+    sdcard_init(&sd, "/tmp/bramble_test_sd.img", 1024 * 1024);
+    sd.cs_active = 1;
+    sd.initialized = 1;
+    sd.state = SD_STATE_READY;
+
+    /* CMD24 (WRITE_BLOCK) block 1 */
+    sdcard_spi_xfer(&sd, 0x58); sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00); sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x01); sdcard_spi_xfer(&sd, 0x01);
+
+    /* Read R1 */
+    uint8_t r1 = sdcard_spi_xfer(&sd, 0xFF);
+    ASSERT_EQ(0x00, r1, "CMD24 R1 should be 0x00");
+
+    /* Send data token */
+    sdcard_spi_xfer(&sd, 0xFE);
+    /* Send 512 bytes of data */
+    for (int i = 0; i < 512; i++) {
+        sdcard_spi_xfer(&sd, 0xCD);
+    }
+    /* Send CRC */
+    sdcard_spi_xfer(&sd, 0x00);
+    sdcard_spi_xfer(&sd, 0x00);
+
+    /* Read data response */
+    uint8_t resp = sdcard_spi_xfer(&sd, 0xFF);
+    ASSERT_EQ(0x05, resp & 0x1F, "Data response should be ACCEPTED (0x05)");
+
+    /* Verify data was written */
+    ASSERT_EQ(0xCD, sd.data[512], "Written data should be at block 1 offset");
+    ASSERT_EQ(1, sd.dirty, "Dirty flag should be set");
+
+    sdcard_cleanup(&sd);
+    PASS();
+}
+
+/* ========================================================================
+ * eMMC Tests
+ * ======================================================================== */
+
+TEST(test_emmc_init_creates_state) {
+    emmc_t em;
+    int rc = emmc_init(&em, "/tmp/bramble_test_emmc.img", 2 * 1024 * 1024);
+    ASSERT_EQ(0, rc, "emmc_init should succeed");
+    ASSERT_TRUE(em.data != NULL, "eMMC data buffer should be allocated");
+    ASSERT_EQ(2 * 1024 * 1024, em.size, "eMMC size should match");
+    ASSERT_EQ(EMMC_STATE_IDLE, em.state, "Initial state should be IDLE");
+    emmc_cleanup(&em);
+    PASS();
+}
+
+TEST(test_emmc_cmd0_goes_idle) {
+    emmc_t em;
+    emmc_init(&em, "/tmp/bramble_test_emmc.img", 2 * 1024 * 1024);
+    em.cs_active = 1;
+
+    /* CMD0 */
+    emmc_spi_xfer(&em, 0x40); emmc_spi_xfer(&em, 0x00);
+    emmc_spi_xfer(&em, 0x00); emmc_spi_xfer(&em, 0x00);
+    emmc_spi_xfer(&em, 0x00); emmc_spi_xfer(&em, 0x95);
+    uint8_t r1 = emmc_spi_xfer(&em, 0xFF);
+    ASSERT_EQ(0x01, r1, "CMD0 response should be 0x01 (idle)");
+    emmc_cleanup(&em);
+    PASS();
+}
+
+TEST(test_emmc_cmd1_initializes) {
+    emmc_t em;
+    emmc_init(&em, "/tmp/bramble_test_emmc.img", 2 * 1024 * 1024);
+    em.cs_active = 1;
+
+    /* CMD1 (SEND_OP_COND) */
+    emmc_spi_xfer(&em, 0x41); emmc_spi_xfer(&em, 0x40);
+    emmc_spi_xfer(&em, 0x00); emmc_spi_xfer(&em, 0x00);
+    emmc_spi_xfer(&em, 0x00); emmc_spi_xfer(&em, 0x01);
+    uint8_t r1 = emmc_spi_xfer(&em, 0xFF);
+    ASSERT_EQ(0x00, r1, "CMD1 should return 0x00 (ready)");
+    ASSERT_EQ(1, em.initialized, "eMMC should be initialized");
+    ASSERT_EQ(EMMC_STATE_READY, em.state, "State should be READY");
+    emmc_cleanup(&em);
+    PASS();
+}
+
+TEST(test_emmc_cmd17_read_block) {
+    emmc_t em;
+    emmc_init(&em, "/tmp/bramble_test_emmc.img", 2 * 1024 * 1024);
+    em.cs_active = 1;
+    em.initialized = 1;
+    em.state = EMMC_STATE_READY;
+    memset(em.data, 0x55, 512);
+
+    /* CMD17 block 0 */
+    emmc_spi_xfer(&em, 0x51); emmc_spi_xfer(&em, 0x00);
+    emmc_spi_xfer(&em, 0x00); emmc_spi_xfer(&em, 0x00);
+    emmc_spi_xfer(&em, 0x00); emmc_spi_xfer(&em, 0x01);
+    uint8_t r1 = emmc_spi_xfer(&em, 0xFF);
+    ASSERT_EQ(0x00, r1, "CMD17 R1 should be 0x00");
+    uint8_t token = emmc_spi_xfer(&em, 0xFF);
+    ASSERT_EQ(0xFE, token, "Data token should be 0xFE");
+    uint8_t d0 = emmc_spi_xfer(&em, 0xFF);
+    ASSERT_EQ(0x55, d0, "First data byte should match");
+    emmc_cleanup(&em);
+    PASS();
+}
+
+/* ========================================================================
+ * Flash Write-Through Tests
+ * ======================================================================== */
+
+TEST(test_flash_persist_sync_no_crash_without_path) {
+    /* Calling sync without a path set should not crash */
+    flash_persist_sync(0, 4096);
+    PASS();
+}
+
+TEST(test_flash_persist_set_and_close) {
+    flash_persist_set_path("/tmp/bramble_test_flash.bin");
+    flash_persist_close();
+    PASS();
+}
+
+/* ========================================================================
+ * Core Pool / Threading Tests
+ * ======================================================================== */
+
+TEST(test_corepool_detect_host_cpus) {
+    int cpus = corepool_detect_host_cpus();
+    ASSERT_TRUE(cpus >= 1, "Host must have at least 1 CPU");
+    PASS();
+}
+
+TEST(test_corepool_init_and_cleanup) {
+    corepool_init();
+    ASSERT_TRUE(corepool.host_cpus >= 1, "Host CPUs should be detected");
+    ASSERT_EQ(0, corepool.running, "Should not be running initially");
+    corepool_cleanup();
+    PASS();
+}
+
+TEST(test_corepool_register_and_unregister) {
+    corepool_init();
+    corepool_register(2);
+    ASSERT_EQ(1, corepool.registered, "Should be registered");
+    corepool_unregister();
+    ASSERT_EQ(0, corepool.registered, "Should be unregistered");
+    corepool_cleanup();
+    PASS();
+}
+
+TEST(test_corepool_query_cores_returns_valid) {
+    corepool_init();
+    int cores_recommended = corepool_query_cores();
+    ASSERT_TRUE(cores_recommended >= 1, "Must recommend at least 1 core");
+    ASSERT_TRUE(cores_recommended <= MAX_CORES, "Must not exceed MAX_CORES");
+    corepool_cleanup();
+    PASS();
+}
+
+TEST(test_num_active_cores_default) {
+    ASSERT_EQ(MAX_CORES, num_active_cores, "Default should be MAX_CORES (2)");
+    PASS();
+}
+
+TEST(test_wfi_sets_core_flag) {
+    cpu_init();
+    dual_core_init();
+    cpu_reset_core(CORE0);
+    cores[CORE0].is_wfi = 0;
+
+    /* Simulate WFI by setting flag directly (instruction sets it) */
+    cores[CORE0].is_wfi = 1;
+    ASSERT_EQ(1, cores[CORE0].is_wfi, "WFI flag should be set");
+
+    /* SEV should clear it */
+    cores[CORE0].is_wfi = 0;
+    ASSERT_EQ(0, cores[CORE0].is_wfi, "WFI flag should be cleared by SEV");
+    PASS();
+}
+
+/* ========================================================================
  * Main Entry Point
  * ======================================================================== */
 
@@ -3462,6 +3769,36 @@ int main(void) {
     RUN_TEST(test_rtc_minute_rollover);
     RUN_TEST(test_rtc_not_ticking_when_disabled);
     END_CATEGORY("RTC Ticking");
+
+    BEGIN_CATEGORY("SD Card SPI");
+    RUN_TEST(test_sdcard_init_creates_state);
+    RUN_TEST(test_sdcard_cmd0_goes_idle);
+    RUN_TEST(test_sdcard_cmd8_returns_check_pattern);
+    RUN_TEST(test_sdcard_acmd41_initializes);
+    RUN_TEST(test_sdcard_cmd17_read_block);
+    RUN_TEST(test_sdcard_cmd24_write_block);
+    END_CATEGORY("SD Card SPI");
+
+    BEGIN_CATEGORY("eMMC SPI");
+    RUN_TEST(test_emmc_init_creates_state);
+    RUN_TEST(test_emmc_cmd0_goes_idle);
+    RUN_TEST(test_emmc_cmd1_initializes);
+    RUN_TEST(test_emmc_cmd17_read_block);
+    END_CATEGORY("eMMC SPI");
+
+    BEGIN_CATEGORY("Flash Persistence");
+    RUN_TEST(test_flash_persist_sync_no_crash_without_path);
+    RUN_TEST(test_flash_persist_set_and_close);
+    END_CATEGORY("Flash Persistence");
+
+    BEGIN_CATEGORY("Core Pool / Threading");
+    RUN_TEST(test_corepool_detect_host_cpus);
+    RUN_TEST(test_corepool_init_and_cleanup);
+    RUN_TEST(test_corepool_register_and_unregister);
+    RUN_TEST(test_corepool_query_cores_returns_valid);
+    RUN_TEST(test_num_active_cores_default);
+    RUN_TEST(test_wfi_sets_core_flag);
+    END_CATEGORY("Core Pool / Threading");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

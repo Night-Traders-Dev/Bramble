@@ -113,9 +113,13 @@ extern cpu_state_t cpu;
  * Dual-Core Configuration
  * ======================================================================== */
 
-#define NUM_CORES               2
+#define MAX_CORES               2       /* RP2040 hardware maximum */
+#define NUM_CORES               2       /* Compile-time max (array sizing) */
 #define CORE0                   0
 #define CORE1                   1
+
+/* Runtime-configurable active core count (default: MAX_CORES) */
+extern int num_active_cores;
 
 /* Per-core memory allocation (split shared RAM) */
 #define CORE_RAM_SIZE           (RAM_SIZE / 2)
@@ -157,6 +161,7 @@ typedef struct {
     /* Dual-core extensions */
     int core_id;                    /* 0 or 1 */
     int is_halted;                  /* Execution state */
+    int is_wfi;                     /* Core sleeping (WFI/WFE), skip until interrupt */
     uint32_t exception_sp;          /* Saved SP for exception handling */
     int in_handler_mode;            /* True if currently in ISR */
 

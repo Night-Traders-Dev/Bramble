@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(Bramble 
+project(Bramble
     VERSION 0.1.0
     DESCRIPTION "A lightweight RP2040 emulator in C"
     LANGUAGES C
@@ -9,6 +9,9 @@ project(Bramble
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -pedantic -g")
+
+# Optional FUSE support
+option(ENABLE_FUSE "Enable FUSE filesystem mount support" OFF)
 
 # Include directories
 include_directories(include)
@@ -41,11 +44,25 @@ set(SOURCES
     src/storage.c
     src/sdcard.c
     src/emmc.c
+    src/fatfs.c
+    src/fuse_mount.c
+    src/w5500.c
+    src/bme280.c
+    src/corepool.c
 )
 
 # Executable
 add_executable(bramble ${SOURCES})
-target_link_libraries(bramble m)  # math library for ROM soft-float
+target_link_libraries(bramble m pthread)  # math + pthreads
+
+# FUSE support
+if(ENABLE_FUSE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FUSE3 REQUIRED fuse3)
+    target_compile_definitions(bramble PRIVATE ENABLE_FUSE)
+    target_include_directories(bramble PRIVATE ${FUSE3_INCLUDE_DIRS})
+    target_link_libraries(bramble ${FUSE3_LIBRARIES} pthread)
+endif()
 
 # Optional: Enable testing
 enable_testing()
@@ -76,11 +93,16 @@ set(LIB_SOURCES
     src/storage.c
     src/sdcard.c
     src/emmc.c
+    src/fatfs.c
+    src/fuse_mount.c
+    src/w5500.c
+    src/bme280.c
+    src/corepool.c
 )
 
 # Test executable
 add_executable(bramble_tests tests/test_suite.c ${LIB_SOURCES})
-target_link_libraries(bramble_tests m)
+target_link_libraries(bramble_tests m pthread)
 add_test(NAME bramble_tests COMMAND bramble_tests)
 
 # Install target

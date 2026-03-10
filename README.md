@@ -2,23 +2,24 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.26.0
+## Current Status: v0.28.0
 
-237 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0** and **CircuitPython 10.1.3** with USB CDC REPL. Full peripheral emulation, USB host enumeration simulation, flash filesystem persistence, UART-to-TCP networking, SPI/I2C device callbacks, and multi-instance wiring.
+255 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0** and **CircuitPython 10.1.3** with USB CDC REPL. Full peripheral emulation, USB host enumeration simulation, flash write-through persistence, SD card and eMMC SPI emulation, UART-to-TCP networking, SPI/I2C device callbacks, multi-instance wiring, and **host-threaded execution** with dynamic core allocation.
 
 ### Coverage
 
 | Area | Status | Details |
 |------|--------|---------|
 | CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
-| Dual-Core | Complete | Zero-copy context switching, per-core RAM, shared FIFO, spinlocks |
+| Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool |
 | Memory Map | ~95% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) |
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
 | Exceptions | ~90% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, exception nesting |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
 | Debugging | GDB RSP | Breakpoints, single-step, register/memory access (`-gdb`) |
-| Flash | Persistent | `-flash <path>` saves/loads 2MB flash image across runs |
-| Tests | 237 | CTest integrated, 50+ categories |
+| Flash | Write-through | `-flash <path>` with immediate sync on every write |
+| Storage | SD card + eMMC | SPI-attached file-backed block devices |
+| Tests | 255 | CTest integrated, 50+ categories |
 
 ### Peripherals
 
@@ -49,12 +50,20 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | RTC | `0x4005C000` | Full (LOAD strobe, calendar rollover, leap year, ticking) |
 | XIP Cache | `0x14000000` | Stub (always ready) + 16KB XIP SRAM |
 
+### Storage Devices
+
+| Device         | Interface          | Details                                                                |
+|----------------|--------------------|------------------------------------------------------------------------|
+| SD Card (SDHC) | SPI (default SPI1) | Full SPI-mode protocol, CSD v2.0, single/multi-block R/W, file-backed |
+| eMMC           | SPI (default SPI0) | CMD1 init, EXT_CSD, sector addressing, file-backed                    |
+
+Both devices attach via `spi_attach_device()` callbacks with periodic flush and flush-on-exit.
+
 All peripherals support RP2040 atomic register aliases (SET/CLR/XOR).
 
 ### Known Limitations
 
 - **Cycle timing**: Default 1 MHz (fast-forward). Use `-clock 125` for real RP2040 timing.
-- **I2C/SPI**: Register-level only (no protocol simulation for external devices).
 - See [ROADMAP](docs/ROADMAP.md) for detailed status.
 
 ## Building and Running
@@ -221,6 +230,25 @@ Bramble now supports flexible debug output modes:
 # GPIO pins can also be wired: -wire-gpio /tmp/gpio_link.sock
 ```
 
+**Storage Devices (SD Card / eMMC):**
+
+```bash
+# Attach a 32MB SD card image on SPI1 (default)
+./bramble firmware.uf2 -sdcard sdcard.img -sdcard-size 32
+
+# Attach SD card on SPI0 instead
+./bramble firmware.uf2 -sdcard sdcard.img -sdcard-spi 0
+
+# Attach a 64MB eMMC image on SPI0 (default)
+./bramble firmware.uf2 -emmc emmc.img -emmc-size 64
+
+# Attach eMMC on SPI1 instead
+./bramble firmware.uf2 -emmc emmc.img -emmc-spi 1
+
+# Combine with flash persistence and MicroPython
+./bramble python/micropython.uf2 -stdin -clock 125 -flash mpy.bin -sdcard sd.img
+```
+
 **MicroPython REPL:**
 
 ```bash
@@ -287,7 +315,10 @@ Bramble/
 │   ├── pio.c           # Dual PIO block emulation (full instruction execution)
 │   ├── usb.c           # USB controller with host enumeration + CDC bridge
 │   ├── rtc.c           # RTC peripheral (ticking, calendar, leap year)
-│   └── gdb.c           # GDB remote serial protocol stub
+│   ├── gdb.c           # GDB remote serial protocol stub
+│   ├── storage.c       # Flash write-through persistence
+│   ├── sdcard.c        # SD card SPI emulation (SDHC, file-backed)
+│   └── emmc.c          # eMMC SPI emulation (file-backed)
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
@@ -305,7 +336,10 @@ Bramble/
 │   ├── pio.h           # PIO register definitions
 │   ├── usb.h           # USB controller register definitions
 │   ├── rtc.h           # RTC register definitions
-│   └── gdb.h           # GDB RSP stub definitions
+│   ├── gdb.h           # GDB RSP stub definitions
+│   ├── storage.h       # Flash write-through definitions
+│   ├── sdcard.h        # SD card SPI definitions
+│   └── emmc.h          # eMMC SPI definitions
 ├── tests/
 │   └── test_suite.c    # Unit test suite (237 tests, verbose, CTest integrated)
 ├── test-firmware/
@@ -589,7 +623,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 ## Future Work
 
 1. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
-2. **I2C/SPI Protocol**: Master mode simulation for external device communication
+2. **FUSE Mount**: Mount flash filesystem from host for live file access
 3. **Performance**: JIT compilation for hot loops, instruction caching
 
 ## Contributing

@@ -18,6 +18,7 @@
 #include "nvic.h"
 #include "rom.h"
 #include "rtc.h"
+#include "corepool.h"
 
 /* ========================================================================
  * Single-Core Global State
@@ -838,6 +839,7 @@ uint32_t shared_ram[SHARED_RAM_SIZE / 4] = {0};
 uint32_t spinlocks[SPINLOCK_SIZE] = {0};
 multicore_fifo_t fifo[NUM_CORES] = {0};
 
+int num_active_cores = MAX_CORES;  /* Runtime-configurable, default: all cores */
 static int active_core = CORE0;
 
 int get_active_core(void) {
@@ -977,9 +979,25 @@ void cpu_step_core(int core_id) {
 void dual_core_step(void) {
     static int current = 0;
 
-    for (int i = 0; i < NUM_CORES; i++) {
-        cpu_step_core(current);
-        current = (current + 1) % NUM_CORES;
+    for (int i = 0; i < num_active_cores; i++) {
+        int c = current % num_active_cores;
+        current = (current + 1) % num_active_cores;
+
+        /* Skip cores sleeping in WFI/WFE — wake when interrupt pending */
+        if (cores[c].is_wfi) {
+            /* Check for pending interrupt that would wake this core */
+            int saved_core = get_active_core();
+            set_active_core(c);
+            uint32_t pending = nvic_get_pending_irq();
+            int wake = (pending != 0xFFFFFFFF) ||
+                       systick_state.pending ||
+                       nvic_state.pendsv_pending;
+            set_active_core(saved_core);
+            if (!wake) continue;
+            cores[c].is_wfi = 0;  /* Wake up */
+        }
+
+        cpu_step_core(c);
     }
 }
 
@@ -1135,9 +1153,9 @@ void cpu_exception_return_dual(int core_id, uint32_t lr_value) {
 }
 
 int any_core_running(void) {
-    for (int i = 0; i < NUM_CORES; i++) {
+    for (int i = 0; i < num_active_cores; i++) {
         if (!cores[i].is_halted) {
-            return 1;
+            return 1;  /* WFI cores still count as running */
         }
     }
     return 0;
@@ -1215,6 +1233,7 @@ int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
         cores[CORE1].is_halted = 0;
         core1_bootrom.waiting_for_launch = 0;
         core1_bootrom.launch_count = 0;
+        corepool_wake_cores();  /* Wake Core 1 thread */
     }
 
     return 1;

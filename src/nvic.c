@@ -2,6 +2,7 @@
 #include <string.h>
 #include "nvic.h"
 #include "emulator.h"
+#include "corepool.h"
 
 /* Global NVIC state */
 nvic_state_t nvic_state = {0};
@@ -61,6 +62,7 @@ void systick_tick(uint32_t cycles) {
             /* If TICKINT (bit 1) is set, pend SysTick exception */
             if (systick_state.csr & 2) {
                 systick_state.pending = 1;
+                corepool_wake_cores();
             }
         }
     }
@@ -114,6 +116,7 @@ void nvic_disable_irq(uint32_t irq) {
 void nvic_set_pending(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state.pending |= (1 << irq);
+        corepool_wake_cores();  /* Wake any WFI-sleeping host threads */
         if (cpu.debug_enabled)
             printf("[NVIC] Set pending for IRQ %u (pending mask=0x%X, enable mask=0x%X)\n",
                    irq, nvic_state.pending, nvic_state.enable);
@@ -348,10 +351,14 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
             if (val & ICSR_PENDSTCLR)
                 systick_state.pending = 0;
             /* Write-1-to-set for PENDSVSET and PENDSTSET */
-            if (val & ICSR_PENDSVSET)
+            if (val & ICSR_PENDSVSET) {
                 nvic_state.pendsv_pending = 1;
-            if (val & ICSR_PENDSTSET)
+                corepool_wake_cores();
+            }
+            if (val & ICSR_PENDSTSET) {
                 systick_state.pending = 1;
+                corepool_wake_cores();
+            }
             break;
 
         case SCB_VTOR:
