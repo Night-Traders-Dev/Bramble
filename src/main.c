@@ -569,7 +569,8 @@ int main(int argc, char **argv) {
             dual_core_step();
             pio_step();
             usb_step();
-            instruction_count += (!cores[CORE0].is_halted) + (!cores[CORE1].is_halted);
+            instruction_count += (!cores[CORE0].is_halted && !cores[CORE0].is_wfi) +
+                                (!cores[CORE1].is_halted && !cores[CORE1].is_wfi);
             step_count++;
 
             /* Poll stdin for UART Rx data every 1024 steps */

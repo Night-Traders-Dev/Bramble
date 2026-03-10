@@ -30,8 +30,9 @@ typedef struct {
     uint64_t time_us;        /* Current time in microseconds */
     uint32_t alarm[4];       /* 4 alarm compare values */
     uint32_t armed;          /* Which alarms are armed */
-    uint32_t intr;           /* Interrupt status */
+    uint32_t intr;           /* Raw interrupt status */
     uint32_t inte;           /* Interrupt enable */
+    uint32_t intf;           /* Interrupt force */
     uint32_t paused;         /* Timer paused flag */
 } timer_state_t;
 

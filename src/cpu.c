@@ -540,7 +540,9 @@ void cpu_exception_entry(uint32_t vector_num) {
 
     uint32_t sp = cpu.r[13];
 
+    /* Save old xPSR (with previous IPSR), then update IPSR for the new exception */
     sp -= 4; mem_write32(sp, cpu.xpsr);
+    cpu.xpsr = (cpu.xpsr & ~0x3F) | (vector_num & 0x3F);
     sp -= 4; mem_write32(sp, cpu.r[15]);
     sp -= 4; mem_write32(sp, cpu.r[14]);
     sp -= 4; mem_write32(sp, cpu.r[12]);
@@ -985,6 +987,9 @@ void dual_core_step(void) {
 
         /* Skip cores sleeping in WFI/WFE — wake when interrupt pending */
         if (cores[c].is_wfi) {
+            /* Time still advances while core is sleeping */
+            timing_tick(1);
+
             /* Check for pending interrupt that would wake this core */
             int saved_core = get_active_core();
             set_active_core(c);

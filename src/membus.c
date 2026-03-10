@@ -995,9 +995,22 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* Timer registers */
-    if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
-        timer_write32(addr, val);
+    /* Timer registers (including atomic aliases: XOR +0x1000, SET +0x2000, CLR +0x3000) */
+    if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x4000) {
+        uint32_t alias = (addr - TIMER_BASE) & 0x3000;
+        uint32_t reg_addr = TIMER_BASE + ((addr - TIMER_BASE) & 0xFFF);
+        if (alias == 0x0000) {
+            timer_write32(reg_addr, val);
+        } else if (alias == 0x2000) {  /* SET */
+            uint32_t cur = timer_read32(reg_addr);
+            timer_write32(reg_addr, cur | val);
+        } else if (alias == 0x3000) {  /* CLR */
+            uint32_t cur = timer_read32(reg_addr);
+            timer_write32(reg_addr, cur & ~val);
+        } else {  /* XOR 0x1000 */
+            uint32_t cur = timer_read32(reg_addr);
+            timer_write32(reg_addr, cur ^ val);
+        }
         return;
     }
 
@@ -1178,6 +1191,11 @@ void mem_write32(uint32_t addr, uint32_t val) {
             pads_qspi_write(offset, pads_qspi_read(offset) ^ val);
         }
         return;
+    }
+
+    /* VREG_AND_CHIP_RESET stub (0x40064000) */
+    if ((addr & ~0x3000) >= 0x40064000 && (addr & ~0x3000) < 0x40064000 + 0x10) {
+        return;  /* Silently accept writes */
     }
 
     /* Stub out other peripheral writes for now. */
@@ -1379,8 +1397,10 @@ uint32_t mem_read32(uint32_t addr) {
         return nvic_read_register(addr);
     }
 
-    if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x50) {
-        return timer_read32(addr);
+    /* Timer registers (including atomic aliases) */
+    if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x4000) {
+        uint32_t reg_addr = TIMER_BASE + ((addr - TIMER_BASE) & 0xFFF);
+        return timer_read32(reg_addr);
     }
 
     /* SIO core-local registers */
@@ -1471,6 +1491,14 @@ uint32_t mem_read32(uint32_t addr) {
     /* PADS_QSPI */
     if (pads_qspi_match(addr)) {
         return pads_qspi_read(addr & 0xFFF);
+    }
+
+    /* VREG_AND_CHIP_RESET stub (0x40064000) */
+    if ((addr & ~0x3000) >= 0x40064000 && (addr & ~0x3000) < 0x40064000 + 0x10) {
+        if (((addr & ~0x3000) - 0x40064000) == 0x08) {
+            return 0;  /* CHIP_RESET: no reset sources */
+        }
+        return 0;
     }
 
     /* Stub peripheral reads: return 0 for now. */

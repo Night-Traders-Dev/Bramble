@@ -32,6 +32,7 @@ void timer_reset(void) {
     timer_state.armed = 0x0;   /* No alarms armed */
     timer_state.intr = 0x0;    /* No interrupts pending */
     timer_state.inte = 0x0;    /* Interrupts disabled */
+    timer_state.intf = 0x0;    /* No forced interrupts */
     timer_state.paused = 0;    /* Timer running */
 }
 
@@ -81,7 +82,7 @@ void timer_tick(uint32_t cycles) {
             /* DISARM the alarm to prevent re-firing when timer wraps */
             timer_state.armed &= ~(1 << i);
             if (cpu.debug_enabled)
-                printf("[TIMER] Alarm %d FIRED at %" PRIu64 " us (lower32=0x%08x), DISARMED\n",
+                fprintf(stderr, "[TIMER] Alarm %d FIRED at %" PRIu64 " us (lower32=0x%08x), DISARMED\n",
                        i, timer_state.time_us, timer_low);
         }
     }
@@ -131,11 +132,11 @@ uint32_t timer_read32(uint32_t addr) {
         return timer_state.inte;
 
     case TIMER_INTF:
-        return 0x0; /* Force register (write-only) */
+        return timer_state.intf;
 
     case TIMER_INTS:
-        /* Interrupt status = INTR & INTE (only enabled interrupts) */
-        return timer_state.intr & timer_state.inte;
+        /* Interrupt status = (INTR | INTF) & INTE */
+        return (timer_state.intr | timer_state.intf) & timer_state.inte;
 
     case TIMER_PAUSE:
         return timer_state.paused;
@@ -187,7 +188,7 @@ void timer_write32(uint32_t addr, uint32_t val) {
         /* Writing to ARMED disarms the specified alarms */
         timer_state.armed &= ~val;
         if (val && cpu.debug_enabled) {
-            printf("[TIMER] Disarmed alarms: 0x%X\n", val);
+            fprintf(stderr, "[TIMER] Disarmed alarms: 0x%X\n", val);
         }
         break;
 
@@ -197,7 +198,7 @@ void timer_write32(uint32_t addr, uint32_t val) {
          */
         timer_state.intr &= ~val;
         if (val && cpu.debug_enabled) {
-            printf("[TIMER] Cleared interrupt bits: 0x%X\n", val);
+            fprintf(stderr, "[TIMER] Cleared interrupt bits: 0x%X\n", val);
         }
         break;
 
@@ -205,14 +206,30 @@ void timer_write32(uint32_t addr, uint32_t val) {
         /* Interrupt enable register - controls which alarms generate interrupts */
         timer_state.inte = val & 0xF; /* Only 4 alarms */
         if (cpu.debug_enabled)
-            printf("[TIMER] Interrupt enable set to: 0x%X\n", val);
+            fprintf(stderr, "[TIMER] Interrupt enable set to: 0x%X\n", val);
+        /* Signal NVIC for any newly enabled interrupts */
+        {
+            uint32_t ints = (timer_state.intr | timer_state.intf) & timer_state.inte;
+            for (int i = 0; i < 4; i++) {
+                if (ints & (1 << i))
+                    nvic_signal_irq(IRQ_TIMER_IRQ_0 + i);
+            }
+        }
         break;
 
     case TIMER_INTF:
-        /* Interrupt force - set interrupt bits (for testing) */
-        timer_state.intr |= (val & 0xF);
+        /* Interrupt force - separate from raw status (INTS = (INTR | INTF) & INTE) */
+        timer_state.intf = val & 0xF;
         if (val && cpu.debug_enabled) {
-            printf("[TIMER] Forced interrupt bits: 0x%X\n", val);
+            fprintf(stderr, "[TIMER] Forced interrupt bits: 0x%X\n", val);
+        }
+        /* Signal NVIC for any newly active interrupts */
+        {
+            uint32_t ints = (timer_state.intr | timer_state.intf) & timer_state.inte;
+            for (int i = 0; i < 4; i++) {
+                if (ints & (1 << i))
+                    nvic_signal_irq(IRQ_TIMER_IRQ_0 + i);
+            }
         }
         break;
 
@@ -220,7 +237,7 @@ void timer_write32(uint32_t addr, uint32_t val) {
         /* Pause/resume timer */
         timer_state.paused = val & 0x1;
         if (cpu.debug_enabled)
-            printf("[TIMER] %s\n", timer_state.paused ? "PAUSED" : "RESUMED");
+            fprintf(stderr, "[TIMER] %s\n", timer_state.paused ? "PAUSED" : "RESUMED");
         break;
 
     case TIMER_DBGPAUSE:
