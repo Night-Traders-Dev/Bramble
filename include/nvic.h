@@ -140,7 +140,8 @@ void systick_init(void);
 void systick_reset(void);
 void systick_tick(uint32_t cycles);
 
-extern nvic_state_t nvic_state;
-extern systick_state_t systick_state;
+/* Per-core NVIC and SysTick (RP2040 has independent NVIC per core) */
+extern nvic_state_t nvic_states[2];
+extern systick_state_t systick_states[2];
 
 #endif /* NVIC_H */

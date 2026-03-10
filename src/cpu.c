@@ -508,34 +508,34 @@ int cpu_is_halted(void) {
  * Single-Core Exception Handling
  * ======================================================================== */
 
-/* Exception nesting stack: tracks active exception chain for proper return */
-#define MAX_EXCEPTION_DEPTH 8
-static uint32_t exception_stack[MAX_EXCEPTION_DEPTH];
-static int exception_depth = 0;
+/* Per-core exception nesting: use active core's exception_stack/exception_depth */
 
 void cpu_exception_entry(uint32_t vector_num) {
+    int ac = get_active_core();
+    uint32_t *exception_stack = cores[ac].exception_stack;
+    int *p_exception_depth = &cores[ac].exception_depth;
     uint32_t vector_offset = vector_num * 4;
     uint32_t handler_addr = mem_read32(cpu.vtor + vector_offset);
 
     if (cpu.debug_enabled) {
         printf("[CPU] Exception %u: PC=0x%08X VTOR=0x%08X -> Handler=0x%08X (depth %d)\n",
-               vector_num, cpu.r[15], cpu.vtor, handler_addr, exception_depth);
+               vector_num, cpu.r[15], cpu.vtor, handler_addr, *p_exception_depth);
     }
 
     if (vector_num < 32) {
-        nvic_state.active_exceptions |= (1u << vector_num);
+        nvic_states[ac].active_exceptions |= (1u << vector_num);
     }
 
     /* Push previous exception onto nesting stack */
-    if (exception_depth < MAX_EXCEPTION_DEPTH) {
-        exception_stack[exception_depth] = cpu.current_irq;
-        exception_depth++;
+    if (*p_exception_depth < MAX_EXCEPTION_DEPTH) {
+        exception_stack[*p_exception_depth] = cpu.current_irq;
+        (*p_exception_depth)++;
     }
 
     cpu.current_irq = vector_num;
 
     if (vector_num >= 16 && (vector_num - 16) < 32) {
-        nvic_state.iabr |= (1u << (vector_num - 16));
+        nvic_states[ac].iabr |= (1u << (vector_num - 16));
     }
 
     uint32_t sp = cpu.r[13];
@@ -562,6 +562,9 @@ void cpu_exception_entry(uint32_t vector_num) {
 }
 
 void cpu_exception_return(uint32_t lr_value) {
+    int ac = get_active_core();
+    uint32_t *exception_stack = cores[ac].exception_stack;
+    int *p_exception_depth = &cores[ac].exception_depth;
     uint32_t return_mode = lr_value & 0x0F;
 
     if (cpu.debug_enabled) {
@@ -611,24 +614,24 @@ void cpu_exception_return(uint32_t lr_value) {
             uint32_t vector_num = cpu.current_irq;
 
             if (vector_num >= 16 && (vector_num - 16) < 32) {
-                nvic_state.iabr &= ~(1u << (vector_num - 16));
+                nvic_states[ac].iabr &= ~(1u << (vector_num - 16));
             }
 
             if (vector_num < 32) {
-                nvic_state.active_exceptions &= ~(1u << vector_num);
+                nvic_states[ac].active_exceptions &= ~(1u << vector_num);
             }
 
             /* Pop previous exception from nesting stack */
-            if (exception_depth > 0) {
-                exception_depth--;
-                cpu.current_irq = exception_stack[exception_depth];
+            if (*p_exception_depth > 0) {
+                (*p_exception_depth)--;
+                cpu.current_irq = exception_stack[*p_exception_depth];
             } else {
                 cpu.current_irq = 0xFFFFFFFF;
             }
 
             if (cpu.debug_enabled) {
                 printf("[CPU] Cleared active exception (vector %u), IABR=0x%X, depth=%d\n",
-                       vector_num, nvic_state.iabr, exception_depth);
+                       vector_num, nvic_states[ac].iabr, *p_exception_depth);
             }
         }
 
@@ -653,14 +656,21 @@ void cpu_exception_return(uint32_t lr_value) {
  * ======================================================================== */
 
 static void timing_tick(uint32_t cycles) {
-    timing_config.cycle_accumulator += cycles;
-    uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
-    if (us > 0) {
-        timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
-        timer_tick(us);
-        rtc_tick(us);
+    /* Timer and RTC: only advance for core 0 to avoid double-counting.
+     * On real RP2040, the timer runs at 1 MHz off the system clock,
+     * independent of how many cores are active. In the interleaved
+     * emulation model, both cores' cycles would otherwise sum up,
+     * making the timer run 2x too fast in dual-core mode. */
+    if (get_active_core() == 0) {
+        timing_config.cycle_accumulator += cycles;
+        uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
+        if (us > 0) {
+            timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
+            timer_tick(us);
+            rtc_tick(us);
+        }
     }
-    /* SysTick counts in CPU cycles, not microseconds */
+    /* SysTick counts in CPU cycles, not microseconds (per-core on real RP2040) */
     systick_tick(cycles);
 }
 
@@ -717,10 +727,10 @@ void cpu_step(void) {
             active_pri = nvic_get_exception_priority(cpu.current_irq);
         }
 
-        /* Check external IRQs */
+        /* Check external IRQs (uses active core's NVIC) */
         uint32_t pending_irq = nvic_get_pending_irq();
         if (pending_irq != 0xFFFFFFFF) {
-            uint8_t pending_pri = nvic_state.priority[pending_irq] & 0xC0;
+            uint8_t pending_pri = nvic_states[get_active_core()].priority[pending_irq] & 0xC0;
             /* Only deliver if strictly higher priority (lower number) */
             if (pending_pri < active_pri) {
                 if (cpu.debug_enabled) {
@@ -734,22 +744,22 @@ void cpu_step(void) {
             }
         }
 
-        /* Check SysTick pending */
-        if (systick_state.pending) {
+        /* Check SysTick pending (per-core) */
+        if (systick_states[get_active_core()].pending) {
             uint8_t systick_pri = nvic_get_exception_priority(EXC_SYSTICK);
             if (systick_pri < active_pri) {
-                systick_state.pending = 0;
+                systick_states[get_active_core()].pending = 0;
                 cpu_exception_entry(EXC_SYSTICK);
                 timing_tick(1);
                 return;
             }
         }
 
-        /* Check PendSV pending */
-        if (nvic_state.pendsv_pending) {
+        /* Check PendSV pending (per-core) */
+        if (nvic_states[get_active_core()].pendsv_pending) {
             uint8_t pendsv_pri = nvic_get_exception_priority(EXC_PENDSV);
             if (pendsv_pri < active_pri) {
-                nvic_state.pendsv_pending = 0;
+                nvic_states[get_active_core()].pendsv_pending = 0;
                 cpu_exception_entry(EXC_PENDSV);
                 timing_tick(1);
                 return;
@@ -987,16 +997,23 @@ void dual_core_step(void) {
 
         /* Skip cores sleeping in WFI/WFE — wake when interrupt pending */
         if (cores[c].is_wfi) {
-            /* Time still advances while core is sleeping */
-            timing_tick(1);
+            /* Time still advances while core is sleeping.
+             * Advance timer directly (not through timing_tick which is core-gated) */
+            timing_config.cycle_accumulator += 1;
+            uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
+            if (us > 0) {
+                timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
+                timer_tick(us);
+                rtc_tick(us);
+            }
 
             /* Check for pending interrupt that would wake this core */
             int saved_core = get_active_core();
             set_active_core(c);
             uint32_t pending = nvic_get_pending_irq();
             int wake = (pending != 0xFFFFFFFF) ||
-                       systick_state.pending ||
-                       nvic_state.pendsv_pending;
+                       systick_states[c].pending ||
+                       nvic_states[c].pendsv_pending;
             set_active_core(saved_core);
             if (!wake) continue;
             cores[c].is_wfi = 0;  /* Wake up */
@@ -1057,6 +1074,8 @@ void cpu_reset_core(int core_id) {
     c->is_halted = (core_id == CORE1) ? 1 : 0;
     c->vtor = 0x10000100;
     c->primask = 0;
+    c->exception_depth = 0;
+    memset(c->exception_stack, 0, sizeof(c->exception_stack));
 
     if (core_id == CORE0) {
         if (boot2_detected) {

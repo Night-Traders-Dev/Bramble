@@ -618,12 +618,12 @@ TEST(test_32bit_dsb_dispatch) {
 TEST(test_nvic_priority_preemption_blocked) {
     reset_cpu();
     cpu.current_irq = 15;
-    nvic_state.active_exceptions |= (1u << 15);
+    nvic_states[0].active_exceptions |= (1u << 15);
     nvic_enable_irq(1);
     nvic_set_pending(1);
-    nvic_state.priority[1] = 0xC0;
+    nvic_states[0].priority[1] = 0xC0;
     uint8_t active_pri = nvic_get_exception_priority(15);
-    uint8_t pending_pri = nvic_state.priority[1] & 0xC0;
+    uint8_t pending_pri = nvic_states[0].priority[1] & 0xC0;
     ASSERT_TRUE(pending_pri >= active_pri, "Lower priority should not preempt");
     PASS();
 }
@@ -631,13 +631,13 @@ TEST(test_nvic_priority_preemption_blocked) {
 TEST(test_nvic_priority_preemption_allowed) {
     reset_cpu();
     cpu.current_irq = 15;
-    nvic_state.active_exceptions |= (1u << 15);
+    nvic_states[0].active_exceptions |= (1u << 15);
     nvic_enable_irq(0);
     nvic_set_pending(0);
-    nvic_state.priority[0] = 0x00;
+    nvic_states[0].priority[0] = 0x00;
     nvic_write_register(SCB_SHPR3, 0xC0000000); /* SysTick prio = 0xC0 */
     uint8_t active_pri = nvic_get_exception_priority(15);
-    uint8_t pending_pri = nvic_state.priority[0] & 0xC0;
+    uint8_t pending_pri = nvic_states[0].priority[0] & 0xC0;
     ASSERT_TRUE(pending_pri < active_pri, "Higher priority should preempt");
     nvic_clear_pending(0);
     PASS();

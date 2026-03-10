@@ -221,8 +221,8 @@ static void *core_thread_fn(void *arg) {
             set_active_core(core_id);
             uint32_t pending = nvic_get_pending_irq();
             int wake = (pending != 0xFFFFFFFF) ||
-                       systick_state.pending ||
-                       nvic_state.pendsv_pending;
+                       systick_states[core_id].pending ||
+                       nvic_states[core_id].pendsv_pending;
 
             if (!wake) {
                 /* Sleep with 1ms timeout (for periodic checks) */

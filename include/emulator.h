@@ -135,6 +135,9 @@ extern int num_active_cores;
 /* Multicore FIFO configuration */
 #define FIFO_DEPTH              32
 
+/* Exception nesting depth limit */
+#define MAX_EXCEPTION_DEPTH     8
+
 /* Hardware spinlock configuration (RP2040) */
 #define SPINLOCK_BASE           0xD0000100
 #define SPINLOCK_SIZE           32
@@ -157,6 +160,10 @@ typedef struct {
     uint32_t current_irq;
     uint32_t primask;               /* PRIMASK register (1=interrupts disabled) */
     uint32_t control;               /* CONTROL register (SPSEL, nPRIV) */
+
+    /* Exception nesting (per-core) */
+    uint32_t exception_stack[MAX_EXCEPTION_DEPTH];
+    int exception_depth;
 
     /* Dual-core extensions */
     int core_id;                    /* 0 or 1 */
