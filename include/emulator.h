@@ -264,6 +264,15 @@ void icache_init(void);
 void icache_invalidate_addr(uint32_t addr);
 void icache_invalidate_range(uint32_t addr, uint32_t size);
 void icache_invalidate_all(void);
+void icache_report_stats(void);
+
+/* JIT basic block cache */
+void jit_init(void);
+void jit_enable(int enable);
+void jit_invalidate_addr(uint32_t addr);
+void jit_invalidate_range(uint32_t addr, uint32_t size);
+void jit_invalidate_all(void);
+void jit_report_stats(void);
 
 /* ========================================================================
  * CPU Control Functions (Dual-Core)

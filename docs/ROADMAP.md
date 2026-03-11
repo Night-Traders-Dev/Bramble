@@ -428,11 +428,37 @@ on M0+. The original roadmap incorrectly listed these.
 - Attaches to SPI0 by default via `spi_attach_device()` callback
 - New module: `emmc.c` / `emmc.h`
 
-### 7.4 Future: FUSE Mount
+### 7.4 FUSE Mount [COMPLETE]
 
-- Mount flash filesystem from host OS via FUSE for live file access
-- Would allow `cp code.py /mnt/bramble/` while emulator is running
-- Depends on flash write-through persistence (7.1) for real-time sync
+- Mount flash FAT16 filesystem as host directory via libfuse3
+- Thread-safe: mutex serializes FUSE operations against emulator flash writes
+- FUSE writes automatically sync to disk via flash persistence
+- CLI: `-mount <dir>` (requires `-flash <path>`)
+- Optional build: `cmake .. -DENABLE_FUSE=ON`
+- Module: `fuse_mount.c` / `fuse_mount.h` + `fatfs.c` / `fatfs.h`
+
+---
+
+## Phase 8: Performance
+
+### 8.1 Instruction Caching [COMPLETE]
+
+- 64K-entry direct-mapped decoded instruction cache
+- Stores pre-decoded handler pointers for 16-bit Thumb instructions
+- Avoids `mem_read16()` + dispatch table lookup on cache hits
+- Invalidated on RAM writes; flash/ROM entries never invalidated
+- Hit rate statistics reported on exit
+
+### 8.2 JIT Basic Block Compilation [COMPLETE]
+
+- 4096-entry basic block cache for consecutive instruction sequences
+- Blocks terminate at branches, 32-bit instructions, or 32-instruction limit
+- Block execution skips per-instruction PC bounds check, interrupt check, and dispatch lookup
+- Only compiles flash/ROM code (immutable, no invalidation needed)
+- Blocks of 1 instruction fall back to normal dispatch (no overhead for single instructions)
+- Invalidated alongside icache on RAM writes
+- CLI: `-jit` flag enables block compilation
+- Statistics: block compiles, executions, and accelerated instructions reported on exit
 
 ---
 

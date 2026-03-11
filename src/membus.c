@@ -968,6 +968,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
         uint32_t offset = addr - active_ram_base;
         memcpy(&get_ram()[offset], &val, 4);
         icache_invalidate_addr(addr);
+        jit_invalidate_addr(addr);
         return;
     }
 
@@ -1237,6 +1238,7 @@ void mem_write16(uint32_t addr, uint16_t val) {
         uint32_t offset = addr - active_ram_base;
         memcpy(&get_ram()[offset], &val, 2);
         icache_invalidate_addr(addr);
+        jit_invalidate_addr(addr);
         return;
     }
 
@@ -1292,6 +1294,7 @@ void mem_write8(uint32_t addr, uint8_t val) {
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
         get_ram()[addr - active_ram_base] = val;
         icache_invalidate_addr(addr);
+        jit_invalidate_addr(addr);
         return;
     }
 

@@ -108,5 +108,9 @@ add_executable(bramble_tests tests/test_suite.c ${LIB_SOURCES})
 target_link_libraries(bramble_tests m pthread)
 add_test(NAME bramble_tests COMMAND bramble_tests)
 
+# Benchmark executable
+add_executable(bramble_bench tests/benchmark.c ${LIB_SOURCES})
+target_link_libraries(bramble_bench m pthread)
+
 # Install target
 install(TARGETS bramble DESTINATION bin)

@@ -7,6 +7,10 @@
  *
  * All file operations go through the FAT16 module (fatfs.c) which
  * operates directly on the flash memory array — changes are immediate.
+ *
+ * Thread safety: a mutex serializes FUSE operations against emulator
+ * flash writes (ROM flash_range_erase/program). Both sides lock
+ * fuse_flash_mutex before touching the flash array.
  */
 
 #ifdef ENABLE_FUSE
@@ -22,12 +26,29 @@
 #include <sys/stat.h>
 #include "fuse_mount.h"
 #include "fatfs.h"
+#include "storage.h"
 
 static fat16_fs_t fuse_fs;
 static struct fuse *fuse_instance = NULL;
 static pthread_t fuse_thread;
 static int fuse_running = 0;
 static char fuse_mountpoint[256];
+static uint32_t fuse_fs_offset = 0;  /* Offset of filesystem region in flash */
+static uint32_t fuse_fs_size = 0;
+
+/* Mutex protecting flash array access between FUSE thread and emulator */
+pthread_mutex_t fuse_flash_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void fuse_set_flash_offset(uint32_t offset) {
+    fuse_fs_offset = offset;
+}
+
+/* Sync the filesystem region to disk after modifications */
+static void fuse_persist_sync(void) {
+    if (fuse_fs_size > 0) {
+        flash_persist_sync(fuse_fs_offset, fuse_fs_size);
+    }
+}
 
 /* ========================================================================
  * FUSE operations
@@ -47,9 +68,12 @@ static int bramble_getattr(const char *path, struct stat *stbuf,
     /* Skip leading slash */
     const char *name = path + 1;
     fat16_fileinfo_t info;
-    if (fat16_stat(&fuse_fs, name, &info) < 0) {
-        return -ENOENT;
-    }
+
+    pthread_mutex_lock(&fuse_flash_mutex);
+    int rc = fat16_stat(&fuse_fs, name, &info);
+    pthread_mutex_unlock(&fuse_flash_mutex);
+
+    if (rc < 0) return -ENOENT;
 
     if (info.attr & FAT16_ATTR_DIR) {
         stbuf->st_mode = S_IFDIR | 0755;
@@ -76,7 +100,10 @@ static int bramble_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     filler(buf, "..", NULL, 0, 0);
 
     fat16_fileinfo_t files[FAT16_MAX_FILES];
+
+    pthread_mutex_lock(&fuse_flash_mutex);
     int count = fat16_list_root(&fuse_fs, files, FAT16_MAX_FILES);
+    pthread_mutex_unlock(&fuse_flash_mutex);
 
     for (int i = 0; i < count; i++) {
         filler(buf, files[i].name, NULL, 0, 0);
@@ -88,11 +115,13 @@ static int bramble_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 static int bramble_open(const char *path, struct fuse_file_info *fi) {
     const char *name = path + 1;
     fat16_fileinfo_t info;
-    if (fat16_stat(&fuse_fs, name, &info) < 0) {
-        return -ENOENT;
-    }
+
+    pthread_mutex_lock(&fuse_flash_mutex);
+    int rc = fat16_stat(&fuse_fs, name, &info);
+    pthread_mutex_unlock(&fuse_flash_mutex);
+
     (void)fi;
-    return 0;
+    return rc < 0 ? -ENOENT : 0;
 }
 
 static int bramble_read(const char *path, char *buf, size_t size, off_t offset,
@@ -100,18 +129,29 @@ static int bramble_read(const char *path, char *buf, size_t size, off_t offset,
     (void)fi;
     const char *name = path + 1;
 
+    pthread_mutex_lock(&fuse_flash_mutex);
+
     fat16_fileinfo_t info;
     if (fat16_stat(&fuse_fs, name, &info) < 0) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
         return -ENOENT;
     }
 
-    if ((uint32_t)offset >= info.size) return 0;
+    if ((uint32_t)offset >= info.size) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return 0;
+    }
 
     /* Read entire file into temp buffer, then copy requested range */
     uint8_t *tmp = malloc(info.size);
-    if (!tmp) return -ENOMEM;
+    if (!tmp) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return -ENOMEM;
+    }
 
     int n = fat16_read_file(&fuse_fs, name, tmp, info.size);
+    pthread_mutex_unlock(&fuse_flash_mutex);
+
     if (n < 0) {
         free(tmp);
         return -EIO;
@@ -130,6 +170,8 @@ static int bramble_write(const char *path, const char *buf, size_t size,
     (void)fi;
     const char *name = path + 1;
 
+    pthread_mutex_lock(&fuse_flash_mutex);
+
     fat16_fileinfo_t info;
     uint32_t old_size = 0;
     uint8_t *tmp = NULL;
@@ -143,7 +185,10 @@ static int bramble_write(const char *path, const char *buf, size_t size,
     if (new_size < old_size) new_size = old_size;
 
     tmp = calloc(1, new_size);
-    if (!tmp) return -ENOMEM;
+    if (!tmp) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return -ENOMEM;
+    }
 
     if (old_size > 0) {
         fat16_read_file(&fuse_fs, name, tmp, old_size);
@@ -153,13 +198,14 @@ static int bramble_write(const char *path, const char *buf, size_t size,
     memcpy(tmp + offset, buf, size);
 
     /* Write back */
-    if (fat16_write_file(&fuse_fs, name, tmp, new_size) < 0) {
-        free(tmp);
-        return -EIO;
+    int rc = fat16_write_file(&fuse_fs, name, tmp, new_size);
+    if (rc >= 0) {
+        fuse_persist_sync();
     }
+    pthread_mutex_unlock(&fuse_flash_mutex);
 
     free(tmp);
-    return (int)size;
+    return rc < 0 ? -EIO : (int)size;
 }
 
 static int bramble_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
@@ -167,19 +213,28 @@ static int bramble_create(const char *path, mode_t mode, struct fuse_file_info *
     (void)fi;
     const char *name = path + 1;
 
+    pthread_mutex_lock(&fuse_flash_mutex);
     uint8_t empty = 0;
-    if (fat16_write_file(&fuse_fs, name, &empty, 0) < 0) {
-        return -ENOSPC;
+    int rc = fat16_write_file(&fuse_fs, name, &empty, 0);
+    if (rc >= 0) {
+        fuse_persist_sync();
     }
-    return 0;
+    pthread_mutex_unlock(&fuse_flash_mutex);
+
+    return rc < 0 ? -ENOSPC : 0;
 }
 
 static int bramble_unlink(const char *path) {
     const char *name = path + 1;
-    if (fat16_delete_file(&fuse_fs, name) < 0) {
-        return -ENOENT;
+
+    pthread_mutex_lock(&fuse_flash_mutex);
+    int rc = fat16_delete_file(&fuse_fs, name);
+    if (rc >= 0) {
+        fuse_persist_sync();
     }
-    return 0;
+    pthread_mutex_unlock(&fuse_flash_mutex);
+
+    return rc < 0 ? -ENOENT : 0;
 }
 
 static int bramble_truncate(const char *path, off_t size,
@@ -187,16 +242,29 @@ static int bramble_truncate(const char *path, off_t size,
     (void)fi;
     const char *name = path + 1;
 
+    pthread_mutex_lock(&fuse_flash_mutex);
+
     if (size == 0) {
         uint8_t empty = 0;
-        return fat16_write_file(&fuse_fs, name, &empty, 0) < 0 ? -EIO : 0;
+        int rc = fat16_write_file(&fuse_fs, name, &empty, 0);
+        if (rc >= 0) {
+            fuse_persist_sync();
+        }
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return rc < 0 ? -EIO : 0;
     }
 
     fat16_fileinfo_t info;
-    if (fat16_stat(&fuse_fs, name, &info) < 0) return -ENOENT;
+    if (fat16_stat(&fuse_fs, name, &info) < 0) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return -ENOENT;
+    }
 
     uint8_t *tmp = calloc(1, (size_t)size);
-    if (!tmp) return -ENOMEM;
+    if (!tmp) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return -ENOMEM;
+    }
 
     uint32_t copy_size = info.size < (uint32_t)size ? info.size : (uint32_t)size;
     if (copy_size > 0) {
@@ -204,6 +272,11 @@ static int bramble_truncate(const char *path, off_t size,
     }
 
     int rc = fat16_write_file(&fuse_fs, name, tmp, (size_t)size);
+    if (rc >= 0) {
+        fuse_persist_sync();
+    }
+    pthread_mutex_unlock(&fuse_flash_mutex);
+
     free(tmp);
     return rc < 0 ? -EIO : 0;
 }
@@ -235,10 +308,17 @@ static void *fuse_thread_fn(void *arg) {
 
 int fuse_mount_start(uint8_t *flash_data, size_t flash_size, const char *mount_point) {
     /* Try to mount the FAT16 filesystem */
-    if (fat16_mount(&fuse_fs, flash_data, flash_size) < 0) {
+    pthread_mutex_lock(&fuse_flash_mutex);
+    int rc = fat16_mount(&fuse_fs, flash_data, flash_size);
+    pthread_mutex_unlock(&fuse_flash_mutex);
+
+    if (rc < 0) {
         fprintf(stderr, "[FUSE] No valid FAT16 filesystem found in flash region\n");
         return -1;
     }
+
+    /* Store filesystem offset for persistence sync */
+    fuse_fs_size = (uint32_t)flash_size;
 
     strncpy(fuse_mountpoint, mount_point, sizeof(fuse_mountpoint) - 1);
 
@@ -304,7 +384,13 @@ int fuse_mount_active(void) {
 
 /* Stub implementations when FUSE is not available */
 #include <stdio.h>
+#include <pthread.h>
 #include "fuse_mount.h"
+
+/* Mutex still defined so ROM flash intercept can reference it */
+pthread_mutex_t fuse_flash_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void fuse_set_flash_offset(uint32_t offset) { (void)offset; }
 
 int fuse_mount_start(uint8_t *flash_data, size_t flash_size, const char *mount_point) {
     (void)flash_data;

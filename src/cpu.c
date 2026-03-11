@@ -178,6 +178,9 @@ typedef void (*thumb_handler_t)(uint16_t);
 static thumb_handler_t dispatch_table[256];
 static int dispatch_initialized = 0;
 
+/* Forward declaration for timing (defined after dual-core section) */
+static void timing_tick(uint32_t cycles);
+
 /* ========================================================================
  * Decoded Instruction Cache
  *
@@ -230,6 +233,215 @@ void icache_invalidate_all(void) {
     for (int i = 0; i < ICACHE_SIZE; i++) {
         icache[i].pc = ICACHE_TAG_EMPTY;
     }
+}
+
+/* ========================================================================
+ * JIT Basic Block Cache
+ *
+ * Caches sequences of consecutive 16-bit Thumb instructions as "blocks"
+ * that can be executed in a tight loop without per-instruction overhead
+ * (no PC bounds check, no interrupt check, no dispatch lookup).
+ *
+ * Blocks terminate at branches, 32-bit instructions, or max length.
+ * Only flash/ROM code is compiled (immutable, no invalidation needed
+ * unless self-modifying code writes to RAM and jumps there).
+ *
+ * Interrupt checks happen at block boundaries, keeping latency bounded
+ * to JIT_BLOCK_MAX_INSN instructions (~32 cycles worst case).
+ * ======================================================================== */
+
+#define JIT_BLOCK_MAX_INSN   32
+#define JIT_CACHE_BLOCKS     4096
+#define JIT_CACHE_BMASK      (JIT_CACHE_BLOCKS - 1)
+
+typedef struct {
+    uint32_t start_pc;                       /* Block start address (tag) */
+    uint16_t instrs[JIT_BLOCK_MAX_INSN];     /* Pre-fetched instructions */
+    thumb_handler_t handlers[JIT_BLOCK_MAX_INSN]; /* Pre-decoded handlers */
+    uint8_t  insn_cycles[JIT_BLOCK_MAX_INSN]; /* Pre-computed cycle costs (non-branch) */
+    int      length;                          /* Number of instructions in block */
+    uint32_t exec_count;                      /* Execution count (profiling) */
+} jit_block_t;
+
+static jit_block_t jit_cache[JIT_CACHE_BLOCKS];
+static int jit_enabled = 0;
+static uint64_t jit_block_exec = 0;
+static uint64_t jit_block_compiles = 0;
+static uint64_t jit_insns_saved = 0;  /* Instructions executed via JIT (skipping overhead) */
+
+void jit_init(void) {
+    for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
+        jit_cache[i].start_pc = ICACHE_TAG_EMPTY;
+        jit_cache[i].length = 0;
+        jit_cache[i].exec_count = 0;
+    }
+    jit_enabled = 1;
+    jit_block_exec = 0;
+    jit_block_compiles = 0;
+    jit_insns_saved = 0;
+}
+
+void jit_enable(int enable) {
+    jit_enabled = enable;
+}
+
+/* Check if a 16-bit instruction is a branch or control flow change */
+static int jit_is_terminal(uint16_t instr) {
+    uint8_t top8 = instr >> 8;
+
+    /* Conditional branches: 0xD0-0xDE */
+    if (top8 >= 0xD0 && top8 <= 0xDE) return 1;
+    /* Unconditional branch: 0xE0-0xE7 */
+    if (top8 >= 0xE0 && top8 <= 0xE7) return 1;
+    /* BX/BLX register: 0x47 */
+    if (top8 == 0x47) return 1;
+    /* SVC: 0xDF */
+    if (top8 == 0xDF) return 1;
+    /* POP with PC: 0xBD */
+    if (top8 == 0xBD) return 1;
+    /* BKPT: 0xBE */
+    if (top8 == 0xBE) return 1;
+    /* CPS (CPSIE/CPSID): changes interrupt state */
+    if (top8 == 0xB6) return 1;
+    /* WFI/WFE/SEV/YIELD hints: 0xBF with non-NOP */
+    if (top8 == 0xBF && (instr & 0x00F0) != 0) return 1;
+
+    return 0;
+}
+
+/* Compile a basic block starting at the given PC.
+ * Returns the block, or NULL if compilation not possible. */
+static jit_block_t *jit_compile(uint32_t pc) {
+    /* Only compile flash and ROM code (immutable) */
+    if (!(pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) &&
+        !(pc < ROM_SIZE)) {
+        return NULL;
+    }
+
+    uint32_t idx = (pc >> 1) & JIT_CACHE_BMASK;
+    jit_block_t *block = &jit_cache[idx];
+
+    block->start_pc = pc;
+    block->length = 0;
+    block->exec_count = 0;
+
+    uint32_t cur_pc = pc;
+
+    for (int i = 0; i < JIT_BLOCK_MAX_INSN; i++) {
+        /* Bounds check */
+        if (cur_pc >= FLASH_BASE + FLASH_SIZE && cur_pc >= ROM_SIZE)
+            break;
+
+        uint16_t instr = mem_read16(cur_pc);
+
+        /* NOP (0x0000) — don't include, let normal path handle */
+        if (instr == 0x0000 && i == 0) break;
+
+        /* 32-bit instruction prefix — stop before it */
+        uint8_t top5 = instr >> 11;
+        if (top5 >= 0x1D && i > 0) break;
+        if (top5 >= 0x1D) break;  /* Can't start block with 32-bit */
+
+        block->instrs[i] = instr;
+        block->handlers[i] = dispatch_table[instr >> 8];
+        block->insn_cycles[i] = (uint8_t)timing_instruction_cycles(instr, 0);
+        block->length++;
+
+        /* Terminal instruction ends the block (included as last insn) */
+        if (jit_is_terminal(instr)) break;
+
+        cur_pc += 2;
+    }
+
+    /* Blocks of 1 instruction aren't worth the overhead */
+    if (block->length <= 1) {
+        block->start_pc = ICACHE_TAG_EMPTY;
+        return NULL;
+    }
+
+    jit_block_compiles++;
+    return block;
+}
+
+/* Execute a compiled block.
+ * Assumes interrupt check already done by caller.
+ * Updates cpu.r[15], cpu.step_count, and calls timing_tick(). */
+static void jit_execute(jit_block_t *block) {
+    uint32_t pc = block->start_pc;
+    uint32_t total_cycles = 0;
+
+    for (int i = 0; i < block->length; i++) {
+        cpu.r[15] = pc;
+        cpu.step_count++;
+
+        pc_updated = 0;
+        block->handlers[i](block->instrs[i]);
+
+        if (pc_updated) {
+            /* Branch or control flow change — use actual branch cost */
+            int branch_taken = (cpu.r[15] != pc + 2);
+            total_cycles += timing_instruction_cycles(block->instrs[i], branch_taken);
+            break;
+        }
+
+        total_cycles += block->insn_cycles[i];
+        pc += 2;
+        cpu.r[15] = pc;
+    }
+
+    block->exec_count++;
+    jit_block_exec++;
+    jit_insns_saved += block->length > 1 ? block->length - 1 : 0;
+    timing_tick(total_cycles);
+}
+
+/* Invalidate JIT blocks containing a specific address (for RAM writes) */
+void jit_invalidate_addr(uint32_t addr) {
+    if (!jit_enabled) return;
+    /* For RAM-based code: scan for blocks containing this address.
+     * Flash/ROM blocks are never invalidated (immutable). */
+    if (addr < RAM_BASE || addr >= RAM_TOP) return;
+    for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
+        if (jit_cache[i].start_pc == ICACHE_TAG_EMPTY) continue;
+        uint32_t end_pc = jit_cache[i].start_pc + (uint32_t)jit_cache[i].length * 2;
+        if (addr >= jit_cache[i].start_pc && addr < end_pc) {
+            jit_cache[i].start_pc = ICACHE_TAG_EMPTY;
+        }
+    }
+}
+
+void jit_invalidate_range(uint32_t addr, uint32_t size) {
+    if (!jit_enabled) return;
+    if (addr < RAM_BASE || addr >= RAM_TOP) return;
+    for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
+        if (jit_cache[i].start_pc == ICACHE_TAG_EMPTY) continue;
+        uint32_t blk_end = jit_cache[i].start_pc + (uint32_t)jit_cache[i].length * 2;
+        uint32_t range_end = addr + size;
+        if (jit_cache[i].start_pc < range_end && blk_end > addr) {
+            jit_cache[i].start_pc = ICACHE_TAG_EMPTY;
+        }
+    }
+}
+
+void jit_invalidate_all(void) {
+    for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
+        jit_cache[i].start_pc = ICACHE_TAG_EMPTY;
+    }
+}
+
+void jit_report_stats(void) {
+    if (!jit_enabled) return;
+    fprintf(stderr, " JIT blocks compiled: %llu\n", (unsigned long long)jit_block_compiles);
+    fprintf(stderr, " JIT block executions: %llu\n", (unsigned long long)jit_block_exec);
+    fprintf(stderr, " JIT instructions accelerated: %llu\n", (unsigned long long)jit_insns_saved);
+}
+
+void icache_report_stats(void) {
+    if (!icache_enabled) return;
+    uint64_t total = icache_hits + icache_misses;
+    double hit_rate = total > 0 ? (double)icache_hits / (double)total * 100.0 : 0.0;
+    fprintf(stderr, " ICache hits: %llu, misses: %llu (%.1f%% hit rate)\n",
+            (unsigned long long)icache_hits, (unsigned long long)icache_misses, hit_rate);
 }
 
 /* Secondary dispatchers for ALU block (0x40-0x43) */
@@ -836,6 +1048,30 @@ void cpu_step(void) {
                 nvic_states[get_active_core()].pendsv_pending = 0;
                 cpu_exception_entry(EXC_PENDSV);
                 timing_tick(1);
+                return;
+            }
+        }
+    }
+
+    /* JIT block execution: if no interrupts pending, try executing a
+     * pre-compiled basic block in a tight loop (skips per-instruction
+     * PC check, interrupt check, and dispatch table lookup).
+     * Undo the step_count++ above since jit_execute counts all insns. */
+    if (jit_enabled && !cpu.debug_enabled) {
+        uint32_t jit_idx = (pc >> 1) & JIT_CACHE_BMASK;
+        jit_block_t *block = &jit_cache[jit_idx];
+        if (block->start_pc == pc && block->length > 1) {
+            cpu.step_count--;
+            jit_execute(block);
+            return;
+        }
+        /* Try to compile a new block for this PC */
+        if ((pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) ||
+            (pc < ROM_SIZE)) {
+            block = jit_compile(pc);
+            if (block) {
+                cpu.step_count--;
+                jit_execute(block);
                 return;
             }
         }

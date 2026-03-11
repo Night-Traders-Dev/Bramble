@@ -133,6 +133,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -wire-gpio <path>           Wire GPIO pins to peer via Unix socket\n");
         fprintf(stderr, "\nWiFi (Pico W):\n");
         fprintf(stderr, "  -wifi                       Enable CYW43 WiFi chip emulation\n");
+        fprintf(stderr, "\nPerformance:\n");
+        fprintf(stderr, "  -jit        Enable JIT basic block compilation for hot loops\n");
         return EXIT_FAILURE;
     }
 
@@ -152,6 +154,7 @@ int main(int argc, char **argv) {
     char *emmc_path = NULL;
     int emmc_spi = 0;
     size_t emmc_size = EMMC_DEFAULT_SIZE;
+    int jit_mode = 0;
     int threaded_mode = 0;   /* Use pthread-per-core execution */
     int cores_auto = 0;     /* -cores auto requested */
     static sdcard_t sdcard;
@@ -279,6 +282,8 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-wifi") == 0) {
             cyw43.enabled = 1;
+        } else if (strcmp(argv[i], "-jit") == 0) {
+            jit_mode = 1;
         }
     }
 
@@ -386,6 +391,7 @@ int main(int argc, char **argv) {
         /* CircuitPython filesystem starts at 1MB offset in flash */
         uint32_t fs_offset = 0x100000;
         uint32_t fs_size = FLASH_SIZE - fs_offset;
+        fuse_set_flash_offset(fs_offset);
         fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);
     }
 
@@ -397,6 +403,12 @@ int main(int argc, char **argv) {
 
     fprintf(stderr,"[Init] Initializing dual-core RP2040 emulator...\n");
     dual_core_init();
+
+    /* JIT basic block compilation */
+    if (jit_mode) {
+        jit_init();
+        fprintf(stderr,"[Init] JIT basic block compilation enabled\n");
+    }
 
     /* ========================================================================
      * Boot Configuration
@@ -704,6 +716,10 @@ int main(int argc, char **argv) {
     fprintf(stderr," Total Steps: %u\n", step_count);
     fprintf(stderr," Core 0 Steps: %u\n", cores[CORE0].step_count);
     fprintf(stderr," Core 1 Steps: %u\n", cores[CORE1].step_count);
+    icache_report_stats();
+    if (jit_mode) {
+        jit_report_stats();
+    }
     fprintf(stderr,"═══════════════════════════════════════════════════════════\n");
 
 
