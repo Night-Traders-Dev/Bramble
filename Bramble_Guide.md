@@ -1,25 +1,7 @@
----
-title: "Bramble RP2040 Emulator"
-subtitle: "A Comprehensive Guide"
-author: "Jacob Yates"
-date: "March 2026"
-toc: true
----
 
+# Part 1: Architecture Overview and Design Philosophy
 
-# Bramble RP2040 Emulator: A Comprehensive Guide
-
-## Executive Summary
-
-**Bramble** is a **cycle-aware ARM Cortex-M0+ emulator** written in C99 that faithfully emulates the RP2040 microcontroller — the dual-core chip at the heart of the Raspberry Pi Pico. It implements the full ARMv6-M Thumb instruction set, per-core NVIC and SysTick, 20+ peripheral modules, host-threaded dual-core execution, GDB remote debugging, and USB host enumeration simulation. Bramble can boot real-world firmware including MicroPython, CircuitPython, and littleOS without modification. The emulator is implemented across ~15,000 lines of C across 30 source files and 26 headers, built with CMake, and ships with 255+ automated tests.
-
-Current release: `v0.31.0`
-
----
-
-## Part 1: Architecture Overview and Design Philosophy
-
-### 1.1 Design Goals
+## 1.1 Design Goals
 
 Bramble is designed as a **development and debugging tool** for RP2040 firmware that:
 
@@ -29,7 +11,7 @@ Bramble is designed as a **development and debugging tool** for RP2040 firmware 
 - **Supports interactive debugging**: GDB remote serial protocol with breakpoints, watchpoints, conditional breakpoints, and dual-core thread support.
 - **Enables multi-device systems**: UART-to-TCP bridging, Unix-domain-socket wiring between Bramble instances, SPI-attached SD card and eMMC emulation.
 
-### 1.2 System Characteristics
+## 1.2 System Characteristics
 
 | Feature | Details |
 |---------|---------|
@@ -48,7 +30,7 @@ Bramble is designed as a **development and debugging tool** for RP2040 firmware 
 | **Networking** | UART-to-TCP bridge, Unix socket wire protocol |
 | **Output** | Firmware UART/USB CDC output on stdout; all diagnostics on stderr |
 
-### 1.3 Execution Model
+## 1.3 Execution Model
 
 Bramble operates in two execution modes:
 
@@ -66,7 +48,7 @@ Bramble operates in two execution modes:
 4. `corepool_wake_cores()` signals sleeping cores when interrupts become pending
 5. Main thread handles I/O polling, watchdog, and storage flush
 
-### 1.4 Boot Sequence
+## 1.4 Boot Sequence
 
 1. CPU, ROM, and all peripherals are initialized
 2. Firmware is loaded from UF2 or ELF file into flash at `0x10000000`
@@ -75,18 +57,17 @@ Bramble operates in two execution modes:
 5. Vector table is read: SP from word 0, reset vector from word 1
 6. Core 0 begins execution; Core 1 starts halted (launched by firmware via SIO FIFO protocol)
 
----
 
-## Part 2: Building and Running
+# Part 2: Building and Running
 
-### 2.1 Build Requirements
+## 2.1 Build Requirements
 
 - C99 compiler (GCC or Clang)
 - CMake 3.10+
 - POSIX system (Linux, macOS)
 - pthreads (included on all POSIX systems)
 
-### 2.2 Building
+## 2.2 Building
 
 ```bash
 cd build
@@ -102,7 +83,7 @@ make
 | `-DCMAKE_C_COMPILER=clang` | Use Clang instead of GCC |
 | `-DENABLE_FUSE=ON` | Enable FUSE filesystem mount support (requires libfuse3) |
 
-### 2.3 Running Tests
+## 2.3 Running Tests
 
 ```bash
 cd build
@@ -111,7 +92,7 @@ ctest --output-on-failure
 
 The test suite contains 255+ tests covering instruction execution, peripheral register behavior, memory access, exception handling, and firmware boot sequences.
 
-### 2.4 Running Firmware
+## 2.4 Running Firmware
 
 ```bash
 # Basic execution
@@ -127,17 +108,16 @@ The test suite contains 255+ tests covering instruction execution, peripheral re
 ./bramble firmware.uf2 -gdb 3333
 ```
 
----
 
-## Part 3: Command-Line Reference
+# Part 3: Command-Line Reference
 
-### 3.1 Usage
+## 3.1 Usage
 
 ```
 bramble <firmware.uf2|firmware.elf> [options]
 ```
 
-### 3.2 Core Options
+## 3.2 Core Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -153,7 +133,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-debug-mem` | | Log unmapped peripheral read/write accesses to stderr |
 | `-jit` | | Enable JIT basic block compilation for hot loops |
 
-### 3.3 Storage Options
+## 3.3 Storage Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -166,7 +146,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-emmc-spi` | `<0\|1>` | SPI bus for eMMC (default: 0) |
 | `-emmc-size` | `<MB>` | eMMC size in MB (default: 128) |
 
-### 3.4 Networking Options
+## 3.4 Networking Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -175,7 +155,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-net-uart0-connect` | `<host:port>` | Connect UART0 to remote TCP host:port (client mode) |
 | `-net-uart1-connect` | `<host:port>` | Connect UART1 to remote TCP host:port (client mode) |
 
-### 3.5 Multi-Device Wiring Options
+## 3.5 Multi-Device Wiring Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -183,17 +163,16 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-wire-uart1` | `<path>` | Wire UART1 to peer Bramble instance via Unix domain socket |
 | `-wire-gpio` | `<path>` | Wire GPIO pin state to peer via Unix domain socket |
 
-### 3.6 WiFi Options
+## 3.6 WiFi Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
 | `-wifi` | | Enable CYW43439 WiFi chip emulation (Pico W) |
 
----
 
-## Part 4: Internal Architecture and Core Modules
+# Part 4: Internal Architecture and Core Modules
 
-### 4.1 Module Dependency Graph
+## 4.1 Module Dependency Graph
 
 ```
 main.c
@@ -226,7 +205,7 @@ main.c
   └─ elf.c / elf.h              [ELF32 ARM binary loader]
 ```
 
-### 4.2 CPU Engine (cpu.c / emulator.h)
+## 4.2 CPU Engine (cpu.c / emulator.h)
 
 **Responsibility**: Execute ARMv6-M Thumb instructions, manage dual-core state, handle exceptions, and coordinate timing.
 
@@ -295,7 +274,7 @@ struct cpu_state_dual_t {
 - Cycle accumulator converts CPU cycles to microseconds for timer peripheral
 - SysTick counts in raw CPU cycles (per ARM spec)
 
-### 4.3 Memory Bus (membus.c)
+## 4.3 Memory Bus (membus.c)
 
 **Responsibility**: Route all memory accesses (read/write, 8/16/32-bit) to the correct backing store or peripheral.
 
@@ -328,7 +307,7 @@ struct cpu_state_dual_t {
 - `mem_set_ram_ptr()` redirects memory bus to the active core's RAM (zero-copy pointer swap)
 - All peripheral registers support atomic aliases: Normal (`+0x0000`), XOR (`+0x1000`), SET (`+0x2000`), CLR (`+0x3000`)
 
-### 4.4 Instruction Set (instructions.c)
+## 4.4 Instruction Set (instructions.c)
 
 **Responsibility**: Implement all 65+ ARMv6-M Thumb-1 instruction handlers plus supported 32-bit instructions.
 
@@ -354,11 +333,10 @@ struct cpu_state_dual_t {
 - BKPT triggers HardFault exception (vector 3) instead of halting emulator
 - Unrecognized 32-bit instructions trigger HardFault
 
----
 
-## Part 5: Peripheral Emulation
+# Part 5: Peripheral Emulation
 
-### 5.1 GPIO (gpio.c / gpio.h)
+## 5.1 GPIO (gpio.c / gpio.h)
 
 **Base Addresses**: IO_BANK0 at `0x40014000`, PADS_BANK0 at `0x4001C000`, SIO GPIO at `0xD0000000`
 
@@ -385,7 +363,7 @@ struct cpu_state_dual_t {
 - GPIO events trigger NVIC IRQ 13 (`IO_IRQ_BANK0`) through INTE/INTF/INTS chain
 - `gpio_set_input_pin(pin, value)` API for external input injection with automatic event detection
 
-### 5.2 Timer (timer.c / timer.h)
+## 5.2 Timer (timer.c / timer.h)
 
 **Base Address**: `0x40054000`
 
@@ -418,7 +396,7 @@ struct cpu_state_dual_t {
 - Alarm fire: sets INTR bit, signals NVIC IRQ 0-3 (`TIMER_IRQ_0-3`), disarms alarm
 - Atomic 64-bit reads: reading TIMELR latches the high word for subsequent TIMEHR read
 
-### 5.3 NVIC and SysTick (nvic.c / nvic.h)
+## 5.3 NVIC and SysTick (nvic.c / nvic.h)
 
 **Base Address**: `0xE000E000` (Private Peripheral Bus)
 
@@ -461,7 +439,7 @@ struct cpu_state_dual_t {
 - Fixed priorities: Reset = -3, NMI = -2, HardFault = -1
 - Configurable: SVCall (SHPR2), PendSV and SysTick (SHPR3), external IRQs (IPR0-7)
 
-### 5.4 IRQ Assignment Table
+## 5.4 IRQ Assignment Table
 
 | IRQ | Name | Source Peripheral |
 |-----|------|-------------------|
@@ -482,7 +460,7 @@ struct cpu_state_dual_t {
 | 23-24 | `I2C0/1_IRQ` | I2C controllers |
 | 25 | `RTC_IRQ` | Real-time clock |
 
-### 5.5 UART (uart.c / uart.h)
+## 5.5 UART (uart.c / uart.h)
 
 **Base Addresses**: UART0 at `0x40034000`, UART1 at `0x40038000`
 
@@ -511,7 +489,7 @@ PL011 UART peripheral with full register state:
 - UART starts disabled per PL011 spec; TX RIS asserted when UART enabled via CR write
 - Triggers NVIC IRQ 20/21 (`UART0/1_IRQ`)
 
-### 5.6 SPI (spi.c / spi.h)
+## 5.6 SPI (spi.c / spi.h)
 
 **Base Addresses**: SPI0 at `0x4003C000`, SPI1 at `0x40040000`
 
@@ -536,7 +514,7 @@ PL022 SPI peripheral:
 - TX/RX interrupts at half-full thresholds
 - Triggers NVIC IRQ 18/19 (`SPI0/1_IRQ`)
 
-### 5.7 I2C (i2c.c / i2c.h)
+## 5.7 I2C (i2c.c / i2c.h)
 
 **Base Addresses**: I2C0 at `0x40044000`, I2C1 at `0x40048000`
 
@@ -563,7 +541,7 @@ DW_apb_i2c peripheral:
 - RX_FULL, TX_EMPTY, STOP_DET interrupts
 - Triggers NVIC IRQ 23/24 (`I2C0/1_IRQ`)
 
-### 5.8 PWM (pwm.c / pwm.h)
+## 5.8 PWM (pwm.c / pwm.h)
 
 **Base Address**: `0x40050000`
 
@@ -589,7 +567,7 @@ DW_apb_i2c peripheral:
 
 - Triggers NVIC IRQ 4 (`PWM_IRQ_WRAP`)
 
-### 5.9 DMA (dma.c / dma.h)
+## 5.9 DMA (dma.c / dma.h)
 
 **Base Address**: `0x50000000`
 
@@ -623,7 +601,7 @@ DW_apb_i2c peripheral:
 - Writing the trigger register in each alias initiates the transfer
 - Completion signals NVIC IRQ 11/12 (`DMA_IRQ_0/1`) when INTE0/1 enabled
 
-### 5.10 PIO (pio.c / pio.h)
+## 5.10 PIO (pio.c / pio.h)
 
 **Base Addresses**: PIO0 at `0x50200000`, PIO1 at `0x50300000`
 
@@ -678,7 +656,7 @@ Each PIO block contains 4 state machines, 32-word instruction memory, and indepe
 - INTR dynamically computed: IRQ flags [11:8], TX not full [7:4], RX not empty [3:0]
 - INTS = (INTR | INTF) & INTE; triggers NVIC IRQ 7-10 (`PIO0/1_IRQ_0/1`)
 
-### 5.11 ADC (adc.c / adc.h)
+## 5.11 ADC (adc.c / adc.h)
 
 **Base Address**: `0x4004C000`
 
@@ -699,7 +677,7 @@ Each PIO block contains 4 state machines, 32-word instruction memory, and indepe
 - Overflow/underflow flags (W1C) in FCS
 - Triggers NVIC IRQ 22 (`ADC_IRQ_FIFO`)
 
-### 5.12 USB (usb.c / usb.h)
+## 5.12 USB (usb.c / usb.h)
 
 **Base Addresses**: USBCTRL_DPRAM at `0x50100000` (4 KB), USBCTRL_REGS at `0x50110000`
 
@@ -732,7 +710,7 @@ Each PIO block contains 4 state machines, 32-word instruction memory, and indepe
 - Supports byte, halfword, and word access (read-modify-write routing for TinyUSB memcpy)
 - buf_ctrl: AVAILABLE (bit 10), FULL (bit 15), LEN (bits [9:0])
 
-### 5.13 RTC (rtc.c / rtc.h)
+## 5.13 RTC (rtc.c / rtc.h)
 
 **Base Address**: `0x4005C000`
 
@@ -755,7 +733,7 @@ Each PIO block contains 4 state machines, 32-word instruction memory, and indepe
 - Leap year support (Gregorian calendar rules)
 - Triggers NVIC IRQ 25 (`RTC_IRQ`)
 
-### 5.14 Clock System (clocks.c / clocks.h)
+## 5.14 Clock System (clocks.c / clocks.h)
 
 Consolidated module handling all clock-domain peripherals:
 
@@ -782,7 +760,7 @@ Consolidated module handling all clock-domain peripherals:
 - CTRL (TRIGGER bit 31 for reboot), LOAD, REASON (0 = clean boot), TICK, SCRATCH0-7
 - SYSRESETREQ via AIRCR (`0x05FA0004`) triggers system reset through `watchdog_reboot_pending`
 
-### 5.15 SIO (cpu.c / emulator.h)
+## 5.15 SIO (cpu.c / emulator.h)
 
 **Base Address**: `0xD0000000`
 
@@ -812,11 +790,10 @@ Single-cycle I/O block, partially integrated into `cpu.c`:
 - `fifo_try_push()` signals NVIC IRQ 15/16 (`SIO_IRQ_PROC0/1`) for receiving core
 - Used by Pico SDK for Core 1 launch protocol
 
----
 
-## Part 6: ROM and Boot
+# Part 6: ROM and Boot
 
-### 6.1 ROM Layout (rom.c / rom.h)
+## 6.1 ROM Layout (rom.c / rom.h)
 
 **Base Address**: `0x00000000`, Size: 16 KB (`0x4000`)
 
@@ -847,7 +824,7 @@ The ROM implements the RP2040 bootrom layout:
 - `flash_range_program`: copies bytes into flash
 - Both trigger `flash_persist_sync()` for immediate write-through to disk
 
-### 6.2 Boot2 Detection
+## 6.2 Boot2 Detection
 
 Boot2 is the second-stage bootloader stored in the first 256 bytes of flash. Bramble auto-detects it by:
 1. Checking first flash word for valid ARM vector (reasonable SP value)
@@ -860,7 +837,7 @@ When boot2 is present:
 When boot2 is absent or `-no-boot2` is specified:
 - Core 0 starts directly at `0x10000100` (application entry)
 
-### 6.3 Firmware Loading
+## 6.3 Firmware Loading
 
 **UF2 Format** (uf2.c):
 - Parses UF2 blocks (512 bytes each, 256 bytes payload)
@@ -872,11 +849,10 @@ When boot2 is absent or `-no-boot2` is specified:
 - Loads PROGBITS segments to their target addresses (flash or RAM)
 - Returns 1 on success, 0 on failure
 
----
 
-## Part 7: Debugging
+# Part 7: Debugging
 
-### 7.1 GDB Remote Debugging (gdb.c / gdb.h)
+## 7.1 GDB Remote Debugging (gdb.c / gdb.h)
 
 Launch with `-gdb [port]` (default port: 3333).
 
@@ -922,7 +898,7 @@ arm-none-eabi-gdb firmware.elf
 (gdb) monitor uncond 0             # Remove condition from BP 0
 ```
 
-### 7.2 Debug Output Flags
+## 7.2 Debug Output Flags
 
 | Flag | Effect |
 |------|--------|
@@ -933,11 +909,10 @@ arm-none-eabi-gdb firmware.elf
 
 All diagnostic output goes to stderr. Only firmware UART/USB output appears on stdout.
 
----
 
-## Part 8: Storage and Persistence
+# Part 8: Storage and Persistence
 
-### 8.1 Flash Persistence
+## 8.1 Flash Persistence
 
 ```bash
 ./bramble firmware.uf2 -flash storage.bin
@@ -948,7 +923,7 @@ All diagnostic output goes to stderr. Only firmware UART/USB output appears on s
 - On exit: saves full 2 MB flash image
 - Write-through: every `flash_range_erase` and `flash_range_program` immediately syncs to disk via `flash_persist_sync()`
 
-### 8.2 SD Card
+## 8.2 SD Card
 
 ```bash
 ./bramble firmware.uf2 -sdcard sdcard.img -sdcard-size 64
@@ -961,7 +936,7 @@ SPI-mode SD card emulation:
 - File-backed: loaded on init, flushed periodically (~1M steps) and on cleanup
 - Attaches to SPI1 by default via `spi_attach_device()` callback
 
-### 8.3 eMMC
+## 8.3 eMMC
 
 ```bash
 ./bramble firmware.uf2 -emmc emmc.img -emmc-size 128
@@ -973,7 +948,7 @@ SPI-mode eMMC emulation:
 - Sector addressing, product name "BRMMC"
 - Default 128 MB, file-backed
 
-### 8.4 FUSE Mount
+## 8.4 FUSE Mount
 
 ```bash
 ./bramble firmware.uf2 -flash storage.bin -mount /tmp/pico-fs
@@ -985,11 +960,10 @@ Mounts the flash FAT16 filesystem as a host directory via libfuse3:
 - FUSE writes automatically sync to disk via flash persistence
 - Build with `cmake .. -DENABLE_FUSE=ON`
 
----
 
-## Part 9: Networking and Multi-Device
+# Part 9: Networking and Multi-Device
 
-### 9.1 UART-to-TCP Bridge
+## 9.1 UART-to-TCP Bridge
 
 ```bash
 # Server mode: listen for connections
@@ -1004,7 +978,7 @@ Mounts the flash FAT16 filesystem as a host directory via libfuse3:
 - UART TX routed through bridge when active (instead of stdout)
 - Both UART0 and UART1 supported independently
 
-### 9.2 Wire Protocol (Multi-Instance IPC)
+## 9.2 Wire Protocol (Multi-Instance IPC)
 
 ```bash
 # Instance 1: wire UART0 to socket
@@ -1021,7 +995,7 @@ Mounts the flash FAT16 filesystem as a host directory via libfuse3:
 - Wire message protocol: 4-byte header (type, channel, length, reserved) + payload
 - Message types: `WIRE_MSG_UART_DATA`, `WIRE_MSG_GPIO_PIN`, `WIRE_MSG_SPI_XFER`
 
-### 9.3 CYW43 WiFi Emulation
+## 9.3 CYW43 WiFi Emulation
 
 ```bash
 ./bramble firmware.uf2 -wifi
@@ -1036,11 +1010,10 @@ CYW43439 WiFi chip emulation for Pico W firmware:
   - Function 2 (WLAN): WiFi data
 - Configurable scan results: `cyw43_add_scan_result()` adds fake access points
 
----
 
-## Part 10: Performance
+# Part 10: Performance
 
-### 10.1 Instruction Cache
+## 10.1 Instruction Cache
 
 64K-entry direct-mapped decoded instruction cache:
 - Indexed by PC (lower 16 bits)
@@ -1049,7 +1022,7 @@ CYW43439 WiFi chip emulation for Pico W firmware:
 - Invalidated on RAM writes; flash/ROM entries never invalidated
 - Hit rate statistics reported on exit
 
-### 10.2 JIT Basic Block Compilation
+## 10.2 JIT Basic Block Compilation
 
 ```bash
 ./bramble firmware.uf2 -jit
@@ -1064,7 +1037,7 @@ CYW43439 WiFi chip emulation for Pico W firmware:
 - ~1.47x speedup over instruction cache alone
 - Statistics reported on exit: block compiles, executions, accelerated instructions
 
-### 10.3 Host Threading
+## 10.3 Host Threading
 
 ```bash
 ./bramble firmware.uf2 -cores 2
@@ -1077,11 +1050,10 @@ CYW43439 WiFi chip emulation for Pico W firmware:
 - Core pool: file-based registry at `/tmp/bramble-corepool.reg`
 - `-cores auto`: queries pool for optimal allocation across multiple instances
 
----
 
-## Part 11: Tested Firmware
+# Part 11: Tested Firmware
 
-### 11.1 MicroPython
+## 11.1 MicroPython
 
 ```bash
 ./bramble micropython.uf2 -stdin -clock 125 -flash mpy.bin
@@ -1089,7 +1061,7 @@ CYW43439 WiFi chip emulation for Pico W firmware:
 
 MicroPython v1.27.0 boots to interactive REPL via USB CDC stdio. Requires boot2 support, USB enumeration, ROM 16KB, XIP SSI aliases.
 
-### 11.2 CircuitPython
+## 11.2 CircuitPython
 
 ```bash
 ./bramble circuitpython.uf2 -stdin -clock 125
@@ -1097,7 +1069,7 @@ MicroPython v1.27.0 boots to interactive REPL via USB CDC stdio. Requires boot2 
 
 CircuitPython 10.1.3 boots and runs `code.py` via USB CDC stdio. First boot creates FAT filesystem (64 flash operations at offset `0x100000`). Requires ROSC, SIO_GPIO_HI_IN (QSPI), CDC DTR signaling.
 
-### 11.3 littleOS
+## 11.3 littleOS
 
 ```bash
 ./bramble littleos.uf2 -clock 125 -flash los.bin
@@ -1105,7 +1077,7 @@ CircuitPython 10.1.3 boots and runs `code.py` via USB CDC stdio. First boot crea
 
 Full Pico SDK 2.x OS with interactive shell, SageLang interpreter, and dual-core supervisor. Boots to interactive shell. Requires per-core NVIC (timer IRQ filtered by per-core enable mask), per-core exception nesting, timer core-gating.
 
-### 11.4 Test Firmware Suite
+## 11.4 Test Firmware Suite
 
 | Firmware | Purpose |
 |----------|---------|
@@ -1115,9 +1087,8 @@ Full Pico SDK 2.x OS with interactive shell, SageLang interpreter, and dual-core
 | `alarm_test.uf2` | Timer alarm and interrupt delivery |
 | `interrupt_test.uf2` | Exception handling and nesting |
 
----
 
-## Part 12: Atomic Register Aliases
+# Part 12: Atomic Register Aliases
 
 All RP2040 peripherals support atomic register access via address aliases:
 
@@ -1132,9 +1103,8 @@ These aliases work for all peripheral registers in the `0x40000000-0x50FFFFFF` r
 
 **Note**: The SRAM alias at `0x21000000` is a simple mirror of `0x20000000` — not an atomic alias. Atomic operations are peripheral-only.
 
----
 
-## Part 13: Repository Structure
+# Part 13: Repository Structure
 
 ```
 bramble/
@@ -1203,9 +1173,8 @@ bramble/
         └── cmake.yml       # GitHub Actions CI (GCC + Clang)
 ```
 
----
 
-## Part 14: Peripheral Stub Summary
+# Part 14: Peripheral Stub Summary
 
 Some peripherals have minimal implementations sufficient for firmware boot:
 
@@ -1217,11 +1186,10 @@ Some peripherals have minimal implementations sufficient for firmware boot:
 | XIP Cache | `0x14000000` | Cache always reports ready/empty |
 | XIP SSI | `0x18000000` | Flash read command (0x03) with TX/RX FIFOs |
 
----
 
-## Part 15: Design Decisions and Trade-Offs
+# Part 15: Design Decisions and Trade-Offs
 
-### 15.1 Correctness Over Performance
+## 15.1 Correctness Over Performance
 
 Bramble prioritizes correctness against the RP2040 datasheet over raw emulation speed:
 - Per-core NVIC state faithfully models how shared interrupt lines are filtered by independent enable masks
@@ -1229,35 +1197,34 @@ Bramble prioritizes correctness against the RP2040 datasheet over raw emulation 
 - Exception nesting stack (not just a single `current_irq`) enables proper nested interrupt handling
 - Double-fault lockup detection prevents infinite HardFault recursion
 
-### 15.2 Synchronous DMA
+## 15.2 Synchronous DMA
 
 DMA transfers execute immediately (synchronously) rather than cycle-by-cycle:
 - Simpler implementation, deterministic behavior
 - Firmware that depends on DMA transfer timing (pacing timers) is not supported
 - Sufficient for all tested firmware (MicroPython, CircuitPython, littleOS)
 
-### 15.3 Immediate PIO Execution
+## 15.3 Immediate PIO Execution
 
 PIO state machines step once per main loop iteration:
 - Clock dividers use 16.8 fixed-point accumulators for fractional timing
 - Sufficient for UART, SPI, I2C PIO programs
 - Very high-speed PIO programs may not match real-hardware timing
 
-### 15.4 Global Peripheral State
+## 15.4 Global Peripheral State
 
 All peripherals use global state (single emulated chip):
 - Multi-chip systems require separate Bramble processes connected via wire protocol
 - This keeps the code simple and matches the RP2040's single-chip architecture
 
-### 15.5 Output Separation
+## 15.5 Output Separation
 
 - All firmware output (UART TX, USB CDC) goes to **stdout**
 - All emulator diagnostics go to **stderr**
 - This enables clean piping: `./bramble firmware.uf2 > output.txt` captures only firmware output
 
----
 
-## Part 16: Versioning and Release History
+# Part 16: Versioning and Release History
 
 Version source of truth: `MEMORY.md` project memory.
 
@@ -1277,9 +1244,8 @@ Version source of truth: `MEMORY.md` project memory.
 | v0.20.0 | GPIO edge/level interrupts, PIO INTR from FIFO status, dynamic FC0_RESULT |
 | v0.19.0 | ROM soft-float/double, flash write, HardFault, exception nesting, SIO interpolators |
 
----
 
-## Part 17: External References
+# Part 17: External References
 
 - RP2040 Datasheet: https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf
 - ARM Cortex-M0+ Technical Reference Manual: https://developer.arm.com/documentation/ddi0484/
@@ -1295,9 +1261,8 @@ Version source of truth: `MEMORY.md` project memory.
 - UF2 Specification: https://github.com/microsoft/uf2
 - CMake Documentation: https://cmake.org/cmake/help/latest/
 
----
 
-## Part 18: Closing Notes
+# Part 18: Closing Notes
 
 Bramble is designed as a practical development tool for the RP2040 ecosystem:
 - add peripheral modules as new firmware requires them
