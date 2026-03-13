@@ -4,6 +4,7 @@
 #include "nvic.h"
 #include "netbridge.h"
 #include "wire.h"
+#include "usb.h"
 
 /* Two UART instances */
 uart_state_t uart_state[2];
@@ -173,7 +174,7 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
                 net_bridge_uart_tx(uart_num, ch);
             } else if (wire_uart_active(uart_num)) {
                 wire_send_uart(uart_num, ch);
-            } else {
+            } else if (!usb_cdc_stdout_enabled) {
                 putchar((char)ch);
                 fflush(stdout);
             }
