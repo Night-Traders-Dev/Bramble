@@ -167,4 +167,7 @@ void     usb_step(void);
 /* Push a byte into USB CDC OUT endpoint (for stdin bridging) */
 void     usb_cdc_rx_push(uint8_t byte);
 
+/* Set to 1 to allow USB CDC IN data to appear on stdout (set by -stdin flag) */
+extern int usb_cdc_stdout_enabled;
+
 #endif /* USB_H */

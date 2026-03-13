@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include "emulator.h"
 #include "instructions.h"
+#include "thumb32.h"
 #include "timer.h"
 #include "nvic.h"
 #include "rom.h"
@@ -518,6 +519,33 @@ static void dispatch_cps_b6(uint16_t instr) {
     }
 }
 
+/* CBZ/CBNZ: 0xB1/0xB3 (CBZ) and 0xB9/0xBB (CBNZ)
+ * encoding: bits[15:12]=1011, bit11=op(0=CBZ,1=CBNZ), bit9=i1,
+ *           bits[7:3]=imm5, bits[2:0]=Rn
+ * offset = ZeroExtend({i1, imm5, 0}) = (i1<<6)|(imm5<<1)
+ * target = PC + 4 + offset  (PC = instruction addr + 4 in pipeline) */
+static void dispatch_cbz(uint16_t instr) {
+    uint32_t i1     = (instr >> 9) & 1;
+    uint32_t imm5   = (instr >> 3) & 0x1F;
+    uint32_t offset = (i1 << 6) | (imm5 << 1);
+    uint8_t  Rn     = instr & 0x7;
+    if (cpu.r[Rn] == 0) {
+        cpu.r[15] += 4 + offset;
+        pc_updated = 1;
+    }
+}
+
+static void dispatch_cbnz(uint16_t instr) {
+    uint32_t i1     = (instr >> 9) & 1;
+    uint32_t imm5   = (instr >> 3) & 0x1F;
+    uint32_t offset = (i1 << 6) | (imm5 << 1);
+    uint8_t  Rn     = instr & 0x7;
+    if (cpu.r[Rn] != 0) {
+        cpu.r[15] += 4 + offset;
+        pc_updated = 1;
+    }
+}
+
 /* REV instructions (0xBA) */
 static void dispatch_rev_ba(uint16_t instr) {
     switch ((instr >> 6) & 0x3) {
@@ -656,13 +684,15 @@ static void init_dispatch_table(void) {
 
     /* Miscellaneous 16-bit instructions: 1011 xxxx */
     dispatch_table[0xB0] = dispatch_sp_b0;
-    /* 0xB1: CBZ (not supported on M0+) */
+    dispatch_table[0xB1] = dispatch_cbz;   /* CBZ i1=0 */
     dispatch_table[0xB2] = dispatch_extend_b2;
-    /* 0xB3: CBZ (not supported on M0+) */
+    dispatch_table[0xB3] = dispatch_cbz;   /* CBZ i1=1 */
     dispatch_table[0xB4] = instr_push;
     dispatch_table[0xB5] = instr_push;
     dispatch_table[0xB6] = dispatch_cps_b6;
+    dispatch_table[0xB9] = dispatch_cbnz;  /* CBNZ i1=0 */
     dispatch_table[0xBA] = dispatch_rev_ba;
+    dispatch_table[0xBB] = dispatch_cbnz;  /* CBNZ i1=1 */
     dispatch_table[0xBC] = instr_pop;
     dispatch_table[0xBD] = instr_pop;
     dispatch_table[0xBE] = instr_bkpt;
@@ -1099,57 +1129,18 @@ void cpu_step(void) {
 
     /* 32-bit instructions: top 5 bits = 11101/11110/11111 */
     uint8_t top5 = instr >> 11;
-    if (top5 >= 0x1D) {  /* 0xE800+ could be 32-bit */
-        if ((instr & 0xF800) == 0xF000 || (instr & 0xF800) == 0xF800) {
-            uint16_t instr2 = mem_read16(pc + 2);
-
-            /* BL/BLX immediate */
-            if ((instr & 0xF800) == 0xF000 && (instr2 & 0xD000) == 0xD000) {
-                if (cpu.debug_enabled) {
-                    printf("[CPU] BL32 upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
-                           instr, instr2, pc);
-                }
-                pc_updated = 0;
-                instr_bl_32(instr, instr2);
-                timing_tick(timing_instruction_cycles_32(instr, instr2));
-                return;
-            }
-
-            /* MSR: upper = 0xF380 | Rn, lower = 0x88xx | SYSm */
-            if ((instr & 0xFFF0) == 0xF380 && (instr2 & 0xFF00) == 0x8800) {
-                uint8_t rn = instr & 0xF;
-                uint8_t sysm = instr2 & 0xFF;
-                instr_msr_32(rn, sysm);
-                cpu.r[15] = pc + 4;
-                timing_tick(timing_instruction_cycles_32(instr, instr2));
-                return;
-            }
-
-            /* MRS: upper = 0xF3EF, lower = 0x8Rss (Rd in [11:8], SYSm in [7:0]) */
-            if ((instr & 0xFFFF) == 0xF3EF && (instr2 & 0xF000) == 0x8000) {
-                uint8_t rd = (instr2 >> 8) & 0xF;
-                uint8_t sysm = instr2 & 0xFF;
-                instr_mrs_32(rd, sysm);
-                cpu.r[15] = pc + 4;
-                timing_tick(timing_instruction_cycles_32(instr, instr2));
-                return;
-            }
-
-            /* DSB/DMB/ISB: upper = 0xF3BF, lower = 0x8F4x/8F5x/8F6x */
-            if ((instr & 0xFFFF) == 0xF3BF && (instr2 & 0xFF00) == 0x8F00) {
-                /* Memory barriers are NOPs in our emulator */
-                cpu.r[15] = pc + 4;
-                timing_tick(timing_instruction_cycles_32(instr, instr2));
-                return;
-            }
-
+    if (top5 >= 0x1D) {  /* 0xE800+ is a 32-bit instruction */
+        uint16_t instr2 = mem_read16(pc + 2);
+        pc_updated = 0;
+        if (!thumb32_step(pc, instr, instr2)) {
             /* Unhandled 32-bit instruction -> HardFault */
             if (cpu.debug_enabled)
-                printf("[CPU] Unhandled 32-bit Thumb instr: upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
+                fprintf(stderr, "[CPU] Unhandled 32-bit Thumb instr: upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
                        instr, instr2, pc);
             cpu_exception_entry(EXC_HARDFAULT);
-            return;
         }
+        timing_tick(timing_instruction_cycles_32(instr, instr2));
+        return;
     }
 
     /* 16-bit instruction dispatch via table (with cache) */
@@ -1391,11 +1382,17 @@ int cpu_has_boot2(void) {
         return 0;
     }
 
-    /* Also verify the vector table at +0x100 looks valid */
+    /* Also verify the vector table at +0x100 looks valid (generous SRAM range) */
     uint32_t sp_word;
     memcpy(&sp_word, &cpu.flash[0x100], 4);
-    if (sp_word < RAM_BASE || sp_word > RAM_BASE + RAM_SIZE) {
+    if (sp_word < 0x20000000u || sp_word >= 0x21000000u) {
         return 0;
+    }
+    /* Additionally, flash[0] should look like code (not a stack pointer)
+     * when boot2 is present — boot2 starts with Thumb instructions, not
+     * a RAM address. */
+    if (first_word >= 0x20000000u && first_word < 0x21000000u) {
+        return 0;  /* flash[0] looks like SP → no boot2, app at 0x10000000 */
     }
 
     return 1;
@@ -1425,8 +1422,21 @@ void cpu_reset_core(int core_id) {
             c->r[15] = FLASH_BASE;
             fprintf(stderr, "[Boot2] Starting boot2 from 0x%08X\n", FLASH_BASE);
         } else {
-            /* No boot2: read vector table directly from +0x100 */
-            uint32_t vector_table = FLASH_BASE + 0x100;
+            /* No boot2 detected.  Determine vector table location:
+             * - If flash[0] looks like a stack pointer (in SRAM address
+             *   space 0x20000000–0x20FFFFFF), the vector table IS at
+             *   0x10000000 (firmware has no boot2 stage).
+             * - Otherwise assume the application starts at +0x100
+             *   (boot2 was present but not detected, e.g. CRC mismatch). */
+            uint32_t sp0;
+            memcpy(&sp0, &cpu.flash[0], 4);
+            uint32_t vector_table;
+            if (sp0 >= 0x20000000u && sp0 < 0x21000000u) {
+                vector_table = FLASH_BASE;          /* vector table at base */
+                c->vtor = FLASH_BASE;
+            } else {
+                vector_table = FLASH_BASE + 0x100;  /* vector table at +0x100 */
+            }
             uint32_t initial_sp = mem_read32(vector_table);
             uint32_t reset_vector = mem_read32(vector_table + 4);
 

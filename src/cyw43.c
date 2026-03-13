@@ -57,7 +57,8 @@ static void cyw43_update_irq(void) {
      * state rather than the stale PIO output direction. */
     gpio_set_direction(WL_HOST_WAKE, 0);  /* 0 = input */
     int val = rx_queue_count() > 0 ? 1 : 0;
-    fprintf(stderr, "[CYW43] update_irq: GPIO24=%d (q=%d)\n", val, rx_queue_count());
+    if (cpu.debug_enabled)
+        fprintf(stderr, "[CYW43] update_irq: GPIO24=%d (q=%d)\n", val, rx_queue_count());
     gpio_set_input_pin(WL_HOST_WAKE, val);
 }
 
@@ -291,8 +292,9 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
     const uint8_t *payload = buf + 28;  /* After SDPCM(12) + CDC(16) */
     int payload_len = len - 28;
 
-    fprintf(stderr, "[CYW43] IOCTL cmd=%d %s id=%d payload_len=%d\n",
-            cmd, is_set ? "SET" : "GET", ioctl_id, payload_len);
+    if (cpu.debug_enabled)
+        fprintf(stderr, "[CYW43] IOCTL cmd=%d %s id=%d payload_len=%d\n",
+                cmd, is_set ? "SET" : "GET", ioctl_id, payload_len);
 
     switch (cmd) {
     case WLC_GET_VAR: {
@@ -327,7 +329,8 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
             memcpy(cyw43.connected_ssid, payload + 4, ssid_len);
             cyw43.connected_ssid[ssid_len] = '\0';
 
-            fprintf(stderr, "[CYW43] JOIN SSID: '%s'\n", cyw43.connected_ssid);
+            if (cpu.debug_enabled)
+                fprintf(stderr, "[CYW43] JOIN SSID: '%s'\n", cyw43.connected_ssid);
         }
 
         /* Respond success */
@@ -376,6 +379,171 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
 }
 
 /* ========================================================================
+ * Fake DHCP Server (assigns 192.168.4.2 to firmware, no real network needed)
+ * ======================================================================== */
+
+/* Fixed IP addressing for the virtual WiFi network */
+static const uint8_t dhcp_client_ip[4]  = {192, 168,   4, 2};
+static const uint8_t dhcp_server_ip[4]  = {192, 168,   4, 1};
+static const uint8_t dhcp_subnet[4]     = {255, 255, 255, 0};
+static const uint8_t dhcp_lease_time[4] = {0, 0, 14, 16};  /* 3600 s */
+
+/* Build and queue a DHCP OFFER (msg_type=2) or ACK (msg_type=5) reply. */
+static void cyw43_send_dhcp_reply(const uint8_t *eth_req, int eth_len, uint8_t reply_type) {
+    if (eth_len < 14 + 20 + 8 + 240) return;
+
+    const uint8_t *ip_req  = eth_req + 14;
+    int ip_hlen = (ip_req[0] & 0x0F) * 4;
+    const uint8_t *dhcp    = ip_req + ip_hlen + 8;  /* skip IP+UDP */
+    int dhcp_len           = eth_len - 14 - ip_hlen - 8;
+    if (dhcp_len < 236) return;
+
+    uint32_t xid = ((uint32_t)dhcp[4] << 24) | ((uint32_t)dhcp[5] << 16) |
+                   ((uint32_t)dhcp[6] <<  8) |  (uint32_t)dhcp[7];
+    const uint8_t *chaddr  = dhcp + 28;  /* client MAC (first 6 bytes) */
+
+    uint8_t frame[512];
+    memset(frame, 0, sizeof(frame));
+    int off = 0;
+
+    /* Ethernet header: broadcast dst, server MAC src */
+    memset(frame + off, 0xFF, 6);               off += 6;
+    memcpy(frame + off, cyw43.mac_addr, 6);     off += 6;
+    frame[off++] = 0x08; frame[off++] = 0x00;   /* IPv4 */
+
+    /* IPv4 header */
+    int ip_off = off;
+    frame[off++] = 0x45;                        /* v4, IHL=5 */
+    frame[off++] = 0x00;                        /* DSCP/ECN */
+    int ip_len_off = off; off += 2;             /* total length (filled later) */
+    frame[off++] = 0x00; frame[off++] = 0x01;  /* ID */
+    frame[off++] = 0x00; frame[off++] = 0x00;  /* flags/frag */
+    frame[off++] = 0x80;                        /* TTL=128 */
+    frame[off++] = 0x11;                        /* proto=UDP */
+    int ip_csum_off = off; off += 2;            /* checksum (filled later) */
+    memcpy(frame + off, dhcp_server_ip, 4);     off += 4;  /* src = server */
+    frame[off++] = 255; frame[off++] = 255;
+    frame[off++] = 255; frame[off++] = 255;    /* dst = broadcast */
+
+    /* UDP header */
+    int udp_off = off;
+    frame[off++] = 0x00; frame[off++] = 67;    /* src port = 67 */
+    frame[off++] = 0x00; frame[off++] = 68;    /* dst port = 68 */
+    int udp_len_off = off; off += 2;            /* UDP length (filled later) */
+    frame[off++] = 0x00; frame[off++] = 0x00;  /* checksum = 0 */
+
+    /* DHCP message */
+    int dhcp_off = off;
+    frame[off++] = 0x02;                        /* op = BOOTREPLY */
+    frame[off++] = 0x01; frame[off++] = 0x06;  /* htype=1, hlen=6 */
+    frame[off++] = 0x00;                        /* hops */
+    frame[off++] = (xid >> 24) & 0xFF;
+    frame[off++] = (xid >> 16) & 0xFF;
+    frame[off++] = (xid >>  8) & 0xFF;
+    frame[off++] = (xid >>  0) & 0xFF;
+    frame[off++] = 0x00; frame[off++] = 0x00;  /* secs */
+    frame[off++] = 0x80; frame[off++] = 0x00;  /* flags: broadcast */
+    frame[off++] = 0x00; frame[off++] = 0x00;
+    frame[off++] = 0x00; frame[off++] = 0x00;  /* ciaddr = 0 */
+    memcpy(frame + off, dhcp_client_ip, 4);     off += 4;  /* yiaddr */
+    memcpy(frame + off, dhcp_server_ip, 4);     off += 4;  /* siaddr */
+    frame[off++] = 0x00; frame[off++] = 0x00;
+    frame[off++] = 0x00; frame[off++] = 0x00;  /* giaddr = 0 */
+    memcpy(frame + off, chaddr, 16);            off += 16; /* chaddr */
+    memset(frame + off, 0, 64);                 off += 64; /* sname */
+    memset(frame + off, 0, 128);                off += 128;/* file */
+    /* Magic cookie */
+    frame[off++] = 0x63; frame[off++] = 0x82;
+    frame[off++] = 0x53; frame[off++] = 0x63;
+    /* Options */
+    frame[off++] = 53; frame[off++] = 1; frame[off++] = reply_type;  /* msg type */
+    frame[off++] = 54; frame[off++] = 4;
+    memcpy(frame + off, dhcp_server_ip, 4);     off += 4;  /* server ID */
+    frame[off++] = 51; frame[off++] = 4;
+    memcpy(frame + off, dhcp_lease_time, 4);    off += 4;  /* lease time */
+    frame[off++] =  1; frame[off++] = 4;
+    memcpy(frame + off, dhcp_subnet, 4);        off += 4;  /* subnet mask */
+    frame[off++] =  3; frame[off++] = 4;
+    memcpy(frame + off, dhcp_server_ip, 4);     off += 4;  /* router */
+    frame[off++] =  6; frame[off++] = 4;
+    memcpy(frame + off, dhcp_server_ip, 4);     off += 4;  /* DNS */
+    frame[off++] = 255;                                    /* end */
+
+    /* Fill in lengths */
+    int ip_total  = off - ip_off;
+    int udp_total = off - udp_off;
+    frame[ip_len_off]     = (ip_total  >> 8) & 0xFF;
+    frame[ip_len_off + 1] =  ip_total        & 0xFF;
+    frame[udp_len_off]    = (udp_total >> 8) & 0xFF;
+    frame[udp_len_off + 1] = udp_total       & 0xFF;
+
+    /* IPv4 header checksum */
+    uint32_t csum = 0;
+    for (int i = 0; i < 20; i += 2)
+        csum += ((uint32_t)frame[ip_off + i] << 8) | frame[ip_off + i + 1];
+    while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
+    csum = ~csum & 0xFFFF;
+    frame[ip_csum_off]     = (csum >> 8) & 0xFF;
+    frame[ip_csum_off + 1] =  csum       & 0xFF;
+
+    (void)udp_off; (void)dhcp_off;
+
+    cyw43_queue_rx_data(frame, off);
+
+    if (cpu.debug_enabled)
+        fprintf(stderr, "[CYW43] DHCP %s → offer %d.%d.%d.%d\n",
+                reply_type == 2 ? "DISCOVER" : "REQUEST",
+                dhcp_client_ip[0], dhcp_client_ip[1],
+                dhcp_client_ip[2], dhcp_client_ip[3]);
+}
+
+/* Returns 1 if this was a DHCP packet that we handled, 0 otherwise. */
+static int cyw43_handle_dhcp(const uint8_t *eth_frame, int eth_len) {
+    if (eth_len < 14 + 20 + 8 + 240) return 0;
+    /* IPv4 only */
+    if (eth_frame[12] != 0x08 || eth_frame[13] != 0x00) return 0;
+
+    const uint8_t *ip = eth_frame + 14;
+    if ((ip[0] >> 4) != 4) return 0;
+    int ip_hlen = (ip[0] & 0x0F) * 4;
+    if (ip[9] != 17) return 0;          /* not UDP */
+
+    const uint8_t *udp = ip + ip_hlen;
+    uint16_t src_port  = ((uint16_t)udp[0] << 8) | udp[1];
+    uint16_t dst_port  = ((uint16_t)udp[2] << 8) | udp[3];
+    if (src_port != 68 || dst_port != 67) return 0;
+
+    const uint8_t *dhcp = udp + 8;
+    int dhcp_len = eth_len - 14 - ip_hlen - 8;
+    if (dhcp_len < 240) return 0;
+    /* Verify magic cookie */
+    if (dhcp[236] != 0x63 || dhcp[237] != 0x82 ||
+        dhcp[238] != 0x53 || dhcp[239] != 0x63) return 0;
+
+    /* Scan options for message type (opt 53) */
+    uint8_t msg_type = 0;
+    for (int i = 240; i < dhcp_len; ) {
+        uint8_t opt = dhcp[i++];
+        if (opt == 255) break;
+        if (opt == 0) continue;
+        if (i >= dhcp_len) break;
+        uint8_t olen = dhcp[i++];
+        if (opt == 53 && olen == 1 && i < dhcp_len)
+            msg_type = dhcp[i];
+        i += olen;
+    }
+
+    if (msg_type == 1) {        /* DISCOVER → OFFER */
+        cyw43_send_dhcp_reply(eth_frame, eth_len, 2);
+        return 1;
+    } else if (msg_type == 3) { /* REQUEST → ACK */
+        cyw43_send_dhcp_reply(eth_frame, eth_len, 5);
+        return 1;
+    }
+    return 0;
+}
+
+/* ========================================================================
  * WLAN TX Processing (firmware -> CYW43)
  * ======================================================================== */
 
@@ -400,8 +568,9 @@ static void cyw43_wlan_tx_complete(void) {
 
     uint8_t channel = sdpcm->channel_and_flags & 0x0F;
 
-    fprintf(stderr, "[CYW43] WLAN TX: size=%d channel=%d seq=%d\n",
-            sdpcm->size, channel, sdpcm->sequence);
+    if (cpu.debug_enabled)
+        fprintf(stderr, "[CYW43] WLAN TX: size=%d channel=%d seq=%d\n",
+                sdpcm->size, channel, sdpcm->sequence);
 
     switch (channel) {
     case SDPCM_CONTROL_CHANNEL:
@@ -409,18 +578,24 @@ static void cyw43_wlan_tx_complete(void) {
         break;
 
     case SDPCM_DATA_CHANNEL: {
-        /* Extract Ethernet frame: skip SDPCM(12) + pad(2) + BDC(4) = 18 bytes */
-        if (len > 18 && cyw43.tap_fd >= 0) {
+        /* Extract Ethernet frame: skip SDPCM(12) + pad(2) + BDC(4+extra) bytes */
+        if (len > 18) {
             int eth_offset = 18;
-            /* Check BDC data_offset for extra padding */
             bdc_header_t *bdc = (bdc_header_t *)(cyw43.wlan_tx_buf + 14);
             eth_offset += bdc->data_offset * 4;
 
             int eth_len = len - eth_offset;
             if (eth_len > 0) {
-                tapif_write(cyw43.tap_fd, cyw43.wlan_tx_buf + eth_offset, eth_len);
-                if (cpu.debug_enabled)
-                    fprintf(stderr, "[CYW43] TAP TX: %d bytes\n", eth_len);
+                const uint8_t *eth = cyw43.wlan_tx_buf + eth_offset;
+                /* Always try fake DHCP first (no real network needed) */
+                if (!cyw43_handle_dhcp(eth, eth_len)) {
+                    /* Not DHCP: forward to TAP interface if available */
+                    if (cyw43.tap_fd >= 0) {
+                        tapif_write(cyw43.tap_fd, eth, eth_len);
+                        if (cpu.debug_enabled)
+                            fprintf(stderr, "[CYW43] TAP TX: %d bytes\n", eth_len);
+                    }
+                }
             }
         }
         break;
@@ -537,7 +712,8 @@ static uint32_t cyw43_bus_read(uint32_t addr) {
         uint32_t val = cyw43.bus_int;
         if (rx_queue_count() > 0)
             val |= CYW43_BUS_INT_F2_PKT_AVAIL;  /* = 0x20 = F2_PACKET_AVAILABLE */
-        fprintf(stderr, "[CYW43] INT_REG read: 0x%02X (q=%d)\n", val, rx_queue_count());
+        if (cpu.debug_enabled)
+            fprintf(stderr, "[CYW43] INT_REG read: 0x%02X (q=%d)\n", val, rx_queue_count());
         return val;
     }
     case 0x08: /* SPI_STATUS_REGISTER - F2_RX_READY + packet info */
@@ -549,7 +725,8 @@ static uint32_t cyw43_bus_read(uint32_t addr) {
             val |= SPI_STATUS_F2_PKT_AVAILABLE;
             val |= ((uint32_t)(f->len & 0x7FF)) << SPI_STATUS_F2_PKT_LEN_SHIFT;
         }
-        fprintf(stderr, "[CYW43] STATUS_REG read: 0x%08X (q=%d)\n", val, rx_queue_count());
+        if (cpu.debug_enabled)
+            fprintf(stderr, "[CYW43] STATUS_REG read: 0x%08X (q=%d)\n", val, rx_queue_count());
         return val;
     }
     case 0x14: /* SPI_READ_TEST_REGISTER = FEEDBEAD */
@@ -907,8 +1084,9 @@ void cyw43_pio_tx_write(uint32_t val) {
                     pio_resp_count = total_words;
                     rx_queue_pop();
 
-                    fprintf(stderr, "[CYW43] WLAN RX: delivering %d byte frame (ch=%d seq=%d)\n",
-                            copy_len, f->data[4] & 0x0F, f->data[3]);
+                    if (cpu.debug_enabled)
+                        fprintf(stderr, "[CYW43] WLAN RX: delivering %d byte frame (ch=%d seq=%d)\n",
+                                copy_len, f->data[4] & 0x0F, f->data[3]);
                 } else {
                     /* No data - return empty SDPCM (size=0) */
                     pio_resp_count = total_words;

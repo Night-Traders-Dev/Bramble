@@ -173,6 +173,7 @@ int main(int argc, char **argv) {
             show_status = 1;
         } else if (strcmp(argv[i], "-stdin") == 0) {
             stdin_enabled = 1;
+            usb_cdc_stdout_enabled = 1;
         } else if (strcmp(argv[i], "-gdb") == 0) {
             gdb_enabled = 1;
             if (i + 1 < argc && argv[i + 1][0] != '-') {

@@ -142,14 +142,23 @@ uint32_t gpio_read32(uint32_t addr) {
         }
     }
 
-    /* Interrupt registers */
-    if (addr >= IO_BANK0_BASE + 0xF0 && addr < IO_BANK0_BASE + 0x180) {
-        uint32_t offset = (addr - (IO_BANK0_BASE + 0xF0)) / 4;
+    /* IO_BANK0 interrupt registers (all aliases read the underlying register) */
+    {
+        uint32_t base_addr = addr;
+        if (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200)
+            base_addr -= REG_ALIAS_CLR_BITS;
+        else if (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS && addr < IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200)
+            base_addr -= REG_ALIAS_SET_BITS;
+        else if (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200)
+            base_addr -= REG_ALIAS_XOR_BITS;
 
-        if (offset < 4) return gpio_state.intr[offset];
-        else if (offset >= 4 && offset < 8) return gpio_state.proc0_inte[offset - 4];
-        else if (offset >= 8 && offset < 12) return gpio_state.proc0_intf[offset - 8];
-        else if (offset >= 12 && offset < 16) return gpio_state.proc0_ints[offset - 12];
+        if (base_addr >= IO_BANK0_BASE + 0xF0 && base_addr < IO_BANK0_BASE + 0x180) {
+            uint32_t offset = (base_addr - (IO_BANK0_BASE + 0xF0)) / 4;
+            if (offset < 4)                  return gpio_state.intr[offset];
+            else if (offset < 8)             return gpio_state.proc0_inte[offset - 4];
+            else if (offset < 12)            return gpio_state.proc0_intf[offset - 8];
+            else if (offset < 16)            return gpio_state.proc0_ints[offset - 12];
+        }
     }
 
     /* PADS_BANK0 registers with alias support */
@@ -243,23 +252,52 @@ void gpio_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* Interrupt registers */
-    if (addr >= IO_BANK0_BASE + 0xF0 && addr < IO_BANK0_BASE + 0x180) {
-        uint32_t offset = (addr - (IO_BANK0_BASE + 0xF0)) / 4;
+    /* IO_BANK0 interrupt registers with atomic alias support.
+     * Aliases at IO_BANK0_BASE + 0x1000 (XOR), +0x2000 (SET), +0x3000 (CLR).
+     * Firmware uses hw_set_bits/hw_clear_bits (SET/CLR aliases) to enable/disable
+     * GPIO interrupts, so we must handle all four alias regions. */
+    {
+        uint32_t irq_alias = REG_ALIAS_RW_BITS;
+        uint32_t base_addr = addr;
+        if (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS &&
+            addr <  IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200) {
+            irq_alias = REG_ALIAS_CLR_BITS;
+            base_addr -= REG_ALIAS_CLR_BITS;
+        } else if (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS &&
+                   addr <  IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200) {
+            irq_alias = REG_ALIAS_SET_BITS;
+            base_addr -= REG_ALIAS_SET_BITS;
+        } else if (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS &&
+                   addr <  IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200) {
+            irq_alias = REG_ALIAS_XOR_BITS;
+            base_addr -= REG_ALIAS_XOR_BITS;
+        }
 
-        if (offset < 4) {
-            /* INTR - write 1 to clear */
-            gpio_state.intr[offset] &= ~val;
+        if (base_addr >= IO_BANK0_BASE + 0xF0 && base_addr < IO_BANK0_BASE + 0x180) {
+            uint32_t offset = (base_addr - (IO_BANK0_BASE + 0xF0)) / 4;
+            uint32_t *reg_ptr = NULL;
+
+            if (offset < 4) {
+                /* INTR - W1C regardless of alias */
+                gpio_state.intr[offset] &= ~val;
+            } else if (offset >= 4 && offset < 8) {
+                reg_ptr = &gpio_state.proc0_inte[offset - 4];
+            } else if (offset >= 8 && offset < 12) {
+                reg_ptr = &gpio_state.proc0_intf[offset - 8];
+            }
+            /* INTS is read-only */
+
+            if (reg_ptr) {
+                switch (irq_alias) {
+                case REG_ALIAS_SET_BITS: *reg_ptr |= val;  break;
+                case REG_ALIAS_CLR_BITS: *reg_ptr &= ~val; break;
+                case REG_ALIAS_XOR_BITS: *reg_ptr ^= val;  break;
+                default:                 *reg_ptr  = val;  break;
+                }
+            }
+            gpio_check_irq();
+            return;
         }
-        else if (offset >= 4 && offset < 8) {
-            gpio_state.proc0_inte[offset - 4] = val;
-        }
-        else if (offset >= 8 && offset < 12) {
-            gpio_state.proc0_intf[offset - 8] = val;
-        }
-        /* INTS is read-only */
-        gpio_check_irq();
-        return;
     }
 
     /* ===== CRITICAL FIX: PADS_BANK0 with Alias Support ===== */

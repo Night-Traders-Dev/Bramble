@@ -1074,8 +1074,12 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* GPIO registers - UPDATED to include all PADSBANK0 alias regions */
+    /* GPIO registers - IO_BANK0 base + atomic alias regions for interrupt registers.
+     * Aliases at +0x1000 (XOR), +0x2000 (SET), +0x3000 (CLR) used by hw_set_bits/hw_clear_bits. */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
+        (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200) ||
+        (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS && addr < IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200) ||
+        (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200) ||
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         gpio_write32(addr, val);
@@ -1487,6 +1491,9 @@ uint32_t mem_read32(uint32_t addr) {
 
     /* GPIO registers */
     if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
+        (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200) ||
+        (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS && addr < IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200) ||
+        (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200) ||
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         return gpio_read32(addr);

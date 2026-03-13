@@ -21,6 +21,7 @@ set(SOURCES
     src/main.c
     src/cpu.c
     src/instructions.c
+    src/thumb32.c
     src/membus.c
     src/uf2.c
     src/elf.c
@@ -77,6 +78,7 @@ enable_testing()
 set(LIB_SOURCES
     src/cpu.c
     src/instructions.c
+    src/thumb32.c
     src/membus.c
     src/uf2.c
     src/elf.c

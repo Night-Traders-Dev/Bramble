@@ -19,6 +19,7 @@
 #include "nvic.h"
 
 usb_state_t usb_state;
+int usb_cdc_stdout_enabled = 0;
 
 /* ========================================================================
  * DPRAM Helpers
@@ -384,7 +385,6 @@ static void usb_enum_step(void) {
  * ======================================================================== */
 
 static void usb_handle_cdc(void) {
-    static int cdc_trace_count = 0;
     if (usb_state.cdc_in_ep == 0) return;
 
     /* Check CDC bulk IN endpoint for data from device */
@@ -404,9 +404,13 @@ static void usb_handle_cdc(void) {
         buf_addr = ep_ctrl & 0xFFC0;  /* bits [15:6] */
 
         if (buf_addr > 0 && buf_addr + len <= USBCTRL_DPRAM_SIZE) {
-            /* Output CDC data to stdout */
-            fwrite(&usb_state.dpram[buf_addr], 1, len, stdout);
-            fflush(stdout);
+            /* Output CDC data to stdout only when USB CDC stdio is primary
+             * (i.e. -stdin mode). When UART stdio is also active, UART
+             * already handles stdout and we must not duplicate the data. */
+            if (usb_cdc_stdout_enabled) {
+                fwrite(&usb_state.dpram[buf_addr], 1, len, stdout);
+                fflush(stdout);
+            }
         }
 
         /* Complete the transfer */
