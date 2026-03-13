@@ -627,8 +627,15 @@ uint32_t pio_read32(int pio_num, uint32_t offset) {
         return fstat;
     }
 
-    case PIO_FDEBUG:
-        return p->fdebug;
+    case PIO_FDEBUG: {
+        uint32_t fdebug_val = p->fdebug;
+        /* Dynamically set TXSTALL for CYW43 SM when idle (no pending TX) */
+        if (cyw43.enabled && pio_num == cyw43.pio_num && cyw43.pio_sm >= 0) {
+            if (cyw43_pio_phase_is_idle())
+                fdebug_val |= (1u << (24 + cyw43.pio_sm));
+        }
+        return fdebug_val;
+    }
 
     case PIO_FLEVEL: {
         /* 4 bits per SM: [TX_level:RX_level], SM0 in lowest bits */
@@ -750,6 +757,9 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
                 s->clk_frac_acc = 0;
                 memset(&s->tx_fifo, 0, sizeof(pio_fifo_t));
                 memset(&s->rx_fifo, 0, sizeof(pio_fifo_t));
+                /* Notify CYW43 intercept of SM restart */
+                if (cyw43.enabled && pio_num == cyw43.pio_num && sm == cyw43.pio_sm)
+                    cyw43_pio_sm_restart();
             }
         }
 
@@ -837,12 +847,10 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
             break;
         case 0x14:
             s->pinctrl = val;
-            /* Auto-detect CYW43 PIO/SM: sideset_base == pin 24 (WL_CLK) */
+            /* Auto-detect CYW43 PIO/SM: sideset_base == pin 29 (WL_CLK on Pico W) */
             if (cyw43.enabled) {
                 uint8_t ss_base = (val >> 10) & 0x1F;
-                fprintf(stderr, "[PIO] PIO%d SM%d PINCTRL=0x%08X sideset_base=%d\n",
-                        pio_num, sm, val, ss_base);
-                if (ss_base == 24) {
+                if (ss_base == 29 && cyw43.pio_num < 0) {
                     cyw43.pio_num = pio_num;
                     cyw43.pio_sm = sm;
                     fprintf(stderr, "[CYW43] Auto-detected PIO%d SM%d for gSPI\n",

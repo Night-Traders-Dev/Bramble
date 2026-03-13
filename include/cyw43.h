@@ -289,6 +289,8 @@ void cyw43_add_scan_result(const char *ssid, int rssi, int channel, int auth);
 void cyw43_pio_tx_write(uint32_t val);
 uint32_t cyw43_pio_rx_read(void);
 int cyw43_pio_rx_ready(void);
+void cyw43_pio_sm_restart(void);
+int cyw43_pio_phase_is_idle(void);
 
 /* TAP bridge */
 int cyw43_tap_open(const char *name);

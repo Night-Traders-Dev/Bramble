@@ -63,14 +63,12 @@ static void dma_do_transfer(int ch_idx) {
     int data_size = (c->ctrl & DMA_CTRL_DATA_SIZE_MASK) >> DMA_CTRL_DATA_SIZE_SHIFT;
     int incr_read  = (c->ctrl & DMA_CTRL_INCR_READ)  ? 1 : 0;
     int incr_write = (c->ctrl & DMA_CTRL_INCR_WRITE) ? 1 : 0;
+    int bswap      = (c->ctrl & DMA_CTRL_BSWAP)      ? 1 : 0;
 
     uint32_t src = c->read_addr;
     uint32_t dst = c->write_addr;
     uint32_t step;
 
-    if (cpu.debug_enabled)
-        fprintf(stderr, "[DMA] ch%d: src=0x%08X dst=0x%08X count=%d size=%d incr_r=%d incr_w=%d\n",
-                ch_idx, src, dst, count, data_size, incr_read, incr_write);
 
     switch (data_size) {
     case DMA_SIZE_BYTE:     step = 1; break;
@@ -87,11 +85,14 @@ static void dma_do_transfer(int ch_idx) {
         }
         case DMA_SIZE_HALFWORD: {
             uint16_t val = mem_read16(src);
+            if (bswap) val = (uint16_t)((val >> 8) | (val << 8));
             mem_write16(dst, val);
             break;
         }
         default: {  /* WORD */
             uint32_t val = mem_read32(src);
+            if (bswap) val = ((val >> 24) & 0xFF) | ((val >> 8) & 0xFF00) |
+                             ((val << 8) & 0xFF0000) | ((val << 24) & 0xFF000000);
             mem_write32(dst, val);
             break;
         }

@@ -4,14 +4,33 @@
 #include "cyw43.h"
 #include "tapif.h"
 #include "emulator.h"
+#include "gpio.h"
 
 /* CYW43439 chip ID */
 #define CYW43439_CHIP_ID 0x00A9A6A7
 
 /* WiFi GPIO pin assignments (Pico W) */
-#define WL_CS   23
-#define WL_CLK  24
-#define WL_DIO  25
+#define WL_CS         23
+#define WL_CLK        24
+#define WL_DIO        25
+/* WL_HOST_WAKE = GPIO 24 (shared with CLK/DIO in different phases).
+ * Active HIGH: CYW43 asserts this to tell RP2040 that data is available.
+ * cyw43_ll.c checks gpio_get(24) != 0 before polling the interrupt register. */
+#define WL_HOST_WAKE  24
+
+/* Core wrapper full addresses (BASE + WRAPPER_REGISTER_OFFSET + register_offset) */
+/* WLAN ARM CM3: 0x18003000 + 0x100000 = 0x18103000 */
+#define CYW43_WLAN_RESETCTRL  0x18103800u  /* WLAN ARM + WRAPPER + AI_RESETCTRL (0x800) */
+#define CYW43_WLAN_IOCTRL     0x18103408u  /* WLAN ARM + WRAPPER + AI_IOCTRL (0x408) */
+/* SOCRAM: 0x18004000 + 0x100000 = 0x18104000 */
+#define CYW43_SOCRAM_RESETCTRL 0x18104800u
+#define CYW43_SOCRAM_IOCTRL    0x18104408u
+#define CYW43_AIRC_RESET       0x01u
+
+/* SPI_STATUS_REGISTER (0x0008) bits */
+#define SPI_STATUS_F2_RX_READY      0x00000020u
+#define SPI_STATUS_F2_PKT_AVAILABLE 0x00000100u
+#define SPI_STATUS_F2_PKT_LEN_SHIFT 9
 
 cyw43_state_t cyw43;
 
@@ -26,6 +45,14 @@ static int rx_queue_count(void) {
     return (cyw43.rx_head - cyw43.rx_tail + CYW43_RX_QUEUE_SIZE) % CYW43_RX_QUEUE_SIZE;
 }
 
+/* Drive WL_HOST_WAKE (GPIO 24) HIGH when data is queued, LOW when empty.
+ * cyw43_ll.c's sdpcm_poll_device checks gpio_get(WL_HOST_WAKE) == 1 before
+ * reading the SPI interrupt register, so we must assert this whenever there
+ * is a frame waiting in rx_queue. */
+static void cyw43_update_irq(void) {
+    gpio_set_input_pin(WL_HOST_WAKE, rx_queue_count() > 0 ? 1 : 0);
+}
+
 static int rx_queue_push(const uint8_t *data, int len) {
     if (rx_queue_count() >= CYW43_RX_QUEUE_SIZE - 1) return -1;
     if (len > CYW43_MAX_FRAME_SIZE) return -1;
@@ -34,6 +61,7 @@ static int rx_queue_push(const uint8_t *data, int len) {
     memcpy(f->data, data, len);
     f->len = len;
     cyw43.rx_head = (cyw43.rx_head + 1) % CYW43_RX_QUEUE_SIZE;
+    cyw43_update_irq();
     return 0;
 }
 
@@ -43,8 +71,10 @@ static cyw43_rx_frame_t *rx_queue_peek(void) {
 }
 
 static void rx_queue_pop(void) {
-    if (rx_queue_count() > 0)
+    if (rx_queue_count() > 0) {
         cyw43.rx_tail = (cyw43.rx_tail + 1) % CYW43_RX_QUEUE_SIZE;
+        cyw43_update_irq();
+    }
 }
 
 /* ========================================================================
@@ -237,9 +267,8 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
     const uint8_t *payload = buf + 28;  /* After SDPCM(12) + CDC(16) */
     int payload_len = len - 28;
 
-    if (cpu.debug_enabled)
-        fprintf(stderr, "[CYW43] IOCTL cmd=%d %s id=%d payload_len=%d\n",
-                cmd, is_set ? "SET" : "GET", ioctl_id, payload_len);
+    fprintf(stderr, "[CYW43] IOCTL cmd=%d %s id=%d payload_len=%d\n",
+            cmd, is_set ? "SET" : "GET", ioctl_id, payload_len);
 
     switch (cmd) {
     case WLC_GET_VAR: {
@@ -347,9 +376,8 @@ static void cyw43_wlan_tx_complete(void) {
 
     uint8_t channel = sdpcm->channel_and_flags & 0x0F;
 
-    if (cpu.debug_enabled)
-        fprintf(stderr, "[CYW43] WLAN TX: size=%d channel=%d seq=%d\n",
-                sdpcm->size, channel, sdpcm->sequence);
+    fprintf(stderr, "[CYW43] WLAN TX: size=%d channel=%d seq=%d\n",
+            sdpcm->size, channel, sdpcm->sequence);
 
     switch (channel) {
     case SDPCM_CONTROL_CHANNEL:
@@ -383,6 +411,16 @@ static void cyw43_wlan_tx_complete(void) {
     cyw43.wlan_tx_offset = 0;
 }
 
+/* Forward declarations for PIO gSPI state (defined in PIO section below) */
+static int pio_init_swap_remaining;
+static int pio_cmd_is_swap;
+
+/* Forward declarations for backplane core wrapper state */
+static uint8_t cyw43_wlan_resetctrl;
+static uint8_t cyw43_wlan_ioctrl;
+static uint8_t cyw43_socram_resetctrl;
+static uint8_t cyw43_socram_ioctrl;
+
 /* ========================================================================
  * Init / Reset
  * ======================================================================== */
@@ -414,6 +452,14 @@ void cyw43_reset(void) {
     cyw43.chipclkcsr = CYW43_HT_AVAIL | CYW43_ALP_AVAIL;
     cyw43.pio_num = -1;
     cyw43.pio_sm = -1;
+    pio_init_swap_remaining = 2;  /* First 2 commands use SWAP32 encoding */
+    pio_cmd_is_swap = 0;
+
+    /* Core wrappers start in reset (RESETCTRL=1 = AIRC_RESET) */
+    cyw43_wlan_resetctrl = CYW43_AIRC_RESET;
+    cyw43_wlan_ioctrl = 0;
+    cyw43_socram_resetctrl = CYW43_AIRC_RESET;
+    cyw43_socram_ioctrl = 0;
 }
 
 int cyw43_is_wifi_gpio(uint32_t gpio) {
@@ -460,27 +506,29 @@ void cyw43_tap_poll(void) {
 
 static uint32_t cyw43_bus_read(uint32_t addr) {
     switch (addr & 0xFF) {
-    case CYW43_REG_BUS_CTRL:
+    case 0x00: /* SPI_BUS_CONTROL */
         return cyw43.bus_ctrl;
-    case CYW43_REG_BUS_INTERRUPT: {
+    case 0x04: /* SPI_INTERRUPT_REGISTER - F2_PACKET_AVAILABLE=0x20 when queued */
+    {
         uint32_t val = cyw43.bus_int;
         if (rx_queue_count() > 0)
-            val |= CYW43_BUS_INT_F2_PKT_AVAIL;
+            val |= CYW43_BUS_INT_F2_PKT_AVAIL;  /* = 0x20 = F2_PACKET_AVAILABLE */
         return val;
     }
-    case CYW43_REG_BUS_INTMASK:
-        return cyw43.bus_intmask;
-    case CYW43_REG_BUS_STATUS: {
-        uint32_t val = cyw43.bus_status | 0x01;  /* Ready bit */
+    case 0x08: /* SPI_STATUS_REGISTER - F2_RX_READY + packet info */
+    {
+        /* F2 (WLAN) is always ready in our emulation */
+        uint32_t val = SPI_STATUS_F2_RX_READY;
         cyw43_rx_frame_t *f = rx_queue_peek();
-        if (f) {
-            val |= ((uint32_t)f->len & 0xFFFF) << 16;
+        if (f && f->len > 0) {
+            val |= SPI_STATUS_F2_PKT_AVAILABLE;
+            val |= ((uint32_t)(f->len & 0x7FF)) << SPI_STATUS_F2_PKT_LEN_SHIFT;
         }
         return val;
     }
-    case CYW43_REG_BUS_FEEDBEAD:
+    case 0x14: /* SPI_READ_TEST_REGISTER = FEEDBEAD */
         return 0xFEEDBEAD;
-    case CYW43_REG_BUS_TEST:
+    case 0x18:
         return cyw43.bus_test_reg;
     default:
         if (cpu.debug_enabled)
@@ -520,43 +568,74 @@ static void cyw43_bus_write(uint32_t addr, uint32_t val) {
  * ======================================================================== */
 
 static uint32_t cyw43_backplane_read(uint32_t addr) {
-    uint32_t full_addr = (cyw43.bp_window & 0xFFFF8000) | (addr & 0x7FFF);
-
-    /* Chip ID */
-    if ((full_addr & 0xFFF) == 0x000) {
-        return CYW43439_CHIP_ID;
-    }
-
-    /* CHIPCLKCSR - clock status */
-    if (full_addr == CYW43_BP_CHIPCLKCSR) {
+    /* CHIPCLKCSR - ALP/HT clock status (SDIO func1 direct register) */
+    if (addr == CYW43_BP_CHIPCLKCSR) {
         return cyw43.chipclkcsr;
     }
 
+    /* Window address register reads */
+    if (addr == 0x1000A) return (cyw43.bp_window >> 8) & 0xFF;
+    if (addr == 0x1000B) return (cyw43.bp_window >> 16) & 0xFF;
+    if (addr == 0x1000C) return (cyw43.bp_window >> 24) & 0xFF;
+
+    /* SDIO func1 direct registers (full 17-bit address, no windowing) */
+    if (addr == 0x1001F) {
+        /* SBSDIO_FUNC1_SLEEPCSR (KSO): always return KSO_SET | DEVICE_ON = 0x03 */
+        return 0x03;
+    }
+
+    /* Windowed backplane access: reconstruct full address from window + offset */
+    uint32_t full_addr = cyw43.bp_window | (addr & 0x7FFF);
+
+    /* Chip ID at CHIPCOMMON offset 0 */
+    if (full_addr == 0x18000000u)
+        return CYW43439_CHIP_ID;
+
+    /* Core wrapper registers (use full address comparison) */
+    if (full_addr == CYW43_WLAN_RESETCTRL)  return cyw43_wlan_resetctrl;
+    if (full_addr == CYW43_WLAN_IOCTRL)     return cyw43_wlan_ioctrl;
+    if (full_addr == CYW43_SOCRAM_RESETCTRL) return cyw43_socram_resetctrl;
+    if (full_addr == CYW43_SOCRAM_IOCTRL)    return cyw43_socram_ioctrl;
+
     if (cpu.debug_enabled)
-        fprintf(stderr, "[CYW43] Backplane read 0x%08X (win=0x%08X, off=0x%04X)\n",
-                full_addr, cyw43.bp_window, addr & 0x7FFF);
+        fprintf(stderr, "[CYW43] Backplane read addr=0x%05X (full=0x%08X) -> 0\n",
+                addr, full_addr);
     return 0;
 }
 
 static void cyw43_backplane_write(uint32_t addr, uint32_t val) {
-    /* Window address register */
-    if (addr == 0x1000A || addr == 0x0A) {
-        cyw43.bp_window = val;
-        if (cpu.debug_enabled)
-            fprintf(stderr, "[CYW43] Backplane window = 0x%08X\n", val);
+    /* Window address registers: 3 byte writes build the window */
+    if (addr == 0x1000A) { /* SDIO_BACKPLANE_ADDRESS_LOW: bits [15:8] */
+        cyw43.bp_window = (cyw43.bp_window & 0xFFFF00FFu) | ((val & 0xFF) << 8);
+        return;
+    }
+    if (addr == 0x1000B) { /* SDIO_BACKPLANE_ADDRESS_MID: bits [23:16] */
+        cyw43.bp_window = (cyw43.bp_window & 0xFF00FFFFu) | ((val & 0xFF) << 16);
+        return;
+    }
+    if (addr == 0x1000C) { /* SDIO_BACKPLANE_ADDRESS_HIGH: bits [31:24] */
+        cyw43.bp_window = (cyw43.bp_window & 0x00FFFFFFu) | ((val & 0xFF) << 24);
         return;
     }
 
-    uint32_t full_addr = (cyw43.bp_window & 0xFFFF8000) | (addr & 0x7FFF);
-
-    /* CHIPCLKCSR write */
-    if (full_addr == CYW43_BP_CHIPCLKCSR) {
+    /* CHIPCLKCSR write (SDIO func1 direct register) */
+    if (addr == CYW43_BP_CHIPCLKCSR) {
         cyw43.chipclkcsr = val | CYW43_HT_AVAIL | CYW43_ALP_AVAIL;
         return;
     }
 
+    /* Windowed backplane access: reconstruct full address */
+    uint32_t full_addr = cyw43.bp_window | (addr & 0x7FFF);
+
+    /* Core wrapper registers (use full address comparison) */
+    if (full_addr == CYW43_WLAN_RESETCTRL)  { cyw43_wlan_resetctrl = val & 0xFF; return; }
+    if (full_addr == CYW43_WLAN_IOCTRL)     { cyw43_wlan_ioctrl = val & 0xFF; return; }
+    if (full_addr == CYW43_SOCRAM_RESETCTRL) { cyw43_socram_resetctrl = val & 0xFF; return; }
+    if (full_addr == CYW43_SOCRAM_IOCTRL)    { cyw43_socram_ioctrl = val & 0xFF; return; }
+
     if (cpu.debug_enabled)
-        fprintf(stderr, "[CYW43] Backplane write 0x%04X = 0x%08X\n", addr, val);
+        fprintf(stderr, "[CYW43] Backplane write addr=0x%05X (full=0x%08X) = 0x%08X\n",
+                addr, full_addr, val);
 }
 
 /* ========================================================================
@@ -673,20 +752,76 @@ static uint32_t pio_resp_buf[512];
 static int pio_resp_count;
 static int pio_resp_idx;
 
+/* Count of pre-DMA pio_sm_put writes to skip (bit count words, not gSPI data) */
+static int pio_pre_dma_skip = 0;
+
+/* Number of remaining commands that use SWAP32 encoding (first 2 at boot) */
+static int pio_init_swap_remaining = 0;
+
+/* Whether the current command uses SWAP32 encoding */
+static int pio_cmd_is_swap = 0;
+
+/* Reverse bytes within each 16-bit halfword (ARM REV16 / SWAP32) */
+static inline uint32_t cyw43_rev16(uint32_t x) {
+    return ((x & 0xFF00FF00u) >> 8) | ((x & 0x00FF00FFu) << 8);
+}
+
+/* Reverse all 4 bytes of a 32-bit word */
+static inline uint32_t cyw43_bswap32(uint32_t x) {
+    return ((x >> 24) & 0xFF) | ((x >> 8) & 0xFF00) |
+           ((x << 8) & 0xFF0000) | ((x << 24) & 0xFF000000);
+}
+
+/* Decode a TXF word to the original make_cmd() value */
+static inline uint32_t cyw43_decode_txf(uint32_t val, int is_swap) {
+    /* Regular: TXF = bswap32(cmd)  → cmd = bswap32(TXF)
+     * Swap:    TXF = bswap32(rev16(cmd)) → cmd = rev16(bswap32(TXF)) */
+    uint32_t b = cyw43_bswap32(val);
+    return is_swap ? cyw43_rev16(b) : b;
+}
+
+/* Encode a response value for pio_resp_buf so firmware sees 'expected' after DMA bswap */
+static inline uint32_t cyw43_encode_resp(uint32_t expected, int is_swap) {
+    /* Regular: firmware reads bswap32(X) as uint32_t → X = bswap32(expected)
+     * Swap:    firmware reads SWAP32(bswap32(X))    → X = bswap32(rev16(expected)) */
+    return is_swap ? cyw43_bswap32(cyw43_rev16(expected)) : cyw43_bswap32(expected);
+}
+
+/* Called when CYW43 PIO SM is restarted (before each transfer setup) */
+void cyw43_pio_sm_restart(void) {
+    pio_pre_dma_skip = 2;  /* SDK always does 2 pio_sm_put (X, Y) before DMA */
+    pio_cyw43_phase = PIO_CYW43_IDLE;
+}
+
 void cyw43_pio_tx_write(uint32_t val) {
     if (!cyw43.enabled) return;
 
+    /* Skip the pre-DMA bit-count words (from pio_sm_put for X/Y registers) */
+    if (pio_pre_dma_skip > 0) {
+        pio_pre_dma_skip--;
+        return;
+    }
+
     switch (pio_cyw43_phase) {
     case PIO_CYW43_IDLE: {
-        int is_write  = (val >> 31) & 1;
-        pio_cmd_function = (val >> 28) & 0x7;
-        pio_cmd_address  = (val >> 17) & 0x7FF;
-        pio_cmd_size     = val & 0x1FFFF;
+        /* Determine encoding: first 2 commands at boot use SWAP32 (rev16+bswap),
+         * all subsequent commands use plain bswap32. */
+        pio_cmd_is_swap = (pio_init_swap_remaining > 0);
+        if (pio_cmd_is_swap)
+            pio_init_swap_remaining--;
+
+        uint32_t cmd = cyw43_decode_txf(val, pio_cmd_is_swap);
+
+        int is_write     = (cmd >> 31) & 1;
+        pio_cmd_function = (cmd >> 28) & 0x3;   /* 2-bit function field */
+        pio_cmd_address  = (cmd >> 11) & 0x1FFFF;
+        pio_cmd_size     = cmd & 0x7FF;          /* 11-bit size field */
 
         if (cpu.debug_enabled)
-            fprintf(stderr, "[CYW43] PIO gSPI: %s func=%d addr=0x%03X size=%d\n",
+            fprintf(stderr, "[CYW43] PIO gSPI: %s func=%d addr=0x%05X size=%d%s (raw=0x%08X)\n",
                     is_write ? "WR" : "RD", pio_cmd_function,
-                    pio_cmd_address, pio_cmd_size);
+                    pio_cmd_address, pio_cmd_size,
+                    pio_cmd_is_swap ? " (swap)" : "", val);
 
         if (is_write) {
             pio_cyw43_phase = PIO_CYW43_WRITE;
@@ -710,27 +845,39 @@ void cyw43_pio_tx_write(uint32_t val) {
             switch (pio_cmd_function) {
             case CYW43_FUNC_BUS: {
                 uint32_t resp = cyw43_bus_read(pio_cmd_address);
-                pio_resp_buf[0] = resp;
+                pio_resp_buf[0] = cyw43_encode_resp(resp, pio_cmd_is_swap);
                 pio_resp_count = total_words;
                 break;
             }
             case CYW43_FUNC_BACKPLANE: {
+                /* Backplane reads have CYW43_BACKPLANE_READ_PAD_LEN_BYTES=16 of padding
+                 * (for CYW43_USE_SPI). The firmware DMA reads (4 + pad + data) bytes,
+                 * returning (rx_length/4 - tx_length/4) = (24/4 - 1) = 5 words from RXF.
+                 * The actual response goes at index pad_words = 4. */
+                int pad_words = 4; /* CYW43_BACKPLANE_READ_PAD_LEN_BYTES / 4 = 16/4 = 4 */
+                int total_words_bp = total_words + pad_words;
+                if (total_words_bp > 512) total_words_bp = 512;
+                memset(pio_resp_buf, 0, total_words_bp * 4);
                 uint32_t resp = cyw43_backplane_read(pio_cmd_address);
-                pio_resp_buf[0] = resp;
-                pio_resp_count = total_words;
+                pio_resp_buf[pad_words] = cyw43_encode_resp(resp, pio_cmd_is_swap);
+                pio_resp_count = total_words_bp;
                 break;
             }
             case CYW43_FUNC_WLAN: {
-                /* Return queued RX frame */
+                /* Return queued RX frame.
+                 * Each word in pio_resp_buf must be bswap32 of the LE frame word,
+                 * because DMA bswap will reverse it back for the firmware. */
                 cyw43_rx_frame_t *f = rx_queue_peek();
                 if (f && f->len > 0) {
                     int copy_len = f->len;
                     if (copy_len > (int)pio_cmd_size) copy_len = (int)pio_cmd_size;
-                    /* Copy frame bytes into response word buffer (LE) */
                     int words = (copy_len + 3) / 4;
                     if (words > 512) words = 512;
                     memset(pio_resp_buf, 0, words * 4);
+                    /* Copy bytes then bswap32 each word so firmware gets correct byte order */
                     memcpy(pio_resp_buf, f->data, copy_len);
+                    for (int j = 0; j < words; j++)
+                        pio_resp_buf[j] = cyw43_bswap32(pio_resp_buf[j]);
                     pio_resp_count = total_words;
                     rx_queue_pop();
 
@@ -751,15 +898,18 @@ void cyw43_pio_tx_write(uint32_t val) {
     }
 
     case PIO_CYW43_WRITE: {
+        /* Decode data word: same transform as the command word */
+        uint32_t decoded = cyw43_decode_txf(val, pio_cmd_is_swap);
         switch (pio_cmd_function) {
         case CYW43_FUNC_BUS:
-            cyw43_bus_write(pio_cmd_address, val);
+            cyw43_bus_write(pio_cmd_address, decoded);
             break;
         case CYW43_FUNC_BACKPLANE:
-            cyw43_backplane_write(pio_cmd_address, val);
+            cyw43_backplane_write(pio_cmd_address, decoded);
             break;
         case CYW43_FUNC_WLAN:
-            cyw43_wlan_tx_word(val);
+            /* decoded = bswap32(TXF) = LE word with correct frame bytes */
+            cyw43_wlan_tx_word(decoded);
             break;
         }
         pio_cmd_address += 4;
@@ -795,4 +945,8 @@ uint32_t cyw43_pio_rx_read(void) {
 
 int cyw43_pio_rx_ready(void) {
     return (pio_cyw43_phase == PIO_CYW43_READ && pio_resp_idx < pio_resp_count);
+}
+
+int cyw43_pio_phase_is_idle(void) {
+    return (pio_cyw43_phase == PIO_CYW43_IDLE);
 }

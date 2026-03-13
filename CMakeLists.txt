@@ -56,6 +56,10 @@ set(SOURCES
 # Executable
 add_executable(bramble ${SOURCES})
 target_link_libraries(bramble m pthread)  # math + pthreads
+add_custom_command(TARGET bramble POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:bramble> ${CMAKE_SOURCE_DIR}/bramble
+    COMMENT "Copying bramble to project root"
+)
 
 # FUSE support
 if(ENABLE_FUSE)
