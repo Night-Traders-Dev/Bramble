@@ -1,10 +1,11 @@
-# Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
+# Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.36.0
+## Current State: v0.37.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
-| Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
+| RP2040 CPU | 65+ Thumb-1 | Full ARMv6-M instruction set + O(1) dispatch + JIT |
+| RP2350 RV | RV32IMC | Hazard3: 80+ instructions (I+M+C), CSRs, traps, dual hart (A extension pending) |
 | Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + ROM (16KB) + all APB/AHB peripherals + SIO + NVIC/SCB + atomic aliases |
 | Peripherals | 100% | All 30 RP2040 peripherals emulated including VREG/BOD/CHIP_RESET, SYSCFG, TBMAN |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
@@ -18,10 +19,15 @@
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
 
-### Recent Changes (v0.36.0)
+### Recent Changes (v0.37.0)
 
-- **TAP auto-configuration**: Creates TAP, assigns 192.168.4.1/24, brings UP, enables IP forwarding, sets up NAT masquerade via iptables/nft. Cleans up on exit.
-- **FAT auto-scan**: `-mount` scans `cpu.flash[]` (UF2 + persisted data) for FAT BPB signatures. Auto-detects CircuitPython's FAT12 at 0x181000.
+- **RP2350 RISC-V Hazard3 engine**: RV32I (37 instructions) + M extension (8 instructions) with CSRs, trap handling, dual hart. Multi-architecture directory structure (`src/rp2350_rv/`).
+- **Complete ARMv6-M exception model**: Tail-chaining, late-arriving interrupts, FAULTMASK register.
+- **VREG_AND_CHIP_RESET full registers**: Replaces stub with VREG/BOD/CHIP_RESET.
+
+### Previous (v0.36.0)
+
+- TAP auto-configuration, FAT auto-scan, FAT12 support, build.sh rewrite.
 - **FAT12 support**: 12-bit packed entries, EOC 0xFF8. CircuitPython creates FAT12 (~980 clusters).
 - **Flash 0xFF init**: `cpu.flash[]` starts erased matching real hardware.
 - **Zero compiler warnings**: All `-Wall -Wextra -pedantic` warnings resolved.

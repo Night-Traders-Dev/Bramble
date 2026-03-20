@@ -1,16 +1,17 @@
-# Bramble RP2040 Emulator
+# Bramble RP2040/RP2350 Emulator
 
-A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
+A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.36.0
+## Current Status: v0.37.0
 
-276 tests passing (zero warnings). Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support with auto-configured TAP bridge + NAT, USB CDC REPL, flash write-through persistence with live FUSE mount (FAT12/16 auto-scan), SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation, ARM semihosting, code coverage, hotspot profiling, cycle profiling, call graphs, GPIO VCD traces, IRQ latency analysis, scripted I/O, golden file testing, and full CI integration.
+276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Phase 2 — RV32I + M extension engine with CSRs and trap handling. Full peripheral sharing via unified memory bus.
 
 ### Coverage
 
 | Area | Status | Details |
 |------|--------|---------|
-| CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
+| RP2040 CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
+| RP2350 RV | RV32IMC | Hazard3: 80+ instructions (I+M+C), CSRs, trap handling, dual hart (A extension pending) |
 | Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool, Core 1 auto-launch |
 | Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) + all 28 APB + 5 AHB peripherals + SIO + NVIC/SCB + atomic aliases |
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |

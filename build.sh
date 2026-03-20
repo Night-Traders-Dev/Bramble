@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bramble RP2040 Emulator - Build Script
+# Bramble RP2040/RP2350 Emulator - Build Script
 #
 # Usage:
 #   ./build.sh              Build with auto-detected features
@@ -8,6 +8,11 @@
 #   ./build.sh --release    Release build (optimized, no debug symbols)
 #   ./build.sh --debug      Debug build (symbols, no optimization)
 #   ./build.sh --help       Show this help
+#
+# Architecture support:
+#   RP2040    - ARM Cortex-M0+ (Thumb-1)     [complete]
+#   RP2350_RV - RISC-V Hazard3 (RV32IMAC)    [in progress]
+#   RP2350_ARM - ARM Cortex-M33 (ARMv8-M)    [planned]
 
 set -e
 
@@ -25,7 +30,7 @@ for arg in "$@"; do
         --release)  BUILD_TYPE="Release" ;;
         --debug)    BUILD_TYPE="Debug" ;;
         --help|-h)
-            echo "Bramble RP2040 Emulator - Build Script"
+            echo "Bramble RP2040/RP2350 Emulator - Build Script"
             echo ""
             echo "Usage: ./build.sh [options]"
             echo ""
@@ -38,6 +43,11 @@ for arg in "$@"; do
             echo ""
             echo "Auto-detection:"
             echo "  FUSE: enabled if libfuse3 is found (pkg-config fuse3)"
+            echo ""
+            echo "Architecture targets (all built together):"
+            echo "  src/rp2040/       ARM Cortex-M0+ (RP2040)"
+            echo "  src/rp2350_rv/    RISC-V Hazard3 (RP2350)"
+            echo "  src/rp2350_arm/   ARM Cortex-M33 (RP2350, planned)"
             echo ""
             echo "Build output:"
             echo "  ./bramble          Main emulator binary"
@@ -52,9 +62,9 @@ for arg in "$@"; do
     esac
 done
 
-echo "╔════════════════════════════════════════╗"
-echo "║   Bramble RP2040 Emulator - Build     ║"
-echo "╚════════════════════════════════════════╝"
+echo "╔════════════════════════════════════════════╗"
+echo "║   Bramble RP2040/RP2350 Emulator - Build ║"
+echo "╚════════════════════════════════════════════╝"
 echo ""
 
 # Clean if requested

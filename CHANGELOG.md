@@ -1,4 +1,32 @@
-# Bramble RP2040 Emulator - Changelog
+# Bramble RP2040/RP2350 Emulator - Changelog
+
+## [0.37.0] - 2026-03-20
+
+### Added - RP2350 RISC-V Hazard3 Support (Phase 1+2), Complete Exception Model
+
+- **RISC-V Hazard3 CPU engine** (`src/rp2350_rv/rv_cpu.c`): Full RV32I base integer instruction set (37 instructions) plus M extension (multiply/divide). Separate architecture directory with clean ISA abstraction.
+- **RV32I instructions**: LUI, AUIPC, JAL, JALR, BEQ/BNE/BLT/BGE/BLTU/BGEU, LB/LH/LW/LBU/LHU, SB/SH/SW, ADDI/SLTI/SLTIU/XORI/ORI/ANDI/SLLI/SRLI/SRAI, ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND, FENCE, ECALL, EBREAK.
+- **RV32M extension**: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU with correct edge cases (div-by-zero returns 0xFFFFFFFF, INT_MIN/-1 wraps).
+- **RV32C compressed extension**: Full 16-bit compressed instruction set — C.LW, C.SW, C.LWSP, C.SWSP, C.ADDI, C.LI, C.LUI, C.ADDI16SP, C.SRLI, C.SRAI, C.ANDI, C.SUB, C.XOR, C.OR, C.AND, C.J, C.JAL, C.JR, C.JALR, C.BEQZ, C.BNEZ, C.SLLI, C.MV, C.ADD, C.ADDI4SPN, C.EBREAK, C.NOP. All three quadrants (Q0/Q1/Q2) decoded.
+- **RISC-V CSR support**: CSRRW/CSRRS/CSRRC + immediate variants. Tracks mstatus, misa, mie, mip, mtvec, mepc, mcause, mtval, mscratch, mhartid, mcycle, minstret.
+- **RISC-V trap handling**: Direct + vectored mtvec modes, MIE/MPIE/MPP save/restore, MRET instruction, alignment fault traps.
+- **Exception tail-chaining**: On exception return, checks for pending higher-priority exceptions and skips unstack/restack (ARMv6-M optimization).
+- **Late-arriving interrupts**: During exception stacking, detects higher-priority pending IRQ and switches handler without re-stacking.
+- **FAULTMASK register**: MSR/MRS support for SYSm=0x13, blocks all exceptions except NMI, auto-clears on exception return. Context-switched across cores.
+- **VREG_AND_CHIP_RESET full implementation**: Replaces stub with real register set (VREG EN/VSEL/ROK, BOD EN/VSEL, CHIP_RESET had_por/had_run/had_psm W1C flags).
+- **Multi-architecture directory structure**: `src/rp2040/`, `src/rp2350_rv/`, `src/rp2350_arm/` (placeholder).
+
+### Files Added
+
+- `include/rp2350_rv/rv_cpu.h` — RISC-V CPU state, CSR definitions, instruction decode helpers
+- `src/rp2350_rv/rv_cpu.c` — RV32I+M fetch/decode/execute engine, CSR access, trap handling
+- `include/rp2350_arm/m33_cpu.h` — Cortex-M33 placeholder
+
+### Tests
+
+- 276 tests passing, zero warnings. RP2040 tests unaffected by new RV code.
+
+---
 
 ## [0.36.0] - 2026-03-20
 

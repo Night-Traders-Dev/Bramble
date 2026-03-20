@@ -195,11 +195,270 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
 
     int is_compressed = ((lo & 3) != 3);
     if (is_compressed) {
-        /* C extension: 16-bit instruction (Phase 3 — stub for now) */
+        /* ============================================================
+         * RV32C Compressed Instructions (16-bit)
+         *
+         * Quadrant 0: bits[1:0] = 00
+         * Quadrant 1: bits[1:0] = 01
+         * Quadrant 2: bits[1:0] = 10
+         * ============================================================ */
+        uint16_t ci = lo;
+        uint32_t quad = ci & 3;
+        uint32_t funct3c = (ci >> 13) & 7;
+
         if (cpu->debug_enabled)
-            fprintf(stderr, "[RV-CORE%d] Compressed instruction at 0x%08X: 0x%04X (not yet implemented)\n",
-                    cpu->hart_id, pc, lo);
-        rv_trap_enter(cpu, MCAUSE_ILLEGAL_INSTR, lo);
+            fprintf(stderr, "[RV-CORE%d] PC=0x%08X C-instr=0x%04X quad=%u f3=%u\n",
+                    cpu->hart_id, pc, ci, quad, funct3c);
+
+        /* Compressed register mapping: r' = x(8 + r') for 3-bit reg fields */
+        #define CRD_P(ci)   (8 + (((ci) >> 2) & 7))
+        #define CRS2_P(ci)  (8 + (((ci) >> 2) & 7))
+        #define CRS1_P(ci)  (8 + (((ci) >> 7) & 7))
+
+        /* Full 5-bit register fields */
+        #define CRD(ci)     (((ci) >> 7) & 0x1F)
+        #define CRS2(ci)    (((ci) >> 2) & 0x1F)
+
+        switch (quad) {
+        case 0: /* Quadrant 0 */
+            switch (funct3c) {
+            case 0: { /* C.ADDI4SPN: addi rd', x2, nzuimm */
+                uint32_t nzuimm = ((ci >> 1) & 0x3C0) | ((ci >> 7) & 0x30)
+                                | ((ci >> 2) & 0x8) | ((ci >> 4) & 0x4);
+                if (nzuimm == 0) goto c_illegal;
+                rv_write_rd(cpu, CRD_P(ci), cpu->x[2] + nzuimm);
+                break;
+            }
+            case 2: { /* C.LW: lw rd', offset(rs1') */
+                uint32_t off = ((ci >> 7) & 0x38) | ((ci >> 4) & 0x4) | ((ci << 1) & 0x40);
+                uint32_t addr = cpu->x[CRS1_P(ci)] + off;
+                if (addr & 3) { rv_trap_enter(cpu, MCAUSE_LOAD_MISALIGNED, addr); return 0; }
+                rv_write_rd(cpu, CRD_P(ci), mem_read32(addr));
+                break;
+            }
+            case 6: { /* C.SW: sw rs2', offset(rs1') */
+                uint32_t off = ((ci >> 7) & 0x38) | ((ci >> 4) & 0x4) | ((ci << 1) & 0x40);
+                uint32_t addr = cpu->x[CRS1_P(ci)] + off;
+                if (addr & 3) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
+                mem_write32(addr, cpu->x[CRD_P(ci)]);
+                break;
+            }
+            default: goto c_illegal;
+            }
+            break;
+
+        case 1: /* Quadrant 1 */
+            switch (funct3c) {
+            case 0: { /* C.ADDI / C.NOP */
+                uint32_t rd = CRD(ci);
+                int32_t imm = (int32_t)(((ci >> 7) & 0x20) | ((ci >> 2) & 0x1F));
+                if (imm & 0x20) imm |= (int32_t)0xFFFFFFC0; /* sign-extend 6-bit */
+                if (rd != 0) cpu->x[rd] = cpu->x[rd] + (uint32_t)imm;
+                break;
+            }
+            case 1: { /* C.JAL (RV32 only): jal x1, offset */
+                int32_t off = (int32_t)(
+                    ((ci >> 1) & 0x800) | ((ci >> 7) & 0x10) | ((ci >> 1) & 0x300)
+                    | ((ci << 2) & 0x400) | ((ci >> 1) & 0x40) | ((ci << 1) & 0x80)
+                    | ((ci >> 2) & 0xE) | ((ci << 3) & 0x20));
+                if (off & 0x800) off |= (int32_t)0xFFFFF000;
+                cpu->x[1] = pc + 2;
+                cpu->pc = pc + (uint32_t)off;
+                cpu->x[0] = 0;
+                cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                return 0;
+            }
+            case 2: { /* C.LI: addi rd, x0, imm */
+                uint32_t rd = CRD(ci);
+                int32_t imm = (int32_t)(((ci >> 7) & 0x20) | ((ci >> 2) & 0x1F));
+                if (imm & 0x20) imm |= (int32_t)0xFFFFFFC0;
+                rv_write_rd(cpu, rd, (uint32_t)imm);
+                break;
+            }
+            case 3: { /* C.ADDI16SP / C.LUI */
+                uint32_t rd = CRD(ci);
+                if (rd == 2) {
+                    /* C.ADDI16SP: addi x2, x2, nzimm*16 */
+                    int32_t imm = (int32_t)(
+                        ((ci >> 3) & 0x200) | ((ci >> 2) & 0x10)
+                        | ((ci << 1) & 0x40) | ((ci << 4) & 0x180)
+                        | ((ci << 3) & 0x20));
+                    if (imm & 0x200) imm |= (int32_t)0xFFFFFC00;
+                    if (imm == 0) goto c_illegal;
+                    cpu->x[2] = cpu->x[2] + (uint32_t)imm;
+                } else if (rd != 0) {
+                    /* C.LUI: lui rd, nzimm */
+                    int32_t imm = (int32_t)(((ci >> 7) & 0x20) | ((ci >> 2) & 0x1F));
+                    if (imm & 0x20) imm |= (int32_t)0xFFFFFFC0;
+                    if (imm == 0) goto c_illegal;
+                    rv_write_rd(cpu, rd, (uint32_t)(imm << 12));
+                }
+                break;
+            }
+            case 4: { /* Misc ALU: C.SRLI, C.SRAI, C.ANDI, C.SUB, C.XOR, C.OR, C.AND */
+                uint32_t funct2 = (ci >> 10) & 3;
+                uint32_t rd = CRS1_P(ci);
+                uint32_t shamt = ((ci >> 7) & 0x20) | ((ci >> 2) & 0x1F);
+                switch (funct2) {
+                case 0: /* C.SRLI */
+                    cpu->x[rd] = cpu->x[rd] >> (shamt & 0x1F);
+                    break;
+                case 1: /* C.SRAI */
+                    cpu->x[rd] = (uint32_t)((int32_t)cpu->x[rd] >> (shamt & 0x1F));
+                    break;
+                case 2: { /* C.ANDI */
+                    int32_t imm = (int32_t)(((ci >> 7) & 0x20) | ((ci >> 2) & 0x1F));
+                    if (imm & 0x20) imm |= (int32_t)0xFFFFFFC0;
+                    cpu->x[rd] = cpu->x[rd] & (uint32_t)imm;
+                    break;
+                }
+                case 3: { /* C.SUB/XOR/OR/AND */
+                    uint32_t rs2 = CRD_P(ci);
+                    uint32_t funct1 = (ci >> 12) & 1;
+                    uint32_t funct2b = (ci >> 5) & 3;
+                    if (funct1 == 0) {
+                        switch (funct2b) {
+                        case 0: cpu->x[rd] = cpu->x[rd] - cpu->x[rs2]; break; /* C.SUB */
+                        case 1: cpu->x[rd] = cpu->x[rd] ^ cpu->x[rs2]; break; /* C.XOR */
+                        case 2: cpu->x[rd] = cpu->x[rd] | cpu->x[rs2]; break; /* C.OR */
+                        case 3: cpu->x[rd] = cpu->x[rd] & cpu->x[rs2]; break; /* C.AND */
+                        }
+                    } else {
+                        goto c_illegal;
+                    }
+                    break;
+                }
+                }
+                break;
+            }
+            case 5: { /* C.J: jal x0, offset */
+                int32_t off = (int32_t)(
+                    ((ci >> 1) & 0x800) | ((ci >> 7) & 0x10) | ((ci >> 1) & 0x300)
+                    | ((ci << 2) & 0x400) | ((ci >> 1) & 0x40) | ((ci << 1) & 0x80)
+                    | ((ci >> 2) & 0xE) | ((ci << 3) & 0x20));
+                if (off & 0x800) off |= (int32_t)0xFFFFF000;
+                cpu->pc = pc + (uint32_t)off;
+                cpu->x[0] = 0;
+                cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                return 0;
+            }
+            case 6: { /* C.BEQZ: beq rs1', x0, offset */
+                int32_t off = (int32_t)(
+                    ((ci >> 4) & 0x100) | ((ci >> 7) & 0x18)
+                    | ((ci << 1) & 0x0C0) | ((ci >> 2) & 0x6)
+                    | ((ci << 3) & 0x20));
+                if (off & 0x100) off |= (int32_t)0xFFFFFE00;
+                if (cpu->x[CRS1_P(ci)] == 0) {
+                    cpu->pc = pc + (uint32_t)off;
+                    cpu->x[0] = 0;
+                    cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                    return 0;
+                }
+                break;
+            }
+            case 7: { /* C.BNEZ: bne rs1', x0, offset */
+                int32_t off = (int32_t)(
+                    ((ci >> 4) & 0x100) | ((ci >> 7) & 0x18)
+                    | ((ci << 1) & 0x0C0) | ((ci >> 2) & 0x6)
+                    | ((ci << 3) & 0x20));
+                if (off & 0x100) off |= (int32_t)0xFFFFFE00;
+                if (cpu->x[CRS1_P(ci)] != 0) {
+                    cpu->pc = pc + (uint32_t)off;
+                    cpu->x[0] = 0;
+                    cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                    return 0;
+                }
+                break;
+            }
+            default: goto c_illegal;
+            }
+            break;
+
+        case 2: /* Quadrant 2 */
+            switch (funct3c) {
+            case 0: { /* C.SLLI */
+                uint32_t rd = CRD(ci);
+                uint32_t shamt = ((ci >> 7) & 0x20) | ((ci >> 2) & 0x1F);
+                if (rd != 0) cpu->x[rd] = cpu->x[rd] << (shamt & 0x1F);
+                break;
+            }
+            case 2: { /* C.LWSP: lw rd, offset(x2) */
+                uint32_t rd = CRD(ci);
+                if (rd == 0) goto c_illegal;
+                uint32_t off = ((ci >> 7) & 0x20) | ((ci >> 2) & 0x1C) | ((ci << 4) & 0xC0);
+                uint32_t addr = cpu->x[2] + off;
+                if (addr & 3) { rv_trap_enter(cpu, MCAUSE_LOAD_MISALIGNED, addr); return 0; }
+                cpu->x[rd] = mem_read32(addr);
+                break;
+            }
+            case 4: { /* C.MV / C.ADD / C.JR / C.JALR / C.EBREAK */
+                uint32_t rd = CRD(ci);
+                uint32_t rs2 = CRS2(ci);
+                int bit12 = (ci >> 12) & 1;
+                if (bit12 == 0) {
+                    if (rs2 == 0) {
+                        /* C.JR: jalr x0, rs1, 0 */
+                        if (rd == 0) goto c_illegal;
+                        cpu->pc = cpu->x[rd] & ~1u;
+                        cpu->x[0] = 0;
+                        cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                        return 0;
+                    } else {
+                        /* C.MV: add rd, x0, rs2 */
+                        rv_write_rd(cpu, rd, cpu->x[rs2]);
+                    }
+                } else {
+                    if (rs2 == 0 && rd == 0) {
+                        /* C.EBREAK */
+                        rv_trap_enter(cpu, MCAUSE_BREAKPOINT, pc);
+                        return 0;
+                    } else if (rs2 == 0) {
+                        /* C.JALR: jalr x1, rs1, 0 */
+                        uint32_t target = cpu->x[rd] & ~1u;
+                        cpu->x[1] = pc + 2;
+                        cpu->pc = target;
+                        cpu->x[0] = 0;
+                        cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                        return 0;
+                    } else {
+                        /* C.ADD: add rd, rd, rs2 */
+                        if (rd != 0) cpu->x[rd] = cpu->x[rd] + cpu->x[rs2];
+                    }
+                }
+                break;
+            }
+            case 6: { /* C.SWSP: sw rs2, offset(x2) */
+                uint32_t off = ((ci >> 7) & 0x3C) | ((ci >> 1) & 0xC0);
+                uint32_t addr = cpu->x[2] + off;
+                if (addr & 3) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
+                mem_write32(addr, cpu->x[CRS2(ci)]);
+                break;
+            }
+            default: goto c_illegal;
+            }
+            break;
+
+        default:
+        c_illegal:
+            if (cpu->debug_enabled)
+                fprintf(stderr, "[RV-CORE%d] ILLEGAL C-INSTRUCTION at PC=0x%08X: 0x%04X\n",
+                        cpu->hart_id, pc, ci);
+            rv_trap_enter(cpu, MCAUSE_ILLEGAL_INSTR, ci);
+            return 0;
+        }
+
+        #undef CRD_P
+        #undef CRS2_P
+        #undef CRS1_P
+        #undef CRD
+        #undef CRS2
+
+        /* Compressed instructions advance PC by 2 */
+        cpu->pc = pc + 2;
+        cpu->x[0] = 0;
+        cpu->step_count++;
+        cpu->cycle_count++;
+        cpu->instret_count++;
         return 0;
     }
 
