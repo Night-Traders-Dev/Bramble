@@ -318,7 +318,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
-        fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash)\n");
+        fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash, may need sudo)\n");
         fprintf(stderr, "  -mount-offset <hex>  Flash offset of FAT region (default: 0x100000)\n");
         fprintf(stderr, "\nStorage:\n");
         fprintf(stderr, "  -sdcard <path>              Attach SD card image to SPI1\n");
@@ -619,8 +619,7 @@ int main(int argc, char **argv) {
      * ======================================================================== */
 
     {
-        /* Only TAP requires root (FUSE3 user mounts work without sudo) */
-        int needs_privilege = (tap_name != NULL);
+        int needs_privilege = (tap_name != NULL) || (mount_path != NULL);
         if (needs_privilege && geteuid() != 0 && getenv("BRAMBLE_ESCALATED") == NULL) {
             /* Explain why we need elevated privileges */
             fprintf(stderr, "\n[Privilege] The following features require superuser access:\n");
@@ -702,6 +701,8 @@ int main(int argc, char **argv) {
 
     /* Initialize CPU and peripherals */
     cpu_init();
+    /* Flash starts erased (all 0xFF) on real hardware */
+    memset(cpu.flash, 0xFF, FLASH_SIZE);
     reset_runtime_peripherals(tap_name);
 
     int loaded = 0;
@@ -762,7 +763,14 @@ int main(int argc, char **argv) {
         uint32_t fs_offset = mount_offset;
         uint32_t fs_size = FLASH_SIZE - fs_offset;
         fuse_set_flash_offset(fs_offset);
-        fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);
+        int fuse_rc = fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);
+        if (fuse_rc < 0) {
+            fprintf(stderr, "[FUSE] Mount failed. The flash region at offset 0x%X may not contain a FAT filesystem.\n", fs_offset);
+            fprintf(stderr, "[FUSE] For firmware without FAT (e.g., littleOS), the -flash file is already\n");
+            fprintf(stderr, "[FUSE] live-synced to disk — read/write it directly from the host.\n");
+            fprintf(stderr, "[FUSE] For CircuitPython: -mount-offset 0x100000 (default)\n");
+            fprintf(stderr, "[FUSE] For MicroPython:   -mount-offset 0x1A0000\n");
+        }
     }
 
     /* Detect boot2 in firmware */

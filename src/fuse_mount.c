@@ -325,9 +325,9 @@ int fuse_mount_start(uint8_t *flash_data, size_t flash_size, const char *mount_p
     /* Create mount point directory if it doesn't exist */
     mkdir(mount_point, 0755);
 
-    /* Set up FUSE args */
-    const char *fuse_argv[] = { "bramble", "-f", mount_point };
-    struct fuse_args args = FUSE_ARGS_INIT(3, (char **)fuse_argv);
+    /* Set up FUSE args — minimal: just the program name */
+    const char *fuse_argv[] = { "bramble" };
+    struct fuse_args args = FUSE_ARGS_INIT(1, (char **)fuse_argv);
 
     fuse_instance = fuse_new(&args, &bramble_ops, sizeof(bramble_ops), NULL);
     if (!fuse_instance) {
@@ -337,7 +337,11 @@ int fuse_mount_start(uint8_t *flash_data, size_t flash_size, const char *mount_p
     }
 
     if (fuse_mount(fuse_instance, mount_point) < 0) {
-        fprintf(stderr, "[FUSE] Failed to mount at %s\n", mount_point);
+        int mount_errno = errno;
+        fprintf(stderr, "[FUSE] Failed to mount at %s: %s\n", mount_point, strerror(mount_errno));
+        if (mount_errno == EPERM || mount_errno == EACCES) {
+            fprintf(stderr, "[FUSE] Hint: FUSE mount may require elevated privileges (sudo).\n");
+        }
         fuse_destroy(fuse_instance);
         fuse_instance = NULL;
         fuse_opt_free_args(&args);

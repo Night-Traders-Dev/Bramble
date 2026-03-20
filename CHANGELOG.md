@@ -2,13 +2,15 @@
 
 ## [0.36.0] - 2026-03-20
 
-### Fixed - FUSE Flash Sharing and TAP Bridge Hardening
+### Fixed - FUSE Flash Sharing, FAT12 Support, and TAP Bridge Hardening
 
-- **FUSE flash mutex race**: ROM `flash_range_erase` and `flash_range_program` now lock `fuse_flash_mutex` before modifying `cpu.flash[]`. Previously, concurrent FUSE reads during firmware flash writes produced torn data.
-- **FUSE no longer requires sudo**: FUSE3 user mounts work without root privileges. Removed `-mount` from the automatic privilege escalation check — only `-tap` needs root.
-- **Configurable filesystem offset**: New `-mount-offset <hex>` flag (default `0x100000`) replaces the hardcoded CircuitPython 1MB offset. Different firmware (littleOS, MicroPython) may use different flash layouts.
-- **TAP partial write retry**: `tapif_write()` now retries on partial `write()` returns instead of silently losing trailing bytes.
-- **TAP MTU clamping**: `tapif_read()` clamps reads to 1518 bytes (max Ethernet frame) to prevent oversized frames from overflowing CYW43 buffers.
+- **Flash initialized to 0xFF**: `cpu.flash[]` now starts erased (all 0xFF) matching real RP2040 hardware. Previously flash was zeroed, causing flash persistence sector detection to treat empty sectors as firmware (since 0x00 != 0xFF), breaking non-firmware data restoration.
+- **FAT12 filesystem support**: The FAT driver now handles FAT12 in addition to FAT16. CircuitPython creates a small FAT12 partition (~500KB, 980 clusters) at offset 0x181000 in flash. FAT12 uses 12-bit packed entries (1.5 bytes per entry) vs FAT16's 16-bit entries.
+- **Configurable filesystem offset**: New `-mount-offset <hex>` flag (default `0x100000`) replaces the hardcoded CircuitPython offset. CircuitPython actually uses 0x181000 for its FAT12 partition.
+- **FUSE flash mutex race**: ROM `flash_range_erase` and `flash_range_program` now lock `fuse_flash_mutex` before modifying `cpu.flash[]`.
+- **FUSE mount error reporting**: Clear diagnostics when mount fails — reports the exact error (e.g., "Operation not permitted"), suggests sudo when needed, and explains that firmware without FAT can use the flash file directly.
+- **TAP partial write retry**: `tapif_write()` now retries on partial `write()` returns.
+- **TAP MTU clamping**: `tapif_read()` clamps reads to 1518 bytes (max Ethernet frame).
 
 ### Tests
 

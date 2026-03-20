@@ -68,6 +68,7 @@ typedef struct {
     uint32_t root_dir_sectors;  /* Sectors used by root directory */
     uint32_t cluster_size;      /* Bytes per cluster */
     uint32_t total_clusters;    /* Total data clusters */
+    int is_fat12;               /* 1 if FAT12, 0 if FAT16 */
 } fat16_fs_t;
 
 /* File info for directory listing */

@@ -80,15 +80,57 @@ static uint32_t cluster_offset(fat16_fs_t *fs, uint16_t cluster) {
     return fs->data_offset + (uint32_t)(cluster - 2) * fs->cluster_size;
 }
 
-/* Read FAT entry for a cluster */
+/* Read FAT entry for a cluster (supports FAT12 and FAT16) */
 static uint16_t fat_read(fat16_fs_t *fs, uint16_t cluster) {
+    if (fs->is_fat12) {
+        /* FAT12: 1.5 bytes per entry */
+        uint32_t off = fs->fat_offset + (uint32_t)cluster * 3 / 2;
+        if (off + 1 >= fs->media_size) return 0xFFF;
+        uint16_t val = read16(&fs->media[off]);
+        if (cluster & 1) {
+            return val >> 4;        /* Odd cluster: high 12 bits */
+        } else {
+            return val & 0x0FFF;    /* Even cluster: low 12 bits */
+        }
+    }
     uint32_t off = fs->fat_offset + (uint32_t)cluster * 2;
     if (off + 1 >= fs->media_size) return 0xFFFF;
     return read16(&fs->media[off]);
 }
 
-/* Write FAT entry for a cluster (updates both FATs) */
+/* End-of-chain marker for current FAT type */
+static uint16_t fat_eoc(fat16_fs_t *fs) {
+    return fs->is_fat12 ? 0xFF8 : 0xFFF8;
+}
+
+/* Check if a FAT entry marks end of chain */
+static int fat_is_eoc(fat16_fs_t *fs, uint16_t val) {
+    return fs->is_fat12 ? (val >= 0xFF8) : (val >= 0xFFF8);
+}
+
+/* Write FAT entry for a cluster (updates both FATs, supports FAT12/16) */
 static void fat_write(fat16_fs_t *fs, uint16_t cluster, uint16_t value) {
+    if (fs->is_fat12) {
+        uint32_t off = fs->fat_offset + (uint32_t)cluster * 3 / 2;
+        if (off + 1 >= fs->media_size) return;
+        uint16_t cur = read16(&fs->media[off]);
+        if (cluster & 1) {
+            cur = (cur & 0x000F) | (value << 4);
+        } else {
+            cur = (cur & 0xF000) | (value & 0x0FFF);
+        }
+        fs->media[off] = cur & 0xFF;
+        fs->media[off + 1] = (cur >> 8) & 0xFF;
+        /* Second FAT copy */
+        if (fs->num_fats > 1) {
+            uint32_t off2 = off + (uint32_t)fs->sectors_per_fat * fs->bytes_per_sector;
+            if (off2 + 1 < fs->media_size) {
+                fs->media[off2] = cur & 0xFF;
+                fs->media[off2 + 1] = (cur >> 8) & 0xFF;
+            }
+        }
+        return;
+    }
     uint32_t off = fs->fat_offset + (uint32_t)cluster * 2;
     if (off + 1 >= fs->media_size) return;
     write16(&fs->media[off], value);
@@ -106,7 +148,7 @@ static void fat_write(fat16_fs_t *fs, uint16_t cluster, uint16_t value) {
 static uint16_t fat_alloc(fat16_fs_t *fs) {
     for (uint16_t c = 2; c < fs->total_clusters + 2; c++) {
         if (fat_read(fs, c) == 0x0000) {
-            fat_write(fs, c, 0xFFFF); /* Mark as end-of-chain */
+            fat_write(fs, c, fat_eoc(fs)); /* Mark as end-of-chain */
             return c;
         }
     }
@@ -115,7 +157,7 @@ static uint16_t fat_alloc(fat16_fs_t *fs) {
 
 /* Free a cluster chain starting at given cluster */
 static void fat_free_chain(fat16_fs_t *fs, uint16_t cluster) {
-    while (cluster >= 2 && cluster < 0xFFF8) {
+    while (cluster >= 2 && !fat_is_eoc(fs, cluster)) {
         uint16_t next = fat_read(fs, cluster);
         fat_write(fs, cluster, 0x0000);
         cluster = next;
@@ -194,11 +236,15 @@ int fat16_mount(fat16_fs_t *fs, uint8_t *media, size_t media_size) {
                             fs->num_fats * fs->sectors_per_fat + fs->root_dir_sectors);
     fs->total_clusters = data_sectors / fs->sectors_per_cluster;
 
-    /* FAT16 has 4085-65524 clusters */
-    if (fs->total_clusters < 4085 || fs->total_clusters > 65524) {
-        /* Could be FAT12 — allow smaller filesystems too */
-        if (fs->total_clusters == 0) return -1;
+    /* Determine FAT type by cluster count (Microsoft spec) */
+    if (fs->total_clusters < 4085) {
+        fs->is_fat12 = 1;  /* FAT12 */
+    } else if (fs->total_clusters <= 65524) {
+        fs->is_fat12 = 0;  /* FAT16 */
+    } else {
+        return -1;  /* FAT32 not supported */
     }
+    if (fs->total_clusters == 0) return -1;
 
     return 0;
 }
@@ -238,7 +284,7 @@ int fat16_read_file(fat16_fs_t *fs, const char *name, uint8_t *buf, size_t buf_s
     uint32_t remaining = file_size;
     uint32_t pos = 0;
 
-    while (remaining > 0 && cluster >= 2 && cluster < 0xFFF8) {
+    while (remaining > 0 && cluster >= 2 && !fat_is_eoc(fs, cluster)) {
         uint32_t off = cluster_offset(fs, cluster);
         uint32_t chunk = fs->cluster_size;
         if (chunk > remaining) chunk = remaining;
@@ -296,7 +342,7 @@ int fat16_write_file(fat16_fs_t *fs, const char *name, const uint8_t *data, size
     uint32_t remaining = (uint32_t)size;
     uint32_t pos = 0;
 
-    while (remaining > 0 && cluster >= 2 && cluster < 0xFFF8) {
+    while (remaining > 0 && cluster >= 2 && !fat_is_eoc(fs, cluster)) {
         uint32_t off = cluster_offset(fs, cluster);
         uint32_t chunk = fs->cluster_size;
         if (chunk > remaining) chunk = remaining;

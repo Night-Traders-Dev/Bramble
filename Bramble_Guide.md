@@ -162,7 +162,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | Flag | Arguments | Description |
 |------|-----------|-------------|
 | `-flash` | `<path>` | Persistent flash storage (2 MB file); saves/restores across runs |
-| `-mount` | `<dir>` | Mount flash FAT filesystem as host directory via FUSE (requires `-flash`) |
+| `-mount` | `<dir>` | Mount flash FAT filesystem as host directory via FUSE (requires `-flash`, may need sudo) |
 | `-mount-offset` | `<hex>` | Flash offset of FAT region (default: `0x100000` for CircuitPython) |
 | `-sdcard` | `<path>` | Attach SD card image file to SPI bus |
 | `-sdcard-spi` | `<0\|1>` | SPI bus for SD card (default: 1) |
