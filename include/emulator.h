@@ -103,6 +103,7 @@ typedef struct {
     int debug_asm;                  /* Instruction-level tracing (-asm) */
     uint32_t current_irq;           /* Active interrupt number */
     uint32_t primask;               /* PRIMASK register (1=interrupts disabled) */
+    uint32_t faultmask;             /* FAULTMASK register (1=all exceptions masked except NMI) */
     uint32_t control;               /* CONTROL register (SPSEL, nPRIV) */
 
 } cpu_state_t;
@@ -159,6 +160,7 @@ typedef struct {
     int debug_asm;
     uint32_t current_irq;
     uint32_t primask;               /* PRIMASK register (1=interrupts disabled) */
+    uint32_t faultmask;             /* FAULTMASK register (1=all exceptions masked except NMI) */
     uint32_t control;               /* CONTROL register (SPSEL, nPRIV) */
 
     /* Exception nesting (per-core) */
@@ -289,6 +291,7 @@ typedef struct {
     int debug_asm;
     uint32_t current_irq;
     uint32_t primask;
+    uint32_t faultmask;
     uint32_t control;
     int active_core;
 } cpu_bind_context_t;

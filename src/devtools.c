@@ -1135,3 +1135,56 @@ void mem_heatmap_dump(const char *path) {
     fclose(f);
     fprintf(stderr, "[Heatmap] Written to %s\n", path);
 }
+
+/* ========================================================================
+ * VREG_AND_CHIP_RESET Peripheral (0x40064000)
+ *
+ * RP2040 datasheet section 2.10. Three registers:
+ *   0x00 VREG:       bit 12 = ROK (read-only, regulator OK), bits[7:4] = VSEL,
+ *                    bit 1 = HIZ (high impedance), bit 0 = EN
+ *   0x04 BOD:        bits[7:4] = VSEL, bit 0 = EN
+ *   0x08 CHIP_RESET: bit 20 = had_psm, bit 16 = had_run, bit 8 = had_por
+ *                    (all W1C — write 1 to clear)
+ * ======================================================================== */
+
+static uint32_t vreg_regs[VREG_SIZE / 4];
+static int vreg_initialized = 0;
+
+static void vreg_init_defaults(void) {
+    if (vreg_initialized) return;
+    /* VREG: enabled, VSEL=0xB (1.10V default), ROK=1 */
+    vreg_regs[0] = (1u << 12) | (0xBu << 4) | 1u;
+    /* BOD: enabled, VSEL=0x9 */
+    vreg_regs[1] = (0x9u << 4) | 1u;
+    /* CHIP_RESET: had_por=1 (we just powered on) */
+    vreg_regs[2] = (1u << 8);
+    vreg_initialized = 1;
+}
+
+int vreg_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000u;
+    return (base >= VREG_BASE && base < VREG_BASE + VREG_SIZE);
+}
+
+uint32_t vreg_read(uint32_t offset) {
+    vreg_init_defaults();
+    offset &= 0xFFF;
+    if (offset >= VREG_SIZE) return 0;
+    return vreg_regs[offset / 4];
+}
+
+void vreg_write(uint32_t offset, uint32_t val) {
+    vreg_init_defaults();
+    offset &= 0xFFF;
+    if (offset >= VREG_SIZE) return;
+
+    if (offset == 0x08) {
+        /* CHIP_RESET: W1C — writing 1 clears the bit */
+        vreg_regs[2] &= ~val;
+    } else {
+        vreg_regs[offset / 4] = val;
+        /* Keep ROK always set when VREG is enabled */
+        if (offset == 0x00 && (val & 1))
+            vreg_regs[0] |= (1u << 12);
+    }
+}

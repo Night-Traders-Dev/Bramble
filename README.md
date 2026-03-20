@@ -12,9 +12,9 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 |------|--------|---------|
 | CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
 | Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool, Core 1 auto-launch |
-| Memory Map | ~97% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) + NVIC/SCB MMIO + XIP SSI/IO_QSPI/PADS_QSPI/BUSCTRL alias coverage |
+| Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) + all 28 APB + 5 AHB peripherals + SIO + NVIC/SCB + atomic aliases |
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
-| Exceptions | ~95% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, nested returns, `cpu_step()` IRQ delivery, double-fault lockup |
+| Exceptions | 100% | All vectors, 3 EXC_RETURN modes, tail-chaining, late-arriving, priority preemption, nesting, lockup, PRIMASK + FAULTMASK |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
@@ -50,6 +50,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | SYSINFO | `0x40000000` | Stub (CHIP_ID=RP2040-B2, PLATFORM=ASIC) |
 | SYSCFG | `0x40004000` | Full (NMI mask, proc config, debug force, mem power-down) |
 | TBMAN | `0x4006C000` | Full (PLATFORM=ASIC, testbench manager) |
+| VREG | `0x40064000` | Full (VREG EN/VSEL/ROK, BOD EN/VSEL, CHIP_RESET W1C flags) |
 | IO_QSPI | `0x40018000` | Stub (6 QSPI GPIO pins, STATUS/CTRL) |
 | PADS_QSPI | `0x40020000` | Stub (QSPI pad electrical control) |
 | ROSC | `0x40060000` | Full (STATUS, RANDOMBIT LFSR, CTRL enable) |

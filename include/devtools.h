@@ -486,4 +486,21 @@ static inline void mem_heatmap_record_write(uint32_t addr) {
     }
 }
 
+/* ========================================================================
+ * VREG_AND_CHIP_RESET Peripheral (0x40064000)
+ *
+ * RP2040 voltage regulator and chip reset control.
+ * Registers:
+ *   0x00 VREG       - Voltage regulator control (EN, VSEL, ROK)
+ *   0x04 BOD        - Brown-out detection control (EN, VSEL)
+ *   0x08 CHIP_RESET - Chip reset reason flags (had_por, had_run, had_psm)
+ * ======================================================================== */
+
+#define VREG_BASE       0x40064000
+#define VREG_SIZE       0x0C
+
+int  vreg_match(uint32_t addr);
+uint32_t vreg_read(uint32_t offset);
+void vreg_write(uint32_t offset, uint32_t val);
+
 #endif /* DEVTOOLS_H */

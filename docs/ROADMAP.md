@@ -5,10 +5,10 @@
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~99% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) + NVIC/SCB MMIO + IO_QSPI/PADS_QSPI/BUSCTRL + SYSCFG + TBMAN |
-| Peripherals | ~100% | All 29 RP2040 peripherals emulated (27 full + 5 stubs); only VREG electrical model not modeled |
+| Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + ROM (16KB) + all APB/AHB peripherals + SIO + NVIC/SCB + atomic aliases |
+| Peripherals | 100% | All 30 RP2040 peripherals emulated including VREG/BOD/CHIP_RESET, SYSCFG, TBMAN |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
-| Exceptions | ~95% | Entry/return, priority preemption, SysTick, PendSV, SVCall, HardFault, nested unwind, `cpu_step()` IRQ delivery, lockup |
+| Exceptions | 100% | All vectors, 3 EXC_RETURN modes, tail-chaining, late-arriving, priority preemption, nesting, lockup, PRIMASK + FAULTMASK |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
 | Firmware | MicroPython + CircuitPython + littleOS | Interactive MicroPython REPL, CircuitPython `code.py`, and littleOS shell |
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |

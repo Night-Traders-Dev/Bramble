@@ -898,6 +898,9 @@ void instr_msr_32(uint8_t rn, uint8_t sysm) {
         case 0x10: /* PRIMASK */
             cpu.primask = val & 1;
             break;
+        case 0x13: /* FAULTMASK */
+            cpu.faultmask = val & 1;
+            break;
         case 0x14: /* CONTROL */
             cpu.control = val & 0x3;
             break;
@@ -938,6 +941,9 @@ void instr_mrs_32(uint8_t rd, uint8_t sysm) {
             break;
         case 0x10: /* PRIMASK */
             val = cpu.primask;
+            break;
+        case 0x13: /* FAULTMASK */
+            val = cpu.faultmask;
             break;
         case 0x14: /* CONTROL */
             val = cpu.control;

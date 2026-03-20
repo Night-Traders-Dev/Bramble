@@ -936,6 +936,66 @@ void cpu_exception_entry(uint32_t vector_num) {
         printf("[CPU] Context saved, SP now=0x%08X\n", sp);
     }
 
+    /* ================================================================
+     * Late-arriving: during stacking, a higher-priority exception may
+     * have become pending.  If so, service it instead — the stacked
+     * frame is valid for the original return, only the handler changes.
+     * ================================================================ */
+    if (!cpu.primask && !cpu.faultmask) {
+        nvic_state_t *ns = &nvic_states[ac];
+        uint8_t our_pri = nvic_get_exception_priority(vector_num);
+        uint32_t late_vector = 0xFFFFFFFF;
+
+        uint32_t pending_irq = nvic_get_pending_irq();
+        if (pending_irq != 0xFFFFFFFF) {
+            uint8_t pri = ns->priority[pending_irq] & 0xC0;
+            if (pri < our_pri) late_vector = pending_irq + 16;
+        }
+        if (late_vector == 0xFFFFFFFF && systick_states[ac].pending) {
+            uint8_t pri = nvic_get_exception_priority(EXC_SYSTICK);
+            if (pri < our_pri) late_vector = EXC_SYSTICK;
+        }
+
+        if (late_vector != 0xFFFFFFFF) {
+            /* Late-arriving: switch to higher-priority handler.
+             * The stacked frame stays valid; just change which handler runs. */
+            if (vector_num < 32)
+                nvic_states[ac].active_exceptions &= ~(1u << vector_num);
+            if (vector_num >= 16 && (vector_num - 16) < 32)
+                nvic_states[ac].iabr &= ~(1u << (vector_num - 16));
+
+            /* Re-pend the original exception */
+            if (vector_num >= 16 && vector_num != EXC_SYSTICK && vector_num != EXC_PENDSV)
+                nvic_set_pending(vector_num - 16);
+            else if (vector_num == EXC_SYSTICK)
+                systick_states[ac].pending = 1;
+            else if (vector_num == EXC_PENDSV)
+                ns->pendsv_pending = 1;
+
+            /* Clear pending for the late-arriving exception */
+            if (late_vector >= 16 && late_vector != EXC_SYSTICK && late_vector != EXC_PENDSV)
+                nvic_clear_pending(late_vector - 16);
+            else if (late_vector == EXC_SYSTICK)
+                systick_states[ac].pending = 0;
+            else if (late_vector == EXC_PENDSV)
+                ns->pendsv_pending = 0;
+
+            /* Switch to the late-arriving handler */
+            cpu.current_irq = late_vector;
+            if (late_vector < 32)
+                nvic_states[ac].active_exceptions |= (1u << late_vector);
+            if (late_vector >= 16 && (late_vector - 16) < 32)
+                nvic_states[ac].iabr |= (1u << (late_vector - 16));
+
+            handler_addr = mem_read32(cpu.vtor + late_vector * 4);
+            cpu.xpsr = (cpu.xpsr & ~0x3F) | (late_vector & 0x3F);
+            vector_num = late_vector;
+
+            if (cpu.debug_enabled)
+                printf("[CPU] LATE-ARRIVING: switched to higher-priority vec %u\n", late_vector);
+        }
+    }
+
     cpu.r[15] = handler_addr & ~1u;
     cpu.r[14] = 0xFFFFFFF9;
 
@@ -957,6 +1017,76 @@ void cpu_exception_return(uint32_t lr_value) {
     }
 
     if (return_mode == 0x9 || return_mode == 0x1 || return_mode == 0xD) {
+
+        /* ================================================================
+         * Tail-chaining: before unstacking, check if another exception is
+         * pending with sufficient priority.  If so, skip the unstack/restack
+         * and jump directly to the new handler — saves 12 cycles on real HW.
+         * ================================================================ */
+        if (!cpu.primask && !cpu.faultmask) {
+            nvic_state_t *ns = &nvic_states[ac];
+            /* Determine what our priority will be after returning */
+            uint8_t return_pri = 0xFF;
+            if (*p_exception_depth > 0) {
+                uint32_t prev_irq = exception_stack[*p_exception_depth - 1];
+                if (prev_irq != 0xFFFFFFFF)
+                    return_pri = nvic_get_exception_priority(prev_irq);
+            }
+
+            /* Check for pending exceptions that can preempt the return context */
+            uint32_t pending_irq = nvic_get_pending_irq();
+            uint32_t tail_vector = 0xFFFFFFFF;
+
+            if (pending_irq != 0xFFFFFFFF) {
+                uint8_t pri = ns->priority[pending_irq] & 0xC0;
+                if (pri < return_pri) tail_vector = pending_irq + 16;
+            }
+            if (tail_vector == 0xFFFFFFFF && systick_states[ac].pending) {
+                uint8_t pri = nvic_get_exception_priority(EXC_SYSTICK);
+                if (pri < return_pri) tail_vector = EXC_SYSTICK;
+            }
+            if (tail_vector == 0xFFFFFFFF && ns->pendsv_pending) {
+                uint8_t pri = nvic_get_exception_priority(EXC_PENDSV);
+                if (pri < return_pri) tail_vector = EXC_PENDSV;
+            }
+
+            if (tail_vector != 0xFFFFFFFF) {
+                /* Tail-chain: clear current exception, enter new one without unstacking */
+                uint32_t cur_vec = cpu.current_irq;
+                if (cur_vec >= 16 && (cur_vec - 16) < 32)
+                    nvic_states[ac].iabr &= ~(1u << (cur_vec - 16));
+                if (cur_vec < 32)
+                    nvic_states[ac].active_exceptions &= ~(1u << cur_vec);
+
+                /* Clear the pending bit for the tail-chained exception */
+                if (tail_vector >= 16 && tail_vector != EXC_SYSTICK && tail_vector != EXC_PENDSV)
+                    nvic_clear_pending(tail_vector - 16);
+                else if (tail_vector == EXC_SYSTICK)
+                    systick_states[ac].pending = 0;
+                else if (tail_vector == EXC_PENDSV)
+                    ns->pendsv_pending = 0;
+
+                /* Update current exception to the new one (no stack change) */
+                cpu.current_irq = tail_vector;
+                if (tail_vector < 32)
+                    nvic_states[ac].active_exceptions |= (1u << tail_vector);
+                if (tail_vector >= 16 && (tail_vector - 16) < 32)
+                    nvic_states[ac].iabr |= (1u << (tail_vector - 16));
+
+                /* Jump to the new handler */
+                uint32_t handler = mem_read32(cpu.vtor + tail_vector * 4);
+                cpu.r[15] = handler & ~1u;
+                cpu.r[14] = 0xFFFFFFF9;
+                cpu.xpsr = (cpu.xpsr & ~0x3F) | (tail_vector & 0x3F);
+
+                if (cpu.debug_enabled)
+                    printf("[CPU] TAIL-CHAIN: vec %u → vec %u (skip unstack/restack)\n",
+                           cur_vec, tail_vector);
+                return;
+            }
+        }
+
+        /* Normal exception return: unstack the frame */
         uint32_t sp = cpu.r[13];
 
         if (cpu.debug_enabled) {
@@ -1018,6 +1148,9 @@ void cpu_exception_return(uint32_t lr_value) {
                        vector_num, nvic_states[ac].iabr, *p_exception_depth);
             }
         }
+
+        /* FAULTMASK auto-clears on exception return (ARMv6-M spec) */
+        cpu.faultmask = 0;
 
         if (cpu.debug_enabled) {
             printf("[CPU] <<< EXCEPTION RETURN COMPLETE\n");
@@ -1110,7 +1243,8 @@ __attribute__((hot)) void cpu_step(void) {
 
 pc_valid:
     /* Check for pending interrupts (only if PRIMASK allows) */
-    if (!cpu.primask) {
+    /* FAULTMASK blocks everything except NMI; PRIMASK blocks configurable exceptions */
+    if (!cpu.primask && !cpu.faultmask) {
         int ac = get_active_core();
         nvic_state_t *ns = &nvic_states[ac];
 
@@ -1385,6 +1519,7 @@ int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx) {
     ctx->debug_asm = cpu.debug_asm;
     ctx->current_irq = cpu.current_irq;
     ctx->primask = cpu.primask;
+    ctx->faultmask = cpu.faultmask;
     ctx->control = cpu.control;
     ctx->active_core = get_active_core();
 
@@ -1396,6 +1531,7 @@ int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx) {
     cpu.debug_asm     = cores[core_id].debug_asm;
     cpu.current_irq   = cores[core_id].current_irq;
     cpu.primask       = cores[core_id].primask;
+    cpu.faultmask     = cores[core_id].faultmask;
     cpu.control       = cores[core_id].control;
 
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
@@ -1416,6 +1552,7 @@ void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx) {
     cores[core_id].debug_asm     = cpu.debug_asm;
     cores[core_id].current_irq   = cpu.current_irq;
     cores[core_id].primask       = cpu.primask;
+    cores[core_id].faultmask     = cpu.faultmask;
     cores[core_id].control       = cpu.control;
     cores[core_id].is_halted     = (cpu.r[15] == 0xFFFFFFFF);
 
@@ -1427,6 +1564,7 @@ void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx) {
     cpu.debug_asm = ctx->debug_asm;
     cpu.current_irq = ctx->current_irq;
     cpu.primask = ctx->primask;
+    cpu.faultmask = ctx->faultmask;
     cpu.control = ctx->control;
 
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
@@ -1449,6 +1587,7 @@ void cpu_step_core(int core_id) {
     int saved_debug_asm = cpu.debug_asm;
     uint32_t saved_irq = cpu.current_irq;
     uint32_t saved_primask = cpu.primask;
+    uint32_t saved_faultmask = cpu.faultmask;
     uint32_t saved_control = cpu.control;
 
     memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
@@ -1459,6 +1598,7 @@ void cpu_step_core(int core_id) {
     cpu.debug_asm = cores[core_id].debug_asm;
     cpu.current_irq = cores[core_id].current_irq;
     cpu.primask = cores[core_id].primask;
+    cpu.faultmask = cores[core_id].faultmask;
     cpu.control = cores[core_id].control;
 
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
@@ -1472,6 +1612,7 @@ void cpu_step_core(int core_id) {
     cores[core_id].step_count = cpu.step_count;
     cores[core_id].current_irq = cpu.current_irq;
     cores[core_id].primask = cpu.primask;
+    cores[core_id].faultmask = cpu.faultmask;
     cores[core_id].control = cpu.control;
 
     if (cpu.r[15] == 0xFFFFFFFF) {
@@ -1486,6 +1627,7 @@ void cpu_step_core(int core_id) {
     cpu.debug_asm = saved_debug_asm;
     cpu.current_irq = saved_irq;
     cpu.primask = saved_primask;
+    cpu.faultmask = saved_faultmask;
     cpu.control = saved_control;
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
 }

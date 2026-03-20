@@ -1281,9 +1281,20 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* VREG_AND_CHIP_RESET stub (0x40064000) */
-    if ((addr & ~0x3000) >= 0x40064000 && (addr & ~0x3000) < 0x40064000 + 0x10) {
-        return;  /* Silently accept writes */
+    /* VREG_AND_CHIP_RESET (0x40064000) */
+    if (vreg_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t offset = addr & 0xFFF;
+        if (alias == 0x0000) {
+            vreg_write(offset, val);
+        } else if (alias == 0x2000) {
+            vreg_write(offset, vreg_read(offset) | val);
+        } else if (alias == 0x3000) {
+            vreg_write(offset, vreg_read(offset) & ~val);
+        } else {
+            vreg_write(offset, vreg_read(offset) ^ val);
+        }
+        return;
     }
 
     /* SYSCFG (0x40004000) */
@@ -1617,12 +1628,9 @@ uint32_t mem_read32(uint32_t addr) {
         return busctrl_read(addr & 0xFFF);
     }
 
-    /* VREG_AND_CHIP_RESET stub (0x40064000) */
-    if ((addr & ~0x3000) >= 0x40064000 && (addr & ~0x3000) < 0x40064000 + 0x10) {
-        if (((addr & ~0x3000) - 0x40064000) == 0x08) {
-            return 0;  /* CHIP_RESET: no reset sources */
-        }
-        return 0;
+    /* VREG_AND_CHIP_RESET (0x40064000) */
+    if (vreg_match(addr)) {
+        return vreg_read(addr & 0xFFF);
     }
 
     /* SYSCFG (0x40004000) */
