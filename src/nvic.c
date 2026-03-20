@@ -27,6 +27,7 @@ static inline systick_state_t *systick_cur(void) {
 /* Initialize NVIC */
 void nvic_init(void) {
     nvic_reset();
+    systick_reset();
 }
 
 /* Reset NVIC to power-on defaults (both cores) */

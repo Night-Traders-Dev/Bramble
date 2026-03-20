@@ -290,11 +290,11 @@ static void reboot_from_watchdog(const char *tap_name,
 
     reset_runtime_peripherals(tap_name);
     attach_spi_devices(sdcard, sdcard_path, sdcard_spi, emmc_dev, emmc_path, emmc_spi);
+
+    /* dual_core_init resets num_active_cores to 1 and clears Core 1 bootrom
+     * state. Firmware must re-launch Core 1 through the FIFO protocol. */
     dual_core_init();
     cpu_reset_core(CORE0);
-    if (num_active_cores > 1) {
-        cpu_reset_core(CORE1);
-    }
 }
 
 /* ============================================================================

@@ -1226,7 +1226,20 @@ void set_active_core(int core_id) {
     }
 }
 
+/* Forward declaration for Core 1 bootrom launch state (used by dual_core_init) */
+typedef struct {
+    int waiting_for_launch;
+    uint32_t launch_words[6];
+    uint32_t launch_count;
+} core1_bootrom_state_t;
+
+static core1_bootrom_state_t core1_bootrom = {0};
+
 void dual_core_init(void) {
+    /* Reset runtime core count — firmware must re-launch Core 1 */
+    num_active_cores = 1;
+    active_core = CORE0;
+
     /* Initialize core structures */
     for (int i = 0; i < NUM_CORES; i++) {
         memset(&cores[i], 0, sizeof(cpu_state_dual_t));
@@ -1266,6 +1279,14 @@ void dual_core_init(void) {
         fifo[i].read_ptr = 0;
         fifo[i].write_ptr = 0;
     }
+
+    /* Reset spinlocks and shared RAM */
+    memset(spinlocks, 0, sizeof(spinlocks));
+    memset(shared_ram, 0, sizeof(shared_ram));
+
+    /* Reset Core 1 bootrom launch state machine */
+    core1_bootrom.waiting_for_launch = 0;
+    core1_bootrom.launch_count = 0;
 
     /* Initialize dispatch table if needed */
     if (!dispatch_initialized) {
@@ -1646,14 +1667,6 @@ void cpu_set_debug_core(int core_id, int enabled) {
 /* ========================================================================
  * SIO (Single-Cycle I/O) Operations
  * ======================================================================== */
-
-typedef struct {
-    int waiting_for_launch;
-    uint32_t launch_words[6];
-    uint32_t launch_count;
-} core1_bootrom_state_t;
-
-static core1_bootrom_state_t core1_bootrom = {0};
 
 uint32_t sio_get_core_id(void) {
     return get_active_core();

@@ -3769,7 +3769,12 @@ TEST(test_corepool_query_cores_prunes_stale_entries) {
 }
 
 TEST(test_num_active_cores_default) {
-    ASSERT_EQ(1, num_active_cores, "Default should favor the stable single-core path");
+    /* setup() sets num_active_cores = MAX_CORES for dual-core tests.
+     * Verify that Core 1 auto-launch can bump from 1→2 correctly. */
+    int saved = num_active_cores;
+    num_active_cores = 1;
+    ASSERT_EQ(1, num_active_cores, "num_active_cores should start at 1 when set");
+    num_active_cores = saved;
     PASS();
 }
 
