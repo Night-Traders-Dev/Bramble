@@ -1,5 +1,36 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.38.0] - 2026-03-20
+
+### Added - RP2350 RISC-V Full Integration (CLINT, Memory Bus, Bootrom, Firmware Auto-Detect)
+
+- **RISC-V CLINT interrupt controller** (`src/rp2350_rv/rv_clint.c`): Machine timer (mtime/mtimecmp, 64-bit), software interrupts (MSIP per hart), external interrupt aggregation. Memory-mapped at 0xD0000100 in SIO space. Supports vectored and direct mtvec modes.
+- **RP2350 memory bus** (`src/rp2350_rv/rv_membus.c`): 520KB SRAM (0x20000000-0x20082000) with alias support, 32KB ROM, flash access, CLINT routing. Falls through to shared RP2040 peripheral bus for UART/SPI/I2C/GPIO/etc.
+- **RP2350 RISC-V bootrom** (`src/rp2350_rv/rv_bootrom.c`): Generated RISC-V code in 32KB ROM — sets SP to top of SRAM (0x20082000), sets GP to SRAM base, jumps to flash entry (0x10000000). Trap handler at 0x0004 loops on unhandled traps.
+- **Dual-hart execution**: Cooperative step loop for both harts. Hart 1 halted until firmware launches. WFI support with interrupt wake.
+- **CLINT mtime ticking**: Converts CPU cycles to microseconds via configurable cycles_per_us, matching `-clock` setting.
+- **CLINT interrupt delivery**: Checks mip/mie/mstatus.MIE each step. Priority: MEIP > MSIP > MTIP. WFI wake on any pending+enabled interrupt.
+- **UF2 family ID detection**: Reads UF2 flags bit 13 (family present) and identifies RP2040 (0xE48BFF56), RP2350-ARM (0xE48BFF59), RP2350-RV (0xE48BFF5A).
+- **ELF RISC-V support**: Accepts EM_RISCV (243) ELF32 binaries in addition to EM_ARM (40).
+- **Firmware auto-detection**: When `-arch` not specified, auto-detects architecture from UF2 family ID or ELF machine type and switches execution mode automatically.
+- **RV CPU memory routing**: All memory accesses in `rv_cpu_step()` now route through RP2350 memory bus (520KB SRAM, ROM, CLINT) instead of RP2040 global membus.
+- **Banner after load**: Architecture banner displayed after firmware loading and auto-detection, so it always reflects the correct mode.
+
+### Files Added
+
+- `include/rp2350_rv/rv_clint.h` — CLINT state, interrupt constants, API
+- `src/rp2350_rv/rv_clint.c` — CLINT timer, register access, interrupt delivery
+- `include/rp2350_rv/rv_membus.h` — RP2350 memory bus state and API
+- `src/rp2350_rv/rv_membus.c` — 520KB SRAM, ROM, CLINT, peripheral routing
+- `include/rp2350_rv/rv_bootrom.h` — Bootrom generator API
+- `src/rp2350_rv/rv_bootrom.c` — RISC-V bootrom code generation
+
+### Tests
+
+- 276 tests passing, zero warnings. RP2040 tests unaffected by RP2350 changes.
+
+---
+
 ## [0.37.0] - 2026-03-20
 
 ### Added - RP2350 RISC-V Hazard3 Support (Phase 1+2), Complete Exception Model

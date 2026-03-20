@@ -351,7 +351,22 @@ int fifo_try_push(int core_id, uint32_t val);     /* Non-blocking write */
  * Firmware Loading
  * ======================================================================== */
 
+/* UF2 family IDs */
+#define UF2_FAMILY_RP2040       0xE48BFF56
+#define UF2_FAMILY_RP2350_ARM   0xE48BFF59
+#define UF2_FAMILY_RP2350_RV    0xE48BFF5A
+#define UF2_FLAG_FAMILY_PRESENT 0x00002000
+
+/* Detected firmware architecture (set by loaders) */
+#define FW_ARCH_UNKNOWN  0
+#define FW_ARCH_ARM_M0P  1  /* Cortex-M0+ (RP2040) */
+#define FW_ARCH_ARM_M33  2  /* Cortex-M33 (RP2350 ARM) */
+#define FW_ARCH_RV32     3  /* Hazard3 RISC-V (RP2350 RV) */
+
 int load_uf2(const char *filename);
 int load_elf(const char *filename);
+
+/* Returns the architecture detected by the last load_uf2/load_elf call */
+int loader_detected_arch(void);
 
 #endif /* EMULATOR_H */

@@ -50,7 +50,11 @@ typedef struct {
 #define ELFCLASS32  1
 #define ELFDATA2LSB 1       /* Little endian */
 #define EM_ARM      40      /* ARM architecture */
+#define EM_RISCV    243     /* RISC-V architecture */
 #define PT_LOAD     1       /* Loadable segment */
+
+/* Detected architecture (shared with uf2.c via loader_detected_arch()) */
+extern int loader_detected_arch(void);
 
 static int checked_seek(FILE *f, uint64_t offset) {
     if (offset > (uint64_t)LONG_MAX) {
@@ -123,13 +127,22 @@ int load_elf(const char *filename) {
         fclose(f);
         return 0;
     }
-    if (ehdr.e_machine != EM_ARM) {
-        fprintf(stderr, "[ELF] ERROR: Not ARM architecture (machine=%d)\n", ehdr.e_machine);
+    if (ehdr.e_machine != EM_ARM && ehdr.e_machine != EM_RISCV) {
+        fprintf(stderr, "[ELF] ERROR: Unsupported architecture (machine=%d, expected ARM=%d or RISC-V=%d)\n",
+                ehdr.e_machine, EM_ARM, EM_RISCV);
         fclose(f);
         return 0;
     }
 
-    fprintf(stderr, "[ELF] Valid ELF32 ARM binary\n");
+    /* Set detected architecture for auto-detection */
+    extern int detected_arch;
+    if (ehdr.e_machine == EM_RISCV) {
+        detected_arch = FW_ARCH_RV32;
+        fprintf(stderr, "[ELF] Valid ELF32 RISC-V binary\n");
+    } else {
+        detected_arch = FW_ARCH_ARM_M0P;
+        fprintf(stderr, "[ELF] Valid ELF32 ARM binary\n");
+    }
     fprintf(stderr, "[ELF] Entry point: 0x%08X\n", ehdr.e_entry);
     fprintf(stderr, "[ELF] Program headers: %d (offset 0x%X)\n", ehdr.e_phnum, ehdr.e_phoff);
 

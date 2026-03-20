@@ -1,17 +1,17 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.37.0
+## Current State: v0.38.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | RP2040 CPU | 65+ Thumb-1 | Full ARMv6-M instruction set + O(1) dispatch + JIT |
-| RP2350 RV | RV32IMAC | Hazard3: 90+ instructions (I+M+A+C+Zicsr), traps, LR/SC atomics, dual hart — ISA complete |
-| Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + ROM (16KB) + all APB/AHB peripherals + SIO + NVIC/SCB + atomic aliases |
-| Peripherals | 100% | All 30 RP2040 peripherals emulated including VREG/BOD/CHIP_RESET, SYSCFG, TBMAN |
+| RP2350 RV | RV32IMAC + CLINT | Hazard3: 90+ instructions, CLINT interrupt controller, 520KB SRAM bus, bootrom, dual-hart execution |
+| Memory Map | 100% | RP2040: all regions. RP2350: 520KB SRAM + 32KB ROM + CLINT + shared peripheral bus |
+| Peripherals | 100% | All 30 RP2040 peripherals + RP2350 stubs (TRNG, SHA-256, OTP, HSTX, TICKS) |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
-| Exceptions | 100% | All vectors, 3 EXC_RETURN modes, tail-chaining, late-arriving, priority preemption, nesting, lockup, PRIMASK + FAULTMASK |
-| Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
-| Firmware | MicroPython + CircuitPython + littleOS | Interactive MicroPython REPL, CircuitPython `code.py`, and littleOS shell |
+| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec, MRET, CLINT interrupts |
+| Boot | 100% | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash entry) |
+| Firmware | MicroPython + CircuitPython + littleOS | RP2040 firmware + RP2350 RV32 UF2/ELF auto-detection |
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
@@ -19,7 +19,17 @@
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
 
-### Recent Changes (v0.37.0)
+### Recent Changes (v0.38.0)
+
+- **CLINT interrupt controller**: Machine timer (mtime/mtimecmp), software interrupts (MSIP), external interrupt aggregation. Memory-mapped at 0xD0000100.
+- **RP2350 memory bus**: 520KB SRAM, 32KB ROM, CLINT routing, fall-through to shared peripheral bus for UART/SPI/I2C/GPIO/etc.
+- **RISC-V bootrom**: Generated code in 32KB ROM — sets SP, jumps to flash. Trap handler loops on unhandled traps.
+- **Dual-hart execution**: Cooperative step loop, WFI support, CLINT interrupt delivery per-hart.
+- **UF2 family ID auto-detect**: RP2040 (0xE48BFF56), RP2350-ARM (0xE48BFF59), RP2350-RV (0xE48BFF5A).
+- **ELF RISC-V support**: Accepts EM_RISCV (243) in addition to EM_ARM (40).
+- **Architecture auto-detection**: `-arch` auto-set from firmware when not explicitly specified.
+
+### Previous (v0.37.0)
 
 - **RP2350 Hazard3 RV32IMAC complete**: All 93 instructions (I+M+A+C+Zicsr), CSRs, traps, LR/SC atomics, dual hart.
 - **`-arch rv32` flag**: Runtime ISA selection — execution loop, banner, and memory map adapt to selected architecture.

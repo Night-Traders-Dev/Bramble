@@ -2,21 +2,21 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.37.0
+## Current Status: v0.38.0
 
-276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: ISA complete (RV32IMAC) with `-arch rv32` flag, 520KB SRAM, RP2350 peripheral stubs (TRNG, SHA-256, OTP, HSTX, TICKS). Full peripheral sharing via unified memory bus.
+276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Fully wired — RV32IMAC ISA + CLINT interrupt controller + 520KB SRAM memory bus + bootrom + dual-hart execution + UF2/ELF auto-detection. **RP2350 ARM**: Placeholder (Cortex-M33 not yet implemented).
 
 ### Coverage
 
 | Area | Status | Details |
 |------|--------|---------|
 | RP2040 CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
-| RP2350 RV | RV32IMAC | Hazard3: 90+ instructions (I+M+A+C), CSRs, traps, LR/SC atomics, dual hart — ISA complete |
-| Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool, Core 1 auto-launch |
-| Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) + all 28 APB + 5 AHB peripherals + SIO + NVIC/SCB + atomic aliases |
-| Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
-| Exceptions | 100% | All vectors, 3 EXC_RETURN modes, tail-chaining, late-arriving, priority preemption, nesting, lockup, PRIMASK + FAULTMASK |
-| Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
+| RP2350 RV | RV32IMAC + CLINT | Hazard3: 90+ instructions, CSRs, traps, LR/SC, CLINT timer/SW/ext IRQs, dual-hart, 520KB SRAM, bootrom |
+| Dual-Core | Complete | RP2040: host-threaded, WFI, FIFO, spinlocks, auto-launch. RP2350: cooperative dual-hart with CLINT |
+| Memory Map | 100% | RP2040: Flash + XIP + SRAM + ROM (16KB) + all peripherals. RP2350: 520KB SRAM + 32KB ROM + CLINT + shared peripherals |
+| Boot | Complete | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash jump) |
+| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec direct/vectored, MRET, MIE/MPIE |
+| Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs, CLINT mtime |
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
@@ -24,6 +24,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
 | Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus logging, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
+| Firmware Auto-Detect | UF2 + ELF | Auto-detects RP2040/RP2350-ARM/RP2350-RV from UF2 family ID or ELF machine type |
 | Tests | 276 | CTest integrated, 50+ categories |
 
 ### Peripherals
@@ -213,6 +214,19 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -cores 2 -thread-quantum 128  # Tune threaded timeslice
 ```
 
+**RP2350 RISC-V Mode:**
+
+```bash
+# Explicit architecture selection
+./bramble firmware_rv.uf2 -arch rv32
+
+# Auto-detected from UF2 family ID (0xE48BFF5A) or ELF machine type
+./bramble pico2_rv_firmware.uf2
+
+# With clock speed and flash persistence
+./bramble firmware_rv.uf2 -arch rv32 -clock 150 -flash rv_flash.bin -stdin
+```
+
 **Networking (UART-to-TCP bridge):**
 
 ```bash
@@ -344,7 +358,13 @@ Bramble/
 │   ├── bme280.c        # BME280 sensor model
 │   ├── corepool.c      # Host-threaded execution + core allocation
 │   ├── cyw43.c         # CYW43 WiFi emulation
-│   └── tapif.c         # TAP bridge for Pico W traffic
+│   ├── tapif.c         # TAP bridge for Pico W traffic
+│   ├── devtools.c      # Developer tools (semihosting, coverage, etc.)
+│   └── rp2350_rv/
+│       ├── rv_cpu.c    # Hazard3 RV32IMAC CPU engine (93 instructions)
+│       ├── rv_clint.c  # CLINT interrupt controller (mtime/mtimecmp/MSIP)
+│       ├── rv_membus.c # RP2350 memory bus (520KB SRAM, peripheral routing)
+│       └── rv_bootrom.c # Minimal RISC-V bootrom
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
@@ -374,7 +394,16 @@ Bramble/
 │   ├── bme280.h        # BME280 device definitions
 │   ├── corepool.h      # Core pool definitions
 │   ├── cyw43.h         # CYW43 WiFi definitions
-│   └── tapif.h         # TAP bridge definitions
+│   ├── tapif.h         # TAP bridge definitions
+│   ├── devtools.h      # Developer tools definitions
+│   ├── rp2350_rv/
+│   │   ├── rv_cpu.h        # RISC-V CPU state, CSR defs, instruction decode
+│   │   ├── rv_clint.h      # CLINT interrupt controller definitions
+│   │   ├── rv_membus.h     # RP2350 memory bus definitions
+│   │   ├── rv_bootrom.h    # Bootrom generator definitions
+│   │   └── rp2350_memmap.h # RP2350 memory map constants
+│   └── rp2350_arm/
+│       └── m33_cpu.h       # Cortex-M33 placeholder
 ├── tests/
 │   └── test_suite.c    # Unit test suite (274 tests, verbose, CTest integrated)
 ├── test-firmware/

@@ -16,7 +16,52 @@
 #include <stdio.h>
 #include <string.h>
 #include "rp2350_rv/rv_cpu.h"
+#include "rp2350_rv/rv_membus.h"
 #include "emulator.h"
+
+/* ========================================================================
+ * Memory access wrappers — route through RP2350 bus when available,
+ * fall back to RP2040 global membus otherwise.
+ * ======================================================================== */
+
+static inline uint32_t rv_read32(rv_cpu_state_t *cpu, uint32_t addr) {
+    if (cpu->bus)
+        return rv_mem_read32((rv_membus_state_t *)cpu->bus, addr);
+    return mem_read32(addr);
+}
+
+static inline void rv_write32(rv_cpu_state_t *cpu, uint32_t addr, uint32_t val) {
+    if (cpu->bus)
+        rv_mem_write32((rv_membus_state_t *)cpu->bus, addr, val);
+    else
+        mem_write32(addr, val);
+}
+
+static inline uint16_t rv_read16(rv_cpu_state_t *cpu, uint32_t addr) {
+    if (cpu->bus)
+        return rv_mem_read16((rv_membus_state_t *)cpu->bus, addr);
+    return mem_read16(addr);
+}
+
+static inline void rv_write16(rv_cpu_state_t *cpu, uint32_t addr, uint16_t val) {
+    if (cpu->bus)
+        rv_mem_write16((rv_membus_state_t *)cpu->bus, addr, val);
+    else
+        mem_write16(addr, val);
+}
+
+static inline uint8_t rv_read8(rv_cpu_state_t *cpu, uint32_t addr) {
+    if (cpu->bus)
+        return rv_mem_read8((rv_membus_state_t *)cpu->bus, addr);
+    return mem_read8(addr);
+}
+
+static inline void rv_write8(rv_cpu_state_t *cpu, uint32_t addr, uint8_t val) {
+    if (cpu->bus)
+        rv_mem_write8((rv_membus_state_t *)cpu->bus, addr, val);
+    else
+        mem_write8(addr, val);
+}
 
 /* ========================================================================
  * RV32I Opcode Map (bits [6:0])
@@ -192,7 +237,7 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
 
     /* Fetch instruction (supports both 32-bit and 16-bit compressed) */
     uint32_t instr;
-    uint16_t lo = mem_read16(pc);
+    uint16_t lo = rv_read16(cpu, pc);
 
     int is_compressed = ((lo & 3) != 3);
     if (is_compressed) {
@@ -234,14 +279,14 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
                 uint32_t off = ((ci >> 7) & 0x38) | ((ci >> 4) & 0x4) | ((ci << 1) & 0x40);
                 uint32_t addr = cpu->x[CRS1_P(ci)] + off;
                 if (addr & 3) { rv_trap_enter(cpu, MCAUSE_LOAD_MISALIGNED, addr); return 0; }
-                rv_write_rd(cpu, CRD_P(ci), mem_read32(addr));
+                rv_write_rd(cpu, CRD_P(ci), rv_read32(cpu, addr));
                 break;
             }
             case 6: { /* C.SW: sw rs2', offset(rs1') */
                 uint32_t off = ((ci >> 7) & 0x38) | ((ci >> 4) & 0x4) | ((ci << 1) & 0x40);
                 uint32_t addr = cpu->x[CRS1_P(ci)] + off;
                 if (addr & 3) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
-                mem_write32(addr, cpu->x[CRD_P(ci)]);
+                rv_write32(cpu, addr, cpu->x[CRD_P(ci)]);
                 break;
             }
             default: goto c_illegal;
@@ -389,7 +434,7 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
                 uint32_t off = ((ci >> 7) & 0x20) | ((ci >> 2) & 0x1C) | ((ci << 4) & 0xC0);
                 uint32_t addr = cpu->x[2] + off;
                 if (addr & 3) { rv_trap_enter(cpu, MCAUSE_LOAD_MISALIGNED, addr); return 0; }
-                cpu->x[rd] = mem_read32(addr);
+                cpu->x[rd] = rv_read32(cpu, addr);
                 break;
             }
             case 4: { /* C.MV / C.ADD / C.JR / C.JALR / C.EBREAK */
@@ -432,7 +477,7 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
                 uint32_t off = ((ci >> 7) & 0x3C) | ((ci >> 1) & 0xC0);
                 uint32_t addr = cpu->x[2] + off;
                 if (addr & 3) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
-                mem_write32(addr, cpu->x[CRS2(ci)]);
+                rv_write32(cpu, addr, cpu->x[CRS2(ci)]);
                 break;
             }
             default: goto c_illegal;
@@ -464,7 +509,7 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
     }
 
     /* 32-bit instruction */
-    uint16_t hi = mem_read16(pc + 2);
+    uint16_t hi = rv_read16(cpu, pc + 2);
     instr = (uint32_t)lo | ((uint32_t)hi << 16);
 
     uint32_t opcode = RV_OPCODE(instr);
@@ -560,22 +605,22 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
 
         switch (funct3) {
         case 0: /* LB */
-            val = (uint32_t)(int32_t)(int8_t)mem_read8(addr);
+            val = (uint32_t)(int32_t)(int8_t)rv_read8(cpu, addr);
             break;
         case 1: /* LH */
             if (addr & 1) { rv_trap_enter(cpu, MCAUSE_LOAD_MISALIGNED, addr); return 0; }
-            val = (uint32_t)(int32_t)(int16_t)mem_read16(addr);
+            val = (uint32_t)(int32_t)(int16_t)rv_read16(cpu, addr);
             break;
         case 2: /* LW */
             if (addr & 3) { rv_trap_enter(cpu, MCAUSE_LOAD_MISALIGNED, addr); return 0; }
-            val = mem_read32(addr);
+            val = rv_read32(cpu, addr);
             break;
         case 4: /* LBU */
-            val = (uint32_t)mem_read8(addr);
+            val = (uint32_t)rv_read8(cpu, addr);
             break;
         case 5: /* LHU */
             if (addr & 1) { rv_trap_enter(cpu, MCAUSE_LOAD_MISALIGNED, addr); return 0; }
-            val = (uint32_t)mem_read16(addr);
+            val = (uint32_t)rv_read16(cpu, addr);
             break;
         default: goto illegal;
         }
@@ -593,15 +638,15 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
 
         switch (funct3) {
         case 0: /* SB */
-            mem_write8(addr, (uint8_t)val);
+            rv_write8(cpu, addr, (uint8_t)val);
             break;
         case 1: /* SH */
             if (addr & 1) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
-            mem_write16(addr, (uint16_t)val);
+            rv_write16(cpu, addr, (uint16_t)val);
             break;
         case 2: /* SW */
             if (addr & 3) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
-            mem_write32(addr, val);
+            rv_write32(cpu, addr, val);
             break;
         default: goto illegal;
         }
@@ -720,7 +765,7 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
 
         switch (funct5) {
         case 0x02: { /* LR.W */
-            uint32_t val = mem_read32(addr);
+            uint32_t val = rv_read32(cpu, addr);
             rv_write_rd(cpu, rd, val);
             cpu->lr_reservation = addr;
             cpu->lr_valid = 1;
@@ -728,7 +773,7 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
         }
         case 0x03: { /* SC.W */
             if (cpu->lr_valid && cpu->lr_reservation == addr) {
-                mem_write32(addr, cpu->x[rs2]);
+                rv_write32(cpu, addr, cpu->x[rs2]);
                 rv_write_rd(cpu, rd, 0);  /* Success */
             } else {
                 rv_write_rd(cpu, rd, 1);  /* Failure */
@@ -737,58 +782,58 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
             break;
         }
         case 0x01: { /* AMOSWAP.W */
-            uint32_t old = mem_read32(addr);
-            mem_write32(addr, cpu->x[rs2]);
+            uint32_t old = rv_read32(cpu, addr);
+            rv_write32(cpu, addr, cpu->x[rs2]);
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x00: { /* AMOADD.W */
-            uint32_t old = mem_read32(addr);
-            mem_write32(addr, old + cpu->x[rs2]);
+            uint32_t old = rv_read32(cpu, addr);
+            rv_write32(cpu, addr, old + cpu->x[rs2]);
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x0C: { /* AMOAND.W */
-            uint32_t old = mem_read32(addr);
-            mem_write32(addr, old & cpu->x[rs2]);
+            uint32_t old = rv_read32(cpu, addr);
+            rv_write32(cpu, addr, old & cpu->x[rs2]);
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x08: { /* AMOOR.W */
-            uint32_t old = mem_read32(addr);
-            mem_write32(addr, old | cpu->x[rs2]);
+            uint32_t old = rv_read32(cpu, addr);
+            rv_write32(cpu, addr, old | cpu->x[rs2]);
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x04: { /* AMOXOR.W */
-            uint32_t old = mem_read32(addr);
-            mem_write32(addr, old ^ cpu->x[rs2]);
+            uint32_t old = rv_read32(cpu, addr);
+            rv_write32(cpu, addr, old ^ cpu->x[rs2]);
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x10: { /* AMOMIN.W */
-            uint32_t old = mem_read32(addr);
+            uint32_t old = rv_read32(cpu, addr);
             int32_t a = (int32_t)old, b = (int32_t)cpu->x[rs2];
-            mem_write32(addr, (uint32_t)(a < b ? a : b));
+            rv_write32(cpu, addr, (uint32_t)(a < b ? a : b));
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x14: { /* AMOMAX.W */
-            uint32_t old = mem_read32(addr);
+            uint32_t old = rv_read32(cpu, addr);
             int32_t a = (int32_t)old, b = (int32_t)cpu->x[rs2];
-            mem_write32(addr, (uint32_t)(a > b ? a : b));
+            rv_write32(cpu, addr, (uint32_t)(a > b ? a : b));
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x18: { /* AMOMINU.W */
-            uint32_t old = mem_read32(addr);
-            mem_write32(addr, old < cpu->x[rs2] ? old : cpu->x[rs2]);
+            uint32_t old = rv_read32(cpu, addr);
+            rv_write32(cpu, addr, old < cpu->x[rs2] ? old : cpu->x[rs2]);
             rv_write_rd(cpu, rd, old);
             break;
         }
         case 0x1C: { /* AMOMAXU.W */
-            uint32_t old = mem_read32(addr);
-            mem_write32(addr, old > cpu->x[rs2] ? old : cpu->x[rs2]);
+            uint32_t old = rv_read32(cpu, addr);
+            rv_write32(cpu, addr, old > cpu->x[rs2] ? old : cpu->x[rs2]);
             rv_write_rd(cpu, rd, old);
             break;
         }

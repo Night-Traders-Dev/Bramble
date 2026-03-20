@@ -128,6 +128,9 @@ typedef struct {
 
     /* Debug */
     int debug_enabled;
+
+    /* Memory bus pointer (rv_membus_state_t*, set by init) */
+    void *bus;
 } rv_cpu_state_t;
 
 /* ========================================================================

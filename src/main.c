@@ -23,6 +23,9 @@
 #include <errno.h>
 #include "devtools.h"
 #include "rp2350_rv/rv_cpu.h"
+#include "rp2350_rv/rv_clint.h"
+#include "rp2350_rv/rv_membus.h"
+#include "rp2350_rv/rv_bootrom.h"
 #include "rp2350_rv/rp2350_memmap.h"
 
 /* Architecture selection */
@@ -409,6 +412,7 @@ int main(int argc, char **argv) {
     char *profile_path = NULL;
     char *mem_heatmap_path = NULL;
     arch_t arch = ARCH_M0PLUS;
+    int arch_explicit = 0;   /* User explicitly set -arch */
     int threaded_mode = 0;   /* Use pthread-per-core execution */
     int cores_auto = 0;     /* -cores auto requested */
     int thread_quantum = 0;
@@ -559,8 +563,10 @@ int main(int argc, char **argv) {
                 i++;
                 if (strcmp(argv[i], "rv32") == 0 || strcmp(argv[i], "riscv") == 0) {
                     arch = ARCH_RV32;
+                    arch_explicit = 1;
                 } else if (strcmp(argv[i], "m0+") == 0 || strcmp(argv[i], "arm") == 0) {
                     arch = ARCH_M0PLUS;
+                    arch_explicit = 1;
                 } else {
                     fprintf(stderr, "[Error] Unknown architecture: %s (use m0+ or rv32)\n", argv[i]);
                     return EXIT_FAILURE;
@@ -710,17 +716,6 @@ int main(int argc, char **argv) {
                 num_active_cores);
     }
 
-    fprintf(stderr,"\n╔════════════════════════════════════════════════════════════╗\n");
-    if (arch == ARCH_RV32) {
-        fprintf(stderr,"║    Bramble RP2350 Emulator - Hazard3 RV32IMAC              ║\n");
-    } else {
-        fprintf(stderr,"║    Bramble RP2040 Emulator - %s Mode%s          ║\n",
-                num_active_cores == 1 ? "Single-Core" : "Dual-Core",
-                threaded_mode ? " (threaded)" : "          ");
-    }
-    fprintf(stderr,"╚════════════════════════════════════════════════════════════╝\n\n");
-
-
     fprintf(stderr,"[Init] Loading firmware: %s\n", firmware_path);
 
     /* ========================================================================
@@ -749,6 +744,28 @@ int main(int argc, char **argv) {
     }
 
     fprintf(stderr,"[Init] Firmware loaded successfully\n");
+
+    /* Auto-detect architecture from firmware if user didn't specify -arch */
+    if (!arch_explicit) {
+        int fw_arch = loader_detected_arch();
+        if (fw_arch == FW_ARCH_RV32) {
+            arch = ARCH_RV32;
+            fprintf(stderr, "[Init] Auto-detected RISC-V firmware — switching to -arch rv32\n");
+        } else if (fw_arch == FW_ARCH_ARM_M33) {
+            fprintf(stderr, "[Init] Auto-detected Cortex-M33 firmware (RP2350 ARM mode not yet supported, using M0+)\n");
+        }
+    }
+
+    /* Display banner (after arch auto-detection) */
+    fprintf(stderr,"\n╔════════════════════════════════════════════════════════════╗\n");
+    if (arch == ARCH_RV32) {
+        fprintf(stderr,"║    Bramble RP2350 Emulator - Hazard3 RV32IMAC              ║\n");
+    } else {
+        fprintf(stderr,"║    Bramble RP2040 Emulator - %s Mode%s          ║\n",
+                num_active_cores == 1 ? "Single-Core" : "Dual-Core",
+                threaded_mode ? " (threaded)" : "          ");
+    }
+    fprintf(stderr,"╚════════════════════════════════════════════════════════════╝\n\n");
 
     /* Flash persistence: restore non-firmware sectors from flash file */
     if (flash_path) {
@@ -1008,29 +1025,51 @@ skip_fuse:
     if (arch == ARCH_RV32) {
         /* ====== RISC-V Hazard3 execution ====== */
         static rv_cpu_state_t rv_cores[2];
+        static rv_membus_state_t rv_bus;
 
+        /* Initialize RP2350 memory bus with 520KB SRAM */
+        rv_membus_init(&rv_bus, cpu.flash, FLASH_SIZE,
+                       timing_config.cycles_per_us);
+
+        /* Initialize bootrom in RP2350 ROM */
+        rv_bootrom_init(rv_bus.rom, rv_bus.rom_size,
+                        RP2350_FLASH_BASE, RP2350_SRAM_END);
+
+        /* Initialize both harts */
         rv_cpu_init(&rv_cores[0], 0);
         rv_cpu_init(&rv_cores[1], 1);
 
-        /* Load entry point from flash vector table or ELF entry */
-        uint32_t rv_entry = FLASH_BASE;  /* Default: flash base */
-        /* Check for valid RISC-V entry: read reset vector from beginning of flash */
-        uint32_t first_word;
-        memcpy(&first_word, &cpu.flash[0], 4);
-        if (first_word != 0xFFFFFFFF && first_word != 0x00000000) {
-            rv_entry = FLASH_BASE;  /* Boot from flash start */
-        }
+        /* Attach memory bus to both harts */
+        rv_cores[0].bus = &rv_bus;
+        rv_cores[1].bus = &rv_bus;
 
-        rv_cpu_reset(&rv_cores[0], rv_entry);
-        /* Core 1 stays halted until launched by firmware */
+        /* Boot hart 0 from ROM (bootrom sets SP and jumps to flash) */
+        rv_cpu_reset(&rv_cores[0], 0x00000000);
+        /* Hart 1 stays halted until launched by firmware */
 
-        fprintf(stderr, "[RV] Hazard3 Core 0 starting at PC=0x%08X\n", rv_entry);
-        fprintf(stderr, "[RV] SRAM: %uKB, Flash: %uKB\n",
-                RP2350_SRAM_SIZE / 1024, FLASH_SIZE / 1024);
+        fprintf(stderr, "[RV] Hazard3 Hart 0 booting from ROM\n");
+        fprintf(stderr, "[RV] SRAM: %uKB, Flash: %uKB, ROM: %uKB\n",
+                RP2350_SRAM_SIZE / 1024, FLASH_SIZE / 1024,
+                rv_bus.rom_size / 1024);
 
         while (!rv_cpu_is_halted(&rv_cores[0])) {
-            rv_cpu_step(&rv_cores[0]);
+            /* Step hart 0 */
+            if (!rv_cores[0].is_wfi)
+                rv_cpu_step(&rv_cores[0]);
+
+            /* Step hart 1 if active */
+            if (!rv_cores[1].is_halted && !rv_cores[1].is_wfi)
+                rv_cpu_step(&rv_cores[1]);
+
             step_count++;
+
+            /* Advance CLINT timer */
+            rv_clint_tick(&rv_bus.clint, 1);
+
+            /* Check and deliver interrupts to both harts */
+            rv_clint_check_interrupts(&rv_bus.clint, &rv_cores[0]);
+            if (!rv_cores[1].is_halted)
+                rv_clint_check_interrupts(&rv_bus.clint, &rv_cores[1]);
 
             /* Poll stdin and peripherals periodically */
             if (stdin_enabled && (step_count & 0x3FF) == 0)
@@ -1051,8 +1090,15 @@ skip_fuse:
         }
 
         instruction_count = rv_cores[0].step_count;
-        fprintf(stderr, "\n[RV] Core 0: PC=0x%08X, %u instructions executed\n",
-                rv_cores[0].pc, rv_cores[0].step_count);
+        fprintf(stderr, "\n[RV] Hart 0: PC=0x%08X, %u instructions, %lu cycles\n",
+                rv_cores[0].pc, rv_cores[0].step_count,
+                (unsigned long)rv_cores[0].cycle_count);
+        if (!rv_cores[1].is_halted)
+            fprintf(stderr, "[RV] Hart 1: PC=0x%08X, %u instructions, %lu cycles\n",
+                    rv_cores[1].pc, rv_cores[1].step_count,
+                    (unsigned long)rv_cores[1].cycle_count);
+        fprintf(stderr, "[RV] CLINT mtime: %lu\n",
+                (unsigned long)rv_bus.clint.mtime);
 
     } else if (threaded_mode && !gdb_enabled) {
         /* ====== Threaded execution: one host pthread per emulated core ====== */

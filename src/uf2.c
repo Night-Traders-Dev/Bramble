@@ -12,15 +12,21 @@ typedef struct {
     uint32_t payload_size;
     uint32_t block_no;
     uint32_t num_blocks;
-    uint32_t file_size;    /* or familyID */
+    uint32_t file_size;    /* or familyID when flags & 0x2000 */
     uint8_t  data[476];
     uint32_t magic_end;
 } __attribute__((packed)) uf2_block_t;
 
-#define UF2_MAGIC_START0 0x0A324655  /* "UF2
-" */
+#define UF2_MAGIC_START0 0x0A324655  /* "UF2\n" */
 #define UF2_MAGIC_START1 0x9E5D5157
 #define UF2_MAGIC_END    0x0AB16F30  /* End marker */
+
+/* Detected architecture from last firmware load (shared with elf.c) */
+int detected_arch = FW_ARCH_UNKNOWN;
+
+int loader_detected_arch(void) {
+    return detected_arch;
+}
 
 static int uf2_block_flash_offset(const uf2_block_t *block, uint32_t *offset_out) {
     if (block->payload_size > sizeof(block->data)) {
@@ -42,6 +48,15 @@ static int uf2_block_flash_offset(const uf2_block_t *block, uint32_t *offset_out
     return 1;
 }
 
+static const char *family_id_name(uint32_t id) {
+    switch (id) {
+    case UF2_FAMILY_RP2040:     return "RP2040 (Cortex-M0+)";
+    case UF2_FAMILY_RP2350_ARM: return "RP2350 (Cortex-M33)";
+    case UF2_FAMILY_RP2350_RV:  return "RP2350 (Hazard3 RISC-V)";
+    default:                    return "Unknown";
+    }
+}
+
 int load_uf2(const char *filename) {
     FILE *f = fopen(filename, "rb");
     if (!f) {
@@ -52,6 +67,8 @@ int load_uf2(const char *filename) {
     uf2_block_t block;
     int blocks_loaded = 0;
     int blocks_total = 0;
+    uint32_t family_id = 0;
+    int family_detected = 0;
 
     fprintf(stderr, "[LOADER] Starting UF2 load from: %s\n", filename);
 
@@ -60,7 +77,7 @@ int load_uf2(const char *filename) {
 
         /* DEBUG: Print block info */
         fprintf(stderr, "[LOADER] Block %d: magic0=0x%08X magic1=0x%08X target=0x%08X size=%u\n",
-               blocks_total, block.magic_start0, block.magic_start1, 
+               blocks_total, block.magic_start0, block.magic_start1,
                block.target_addr, block.payload_size);
 
         if (block.payload_size > 0) {
@@ -83,6 +100,21 @@ int load_uf2(const char *filename) {
             fprintf(stderr, "[LOADER] Got:      0x%08X 0x%08X 0x%08X\n",
                    block.magic_start0, block.magic_start1, block.magic_end);
             continue;
+        }
+
+        /* Detect family ID from first valid block */
+        if (!family_detected && (block.flags & UF2_FLAG_FAMILY_PRESENT)) {
+            family_id = block.file_size;
+            family_detected = 1;
+            fprintf(stderr, "[LOADER] UF2 family ID: 0x%08X (%s)\n",
+                    family_id, family_id_name(family_id));
+
+            switch (family_id) {
+            case UF2_FAMILY_RP2040:     detected_arch = FW_ARCH_ARM_M0P; break;
+            case UF2_FAMILY_RP2350_ARM: detected_arch = FW_ARCH_ARM_M33; break;
+            case UF2_FAMILY_RP2350_RV:  detected_arch = FW_ARCH_RV32;    break;
+            default:                    detected_arch = FW_ARCH_UNKNOWN;  break;
+            }
         }
 
         /* Bounds check before writing */
@@ -108,6 +140,9 @@ int load_uf2(const char *filename) {
 
     fclose(f);
     fprintf(stderr, "[LOADER] Load complete: %d/%d valid blocks processed\n", blocks_loaded, blocks_total);
+
+    if (!family_detected)
+        fprintf(stderr, "[LOADER] No family ID found — assuming RP2040\n");
 
     /* DEBUG: Show first words of flash */
     uint32_t flash0, flash4;

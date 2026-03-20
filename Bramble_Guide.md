@@ -3,26 +3,27 @@
 
 ## 1.1 Design Goals
 
-Bramble is designed as a **development and debugging tool** for RP2040 firmware that:
+Bramble is designed as a **development and debugging tool** for RP2040 and RP2350 firmware that:
 
 - **Boots real firmware**: UF2 and ELF binaries produced by the Pico SDK, MicroPython, CircuitPython, and third-party projects run unmodified.
-- **Emulates both cores**: True dual-core execution with per-core NVIC, SysTick, exception stacks, and inter-core FIFO — either cooperatively (round-robin) or with host pthreads.
-- **Provides full peripheral coverage**: GPIO, Timer, UART, SPI, I2C, PWM, DMA, PIO, ADC, USB, RTC, and CYW43 WiFi — all register-accurate against the RP2040 datasheet.
+- **Emulates both cores**: RP2040: true dual-core ARM with per-core NVIC, SysTick, exception stacks, and inter-core FIFO. RP2350: dual Hazard3 RISC-V harts with CLINT interrupt controller.
+- **Provides full peripheral coverage**: GPIO, Timer, UART, SPI, I2C, PWM, DMA, PIO, ADC, USB, RTC, and CYW43 WiFi — all register-accurate against the RP2040/RP2350 datasheets.
 - **Supports interactive debugging**: GDB remote serial protocol with breakpoints, watchpoints, conditional breakpoints, and dual-core thread support.
 - **Enables multi-device systems**: UART-to-TCP bridging, Unix-domain-socket wiring between Bramble instances, SPI-attached SD card and eMMC emulation.
+- **Auto-detects firmware architecture**: UF2 family ID and ELF machine type automatically select RP2040 ARM or RP2350 RISC-V execution mode.
 
 ## 1.2 System Characteristics
 
 | Feature | Details |
 |---------|---------|
-| **Target** | RP2040 (dual ARM Cortex-M0+, ARMv6-M) |
+| **Targets** | RP2040 (dual ARM Cortex-M0+), RP2350 (dual Hazard3 RISC-V RV32IMAC) |
 | **Language** | C99 with POSIX extensions |
 | **Build** | CMake, links `-lm -lpthread` |
-| **Instruction Set** | 65+ Thumb-1 instructions + BL, MSR, MRS, DSB/DMB/ISB |
-| **Memory** | 2 MB XIP flash, 264 KB SRAM (per-core + shared), 16 KB ROM |
-| **Peripherals** | 20+ modules (GPIO, Timer, NVIC, UART, SPI, I2C, PWM, DMA, PIO, ADC, USB, RTC, Clocks, XOSC, PLLs, ROSC, Watchdog, SIO, CYW43) |
-| **Cores** | 1 or 2 emulated cores; cooperative or host-threaded execution |
-| **Firmware Formats** | UF2, ELF32 ARM |
+| **Instruction Sets** | ARM: 65+ Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB. RISC-V: 93 RV32IMAC (I+M+A+C+Zicsr) |
+| **Memory** | RP2040: 2MB flash, 264KB SRAM, 16KB ROM. RP2350: 2MB flash, 520KB SRAM, 32KB ROM |
+| **Peripherals** | 30+ modules (GPIO, Timer, NVIC, UART, SPI, I2C, PWM, DMA, PIO, ADC, USB, RTC, Clocks, XOSC, PLLs, ROSC, Watchdog, SIO, CYW43, CLINT) |
+| **Cores** | RP2040: 1-2 cores, cooperative or host-threaded. RP2350: dual-hart cooperative |
+| **Firmware Formats** | UF2 (with family ID auto-detect), ELF32 ARM/RISC-V |
 | **Debugging** | GDB RSP over TCP; 16 breakpoints, 16 watchpoints, conditional breakpoints |
 | **Clock Model** | Configurable cycles-per-µs (`-clock <MHz>`); ARMv6-M instruction timing table |
 | **Performance** | Instruction cache (64K entries) + optional JIT basic block compilation (`-jit`) |
@@ -47,6 +48,16 @@ Bramble operates in two execution modes:
 3. WFI/WFE instructions release the lock and sleep on a condition variable
 4. `corepool_wake_cores()` signals sleeping cores when interrupts become pending
 5. Main thread handles I/O polling, watchdog, and storage flush
+
+**RISC-V mode** (`-arch rv32` or auto-detected):
+
+1. Both harts stepped cooperatively in a single loop (hart 0, then hart 1 if active)
+2. CLINT mtime advances each step based on configured clock frequency
+3. `rv_clint_check_interrupts()` evaluates mip/mie/mstatus.MIE and delivers pending interrupts
+4. Interrupt priority: MEIP (external) > MSIP (software) > MTIP (timer)
+5. WFI halts the hart until any pending+enabled interrupt wakes it
+6. Hart 1 starts halted; firmware launches it via SIO or custom mechanism
+7. Memory accesses route through RP2350 bus: 520KB SRAM locally, shared peripherals via RP2040 bus
 
 ## 1.4 Boot Sequence
 

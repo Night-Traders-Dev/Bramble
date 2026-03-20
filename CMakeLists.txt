@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(Bramble
-    VERSION 0.36.0
-    DESCRIPTION "A lightweight RP2040 emulator in C"
+    VERSION 0.38.0
+    DESCRIPTION "A lightweight RP2040/RP2350 emulator in C"
     LANGUAGES C
 )
 
@@ -59,6 +59,9 @@ set(EMU_SOURCES
     src/tapif.c
     src/devtools.c
     src/rp2350_rv/rv_cpu.c
+    src/rp2350_rv/rv_clint.c
+    src/rp2350_rv/rv_membus.c
+    src/rp2350_rv/rv_bootrom.c
 )
 
 # ========================================================================
