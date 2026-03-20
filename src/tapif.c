@@ -41,6 +41,9 @@ int tapif_open(const char *name) {
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
     fprintf(stderr, "[TAP] Interface '%s' opened (fd=%d)\n", ifr.ifr_name, fd);
+    fprintf(stderr, "[TAP] To configure the interface, run in another terminal:\n");
+    fprintf(stderr, "[TAP]   sudo ip addr add 192.168.4.1/24 dev %s\n", ifr.ifr_name);
+    fprintf(stderr, "[TAP]   sudo ip link set %s up\n", ifr.ifr_name);
     return fd;
 }
 

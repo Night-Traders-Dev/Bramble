@@ -690,12 +690,17 @@ void cyw43_tap_poll(void) {
     if (cyw43.wifi_state != CYW43_WIFI_CONNECTED) return;
 
     /* Read Ethernet frames from TAP and queue for firmware */
-    uint8_t eth_buf[1600];
-    int n = tapif_read(cyw43.tap_fd, eth_buf, sizeof(eth_buf));
+    uint8_t eth_buf[1518];  /* Max Ethernet frame (tapif_read clamps to this) */
+    int n = tapif_read(cyw43.tap_fd, eth_buf, (int)sizeof(eth_buf));
     if (n > 0) {
         cyw43_queue_rx_data(eth_buf, n);
         if (cpu.debug_enabled)
             fprintf(stderr, "[CYW43] TAP RX: %d bytes queued\n", n);
+    } else if (n < 0) {
+        /* Persistent error — close TAP to avoid spin-polling a dead fd */
+        fprintf(stderr, "[CYW43] TAP read error, closing interface\n");
+        tapif_close(cyw43.tap_fd);
+        cyw43.tap_fd = -1;
     }
 }
 
