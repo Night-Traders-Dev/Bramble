@@ -347,6 +347,20 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -trace <file>         Write instruction trace to binary file\n");
         fprintf(stderr, "  -exit-code <addr>     Read exit code from RAM address on halt\n");
         fprintf(stderr, "  -timeout <seconds>    Kill emulator after N seconds (exit 124)\n");
+        fprintf(stderr, "  -symbols <elf>        Load ELF symbols for readable reports\n");
+        fprintf(stderr, "  -script <file>        Scripted I/O (timestamped UART/GPIO input)\n");
+        fprintf(stderr, "  -expect <file>        Compare stdout against golden file (exit 0/1)\n");
+        fprintf(stderr, "  -watch <addr[:len]>   Log reads/writes to address range\n");
+        fprintf(stderr, "  -callgraph <file>     Write call graph in DOT format\n");
+        fprintf(stderr, "  -stack-check          Track per-core stack watermark\n");
+        fprintf(stderr, "  -irq-latency          Measure IRQ delivery latency (cycles)\n");
+        fprintf(stderr, "  -log-uart             Log UART TX/RX bytes\n");
+        fprintf(stderr, "  -log-spi              Log SPI MOSI/MISO bytes\n");
+        fprintf(stderr, "  -log-i2c              Log I2C transactions\n");
+        fprintf(stderr, "  -gpio-trace <file>    Record GPIO changes as VCD (GTKWave format)\n");
+        fprintf(stderr, "  -inject-fault <spec>  Inject fault (flash_bitflip:cycle:addr, etc.)\n");
+        fprintf(stderr, "  -profile <file>       Per-PC cycle profiling (CSV output)\n");
+        fprintf(stderr, "  -mem-heatmap <file>   Memory access heatmap (CSV output)\n");
         return EXIT_FAILURE;
     }
 
@@ -375,6 +389,13 @@ int main(int argc, char **argv) {
     char *trace_path = NULL;
     char *exit_code_arg = NULL;
     int timeout_secs = 0;
+    char *symbols_path = NULL;
+    char *script_path = NULL;
+    char *expect_file = NULL;
+    char *callgraph_path = NULL;
+    char *gpio_trace_path = NULL;
+    char *profile_path = NULL;
+    char *mem_heatmap_path = NULL;
     int threaded_mode = 0;   /* Use pthread-per-core execution */
     int cores_auto = 0;     /* -cores auto requested */
     int thread_quantum = 0;
@@ -541,6 +562,41 @@ int main(int argc, char **argv) {
             if (i + 1 < argc) {
                 timeout_secs = atoi(argv[++i]);
             }
+        } else if (strcmp(argv[i], "-symbols") == 0) {
+            if (i + 1 < argc) symbols_path = argv[++i];
+        } else if (strcmp(argv[i], "-script") == 0) {
+            if (i + 1 < argc) script_path = argv[++i];
+        } else if (strcmp(argv[i], "-expect") == 0) {
+            if (i + 1 < argc) expect_file = argv[++i];
+        } else if (strcmp(argv[i], "-watch") == 0) {
+            if (i + 1 < argc) {
+                char *arg = argv[++i];
+                uint32_t waddr = 0; uint32_t wlen = 4;
+                char *colon = strchr(arg, ':');
+                if (colon) { *colon = '\0'; wlen = (uint32_t)strtoul(colon + 1, NULL, 0); }
+                waddr = (uint32_t)strtoul(arg, NULL, 0);
+                watch_add(waddr, wlen);
+            }
+        } else if (strcmp(argv[i], "-callgraph") == 0) {
+            if (i + 1 < argc) callgraph_path = argv[++i];
+        } else if (strcmp(argv[i], "-stack-check") == 0) {
+            stack_check_enabled = 1;
+        } else if (strcmp(argv[i], "-irq-latency") == 0) {
+            irq_latency_enabled = 1;
+        } else if (strcmp(argv[i], "-log-uart") == 0) {
+            log_uart_enabled = 1;
+        } else if (strcmp(argv[i], "-log-spi") == 0) {
+            log_spi_enabled = 1;
+        } else if (strcmp(argv[i], "-log-i2c") == 0) {
+            log_i2c_enabled = 1;
+        } else if (strcmp(argv[i], "-gpio-trace") == 0) {
+            if (i + 1 < argc) gpio_trace_path = argv[++i];
+        } else if (strcmp(argv[i], "-inject-fault") == 0) {
+            if (i + 1 < argc) fault_add(argv[++i]);
+        } else if (strcmp(argv[i], "-profile") == 0) {
+            if (i + 1 < argc) profile_path = argv[++i];
+        } else if (strcmp(argv[i], "-mem-heatmap") == 0) {
+            if (i + 1 < argc) mem_heatmap_path = argv[++i];
         }
     }
 
@@ -828,6 +884,37 @@ int main(int argc, char **argv) {
     if (timeout_secs > 0) {
         timeout_start(timeout_secs);
     }
+    if (symbols_path) {
+        symbols_load(symbols_path);
+    }
+    if (script_path) {
+        script_init(script_path);
+    }
+    if (expect_file) {
+        expect_init(expect_file);
+    }
+    if (callgraph_path) {
+        callgraph_init();
+        fprintf(stderr, "[Init] Call graph enabled → %s\n", callgraph_path);
+    }
+    if (stack_check_enabled) {
+        fprintf(stderr, "[Init] Stack watermark tracking enabled\n");
+    }
+    if (irq_latency_enabled) {
+        memset(irq_latency, 0, sizeof(irq_latency));
+        fprintf(stderr, "[Init] IRQ latency profiling enabled\n");
+    }
+    if (gpio_trace_path) {
+        gpio_trace_init(gpio_trace_path);
+    }
+    if (profile_path) {
+        profile_init();
+        fprintf(stderr, "[Init] Cycle profiling enabled → %s\n", profile_path);
+    }
+    if (mem_heatmap_path) {
+        mem_heatmap_init();
+        fprintf(stderr, "[Init] Memory heatmap enabled → %s\n", mem_heatmap_path);
+    }
 
     /* ========================================================================
      * Execution Phase
@@ -945,6 +1032,15 @@ int main(int argc, char **argv) {
             pio_step();
             usb_step();
             step_count++;
+
+            /* Fault injection and scripted I/O */
+            if (__builtin_expect(fault_count > 0, 0))
+                fault_check(global_cycle_count);
+            if (__builtin_expect(script_enabled, 0)) {
+                uint32_t eus = (timing_config.cycles_per_us > 0)
+                    ? (uint32_t)(global_cycle_count / timing_config.cycles_per_us) : 0;
+                script_poll(eus);
+            }
 
             /* Poll stdin for UART Rx data every 1024 steps */
             if (stdin_enabled && (step_count & 0x3FF) == 0) {
@@ -1080,10 +1176,31 @@ int main(int argc, char **argv) {
     if (hotspots_enabled) hotspots_cleanup();
     if (trace_enabled) trace_cleanup();
     if (timeout_secs > 0) timeout_cancel();
+    if (callgraph_path) {
+        callgraph_dump(callgraph_path);
+        callgraph_cleanup();
+    }
+    if (stack_check_enabled) stack_check_report();
+    if (irq_latency_enabled) irq_latency_report();
+    if (gpio_trace_path) gpio_trace_cleanup();
+    if (profile_path) {
+        profile_dump(profile_path);
+        profile_report();
+        profile_cleanup();
+    }
+    if (mem_heatmap_path) {
+        mem_heatmap_dump(mem_heatmap_path);
+        mem_heatmap_cleanup();
+    }
+    if (script_enabled) script_cleanup();
+    if (symbols_loaded) symbols_cleanup();
 
     /* Determine exit code */
     int result = EXIT_SUCCESS;
-    if (timeout_expired) {
+    if (expect_enabled) {
+        result = expect_check();
+        expect_cleanup();
+    } else if (timeout_expired) {
         result = 124;  /* Match GNU timeout convention */
     } else if (semihost_exit_requested) {
         result = semihost_exit_code;

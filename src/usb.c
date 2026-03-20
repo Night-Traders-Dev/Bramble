@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include "usb.h"
 #include "nvic.h"
+#include "devtools.h"
 
 usb_state_t usb_state;
 int usb_cdc_stdout_enabled = 0;
@@ -410,6 +411,8 @@ static void usb_handle_cdc(void) {
             if (usb_cdc_stdout_enabled) {
                 fwrite(&usb_state.dpram[buf_addr], 1, len, stdout);
                 fflush(stdout);
+                if (__builtin_expect(expect_enabled, 0))
+                    expect_append((const char *)&usb_state.dpram[buf_addr], len);
             }
         }
 

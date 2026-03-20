@@ -142,6 +142,20 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-trace` | `<file>` | Write instruction trace (PC, opcode, cycles) to binary file |
 | `-exit-code` | `<addr>` | Read uint32 from RAM address on halt as process exit code |
 | `-timeout` | `<seconds>` | Kill emulator after N seconds (exit code 124) |
+| `-symbols` | `<elf>` | Load ELF symbols for readable function names in reports |
+| `-callgraph` | `<file>` | Write call graph in DOT format (Graphviz) |
+| `-stack-check` | | Track per-core SP watermark, warn on near-overflow |
+| `-irq-latency` | | Measure IRQ delivery latency in cycles (min/avg/max) |
+| `-log-uart` | | Log every UART TX/RX byte to stderr |
+| `-log-spi` | | Log every SPI MOSI/MISO byte to stderr |
+| `-log-i2c` | | Log every I2C transaction to stderr |
+| `-gpio-trace` | `<file>` | Record GPIO pin changes as VCD (GTKWave/PulseView) |
+| `-script` | `<file>` | Feed timestamped UART/GPIO input from script file |
+| `-expect` | `<file>` | Compare stdout against golden file (exit 0=match, 1=diff) |
+| `-watch` | `<addr[:len]>` | Log reads/writes to address range (up to 8 regions) |
+| `-inject-fault` | `<spec>` | Schedule faults: `flash_bitflip:cycle:addr`, `brownout:cycle` |
+| `-profile` | `<file>` | Per-PC cycle profiling (CSV with function names if `-symbols`) |
+| `-mem-heatmap` | `<file>` | Memory access heatmap per 256-byte block (CSV) |
 
 ## 3.4 Storage Options
 
@@ -1245,6 +1259,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 | Version | Key Features |
 |---------|-------------|
+| v0.35.0 | Advanced devtools: symbols, callgraph, VCD, IRQ latency, stack check, bus logging, script I/O, expect, watch, fault injection, cycle profile, heatmap |
 | v0.34.0 | Developer tools (semihosting, coverage, hotspots, trace, exit codes, timeouts), SYSCFG + TBMAN peripherals, JIT fixes |
 | v0.33.0 | Auto-sudo for `-tap`/`-mount`, watchdog reboot resets full multicore state, SysTick reset on reboot |
 | v0.31.0 | CYW43/Pico W support, TAP bridge, JIT basic-block compilation, benchmarked speedups |

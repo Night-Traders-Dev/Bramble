@@ -993,6 +993,8 @@ void mem_write32(uint32_t addr, uint32_t val) {
         memcpy(&get_ram()[offset], &val, 4);
         icache_invalidate_addr(addr);
         jit_invalidate_addr(addr);
+        if (__builtin_expect(watch_count > 0, 0)) watch_check_write(addr, val, 4);
+        if (__builtin_expect(mem_heatmap_enabled, 0)) mem_heatmap_record_write(addr);
         return;
     }
 
@@ -1445,6 +1447,8 @@ uint32_t mem_read32(uint32_t addr) {
         uint32_t offset = addr - active_ram_base;
         uint32_t val;
         memcpy(&val, &get_ram()[offset], 4);
+        if (__builtin_expect(watch_count > 0, 0)) watch_check_read(addr, val, 4);
+        if (__builtin_expect(mem_heatmap_enabled, 0)) mem_heatmap_record_read(addr);
         return val;
     }
 

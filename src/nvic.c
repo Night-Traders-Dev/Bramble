@@ -3,6 +3,7 @@
 #include "nvic.h"
 #include "emulator.h"
 #include "corepool.h"
+#include "devtools.h"
 
 /* Per-core NVIC state (RP2040 has independent NVIC per core) */
 nvic_state_t nvic_states[2] = {{0}};
@@ -497,6 +498,10 @@ void nvic_signal_irq(uint32_t irq) {
         }
 
         last_irq_signal = irq;
+
+        /* IRQ latency profiling: record pend time */
+        if (__builtin_expect(irq_latency_enabled, 0))
+            irq_latency_pend(irq);
 
         /* Set pending on BOTH cores (shared interrupt line) */
         for (int c = 0; c < 2; c++) {

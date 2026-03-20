@@ -216,4 +216,274 @@ static inline void trace_record(uint32_t pc, uint16_t opcode, uint16_t cycles) {
     fwrite(rec, 1, 8, trace_file);
 }
 
+/* ========================================================================
+ * ELF Symbol Table Loading
+ *
+ * Parses .symtab + .strtab from an ELF32 file to resolve addresses to
+ * function names.  Used by hotspots, trace, callgraph, and crash reports.
+ * ======================================================================== */
+
+extern int symbols_loaded;
+
+int  symbols_load(const char *elf_path);
+void symbols_cleanup(void);
+const char *symbols_lookup(uint32_t addr, uint32_t *offset_out);
+
+/* ========================================================================
+ * Scripted I/O
+ *
+ * Feeds timestamped UART/GPIO input from a text file:
+ *   100ms: uart0 "hello\n"
+ *   200ms: gpio25 1
+ * ======================================================================== */
+
+extern int script_enabled;
+
+int  script_init(const char *path);
+void script_poll(uint32_t elapsed_us);
+void script_cleanup(void);
+
+/* ========================================================================
+ * Expected Output Matching
+ *
+ * Captures stdout and compares against a golden file on exit.
+ * Exit 0 on match, exit 1 on diff.
+ * ======================================================================== */
+
+extern int expect_enabled;
+extern char *expect_path;
+extern char *expect_capture_buf;
+extern size_t expect_capture_len;
+extern size_t expect_capture_cap;
+
+void expect_init(const char *path);
+void expect_append(const char *data, size_t len);
+int  expect_check(void);
+void expect_cleanup(void);
+
+/* ========================================================================
+ * Memory Watch Log
+ *
+ * Logs every read/write to a specified address range to stderr.
+ * Lightweight alternative to GDB watchpoints.
+ * ======================================================================== */
+
+#define MAX_WATCH_REGIONS 8
+
+typedef struct {
+    uint32_t addr;
+    uint32_t len;
+    int active;
+} watch_region_t;
+
+extern watch_region_t watch_regions[MAX_WATCH_REGIONS];
+extern int watch_count;
+
+int  watch_add(uint32_t addr, uint32_t len);
+void watch_check_write(uint32_t addr, uint32_t val, int width);
+void watch_check_read(uint32_t addr, uint32_t val, int width);
+
+/* ========================================================================
+ * Call Graph
+ *
+ * Tracks BL/BLX calls and POP-PC/BX-LR returns to build a caller→callee
+ * graph with call counts.  Outputs DOT format.
+ * ======================================================================== */
+
+extern int callgraph_enabled;
+
+void callgraph_init(void);
+void callgraph_record_call(uint32_t caller_pc, uint32_t target_pc);
+void callgraph_dump(const char *path);
+void callgraph_cleanup(void);
+
+/* ========================================================================
+ * Stack Watermark
+ *
+ * Tracks SP high-water mark (lowest SP value) per core.
+ * Reports stack depth on exit, warns if SP enters danger zone.
+ * ======================================================================== */
+
+extern int stack_check_enabled;
+extern uint32_t stack_watermark[2]; /* Per-core lowest SP seen */
+
+static inline void stack_check_record(int core, uint32_t sp) {
+    if (!stack_check_enabled) return;
+    if (sp < stack_watermark[core] && sp >= RAM_BASE) {
+        stack_watermark[core] = sp;
+    }
+}
+
+void stack_check_report(void);
+
+/* ========================================================================
+ * IRQ Latency Profiling
+ *
+ * Measures cycles from nvic_set_pending() to handler entry for each IRQ.
+ * ======================================================================== */
+
+#define IRQ_LATENCY_MAX_IRQS 32
+
+typedef struct {
+    uint64_t total_cycles;
+    uint32_t count;
+    uint32_t min_cycles;
+    uint32_t max_cycles;
+    uint64_t pend_cycle;  /* Cycle count when last pended */
+} irq_latency_entry_t;
+
+extern int irq_latency_enabled;
+extern irq_latency_entry_t irq_latency[IRQ_LATENCY_MAX_IRQS];
+extern uint64_t global_cycle_count;
+
+void irq_latency_pend(uint32_t irq);
+void irq_latency_enter(uint32_t irq);
+void irq_latency_report(void);
+
+/* ========================================================================
+ * Bus Transaction Logging (UART/SPI/I2C)
+ * ======================================================================== */
+
+extern int log_uart_enabled;
+extern int log_spi_enabled;
+extern int log_i2c_enabled;
+
+void bus_log_uart(int num, int is_tx, uint8_t byte);
+void bus_log_spi(int num, int is_tx, uint8_t byte);
+void bus_log_i2c(int num, int is_write, uint8_t addr, uint8_t byte);
+
+/* ========================================================================
+ * GPIO VCD Trace
+ *
+ * Records GPIO pin changes with cycle-accurate timestamps.
+ * Output in Value Change Dump (VCD) format for GTKWave/PulseView.
+ * ======================================================================== */
+
+extern int gpio_trace_enabled;
+
+void gpio_trace_init(const char *path);
+void gpio_trace_record(uint8_t pin, uint8_t value);
+void gpio_trace_cleanup(void);
+
+/* ========================================================================
+ * Fault Injection
+ *
+ * Simulate hardware faults at specified cycle counts:
+ *   flash_bitflip:<cycle>:<addr>    Flip a bit in flash
+ *   ram_corrupt:<cycle>:<addr>      Write garbage to RAM
+ *   brownout:<cycle>                Trigger watchdog reboot
+ * ======================================================================== */
+
+#define MAX_FAULT_INJECTIONS 16
+
+typedef enum {
+    FAULT_FLASH_BITFLIP,
+    FAULT_RAM_CORRUPT,
+    FAULT_BROWNOUT,
+} fault_type_t;
+
+typedef struct {
+    fault_type_t type;
+    uint64_t trigger_cycle;
+    uint32_t addr;
+    int fired;
+} fault_injection_t;
+
+extern fault_injection_t fault_injections[MAX_FAULT_INJECTIONS];
+extern int fault_count;
+
+int  fault_add(const char *spec);
+void fault_check(uint64_t cycle);
+
+/* ========================================================================
+ * Cycle Profiling
+ *
+ * Per-address cycle accounting — tracks total cycles consumed at each PC.
+ * Combined with -symbols gives per-function timing.
+ * ======================================================================== */
+
+extern int profile_enabled;
+
+void profile_init(void);
+void profile_cleanup(void);
+
+static inline void profile_record(uint32_t pc, uint32_t cycles);
+
+void profile_dump(const char *path);
+void profile_report(void);
+
+/* Profile map: same structure as hotspots but tracking cycles */
+typedef struct {
+    uint32_t pc;
+    uint32_t total_cycles;
+    uint32_t count;
+} profile_entry_t;
+
+#define PROFILE_MAP_SIZE    (1 << 18)
+#define PROFILE_MAP_MASK    (PROFILE_MAP_SIZE - 1)
+
+extern profile_entry_t *profile_map;
+
+static inline void profile_record(uint32_t pc, uint32_t cycles) {
+    if (!profile_enabled) return;
+    uint32_t idx = (pc >> 1) & PROFILE_MAP_MASK;
+    profile_entry_t *e = &profile_map[idx];
+    if (e->pc == pc) {
+        e->total_cycles += cycles;
+        e->count++;
+    } else if (e->count == 0) {
+        e->pc = pc;
+        e->total_cycles = cycles;
+        e->count = 1;
+    } else {
+        e->total_cycles += cycles;
+        e->count++;
+        e->pc = pc;
+    }
+}
+
+/* ========================================================================
+ * Memory Access Heatmap
+ *
+ * Tracks read/write frequency per 256-byte block of the address space.
+ * Dumps as raw data for visualization.
+ * ======================================================================== */
+
+extern int mem_heatmap_enabled;
+
+void mem_heatmap_init(void);
+void mem_heatmap_cleanup(void);
+
+static inline void mem_heatmap_record_read(uint32_t addr);
+static inline void mem_heatmap_record_write(uint32_t addr);
+
+void mem_heatmap_dump(const char *path);
+
+/* Heatmap covers RAM region: RAM_SIZE / 256 = ~1K entries */
+#define HEATMAP_BLOCK_SHIFT  8
+#define HEATMAP_RAM_BLOCKS   (RAM_SIZE >> HEATMAP_BLOCK_SHIFT)
+
+typedef struct {
+    uint32_t reads;
+    uint32_t writes;
+} heatmap_entry_t;
+
+extern heatmap_entry_t *heatmap_ram;
+
+static inline void mem_heatmap_record_read(uint32_t addr) {
+    if (!mem_heatmap_enabled) return;
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+        uint32_t idx = (addr - RAM_BASE) >> HEATMAP_BLOCK_SHIFT;
+        heatmap_ram[idx].reads++;
+    }
+}
+
+static inline void mem_heatmap_record_write(uint32_t addr) {
+    if (!mem_heatmap_enabled) return;
+    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
+        uint32_t idx = (addr - RAM_BASE) >> HEATMAP_BLOCK_SHIFT;
+        heatmap_ram[idx].writes++;
+    }
+}
+
 #endif /* DEVTOOLS_H */

@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.34.0
+## Current State: v0.35.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -15,17 +15,18 @@
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 | Privilege | Auto-sudo | `-tap` and `-mount` detect missing root and re-exec via sudo |
-| Dev Tools | Complete | Semihosting, coverage, hotspots, trace, exit codes, timeouts |
+| Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
 
-### Recent Changes (v0.34.0)
+### Recent Changes (v0.35.0)
 
-- **SYSCFG** (0x40004000) and **TBMAN** (0x4006C000) peripherals added — completes RP2040 peripheral map.
-- **ARM semihosting** (`-semihosting`): BKPT #0xAB interception for test framework I/O and exit codes.
-- **Code coverage** (`-coverage`), **hotspot profiling** (`-hotspots`), **instruction trace** (`-trace`).
-- **Exit code hook** (`-exit-code`) and **timeout enforcement** (`-timeout`) for CI integration.
-- JIT fixes: timing undercount for PUSH/POP/LDMIA/STMIA, O(16K) invalidation scan on every RAM write, missing CBZ/CBNZ terminals.
-- membus RAM fast-path promotion, GDB watchpoint call gating.
+- 12 new developer tools: symbols, callgraph, stack check, IRQ latency, bus logging (UART/SPI/I2C), GPIO VCD trace, scripted I/O, expected output matching, memory watch, fault injection, cycle profiling, memory heatmap.
+- All tools gated behind `__builtin_expect(flag, 0)` — zero overhead when disabled.
+- GPIO VCD output for GTKWave/PulseView visualization of pin changes.
+- Call graph output in DOT format for Graphviz function relationship visualization.
+- IRQ latency min/avg/max measurement per interrupt number.
+- Scripted I/O enables reproducible integration testing without `-stdin`.
+- Expected output matching enables one-command golden file regression tests.
 
 ---
 

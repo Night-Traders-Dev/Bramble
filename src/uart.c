@@ -5,6 +5,7 @@
 #include "netbridge.h"
 #include "wire.h"
 #include "usb.h"
+#include "devtools.h"
 
 /* Two UART instances */
 uart_state_t uart_state[2];
@@ -180,6 +181,12 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
         if (u->cr & UART_CR_TXE) {
             uint8_t ch = (uint8_t)(val & 0xFF);
             u->tx_activity++;
+            if (__builtin_expect(log_uart_enabled, 0))
+                bus_log_uart(uart_num, 1, ch);
+            if (__builtin_expect(expect_enabled, 0)) {
+                char c = (char)ch;
+                expect_append(&c, 1);
+            }
             if (net_bridge_uart_active(uart_num)) {
                 net_bridge_uart_tx(uart_num, ch);
             } else if (wire_uart_active(uart_num)) {

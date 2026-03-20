@@ -17,6 +17,7 @@
 #include "instructions.h"
 #include "nvic.h"
 #include "thumb32.h"
+#include "devtools.h"
 
 /* External globals from cpu.c */
 extern int pc_updated;
@@ -200,8 +201,11 @@ static void t32_bl(uint32_t pc, uint16_t upper, uint16_t lower) {
     int32_t  offset = (int32_t)((S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1));
     if (S) offset |= (int32_t)0xFF000000;  /* sign-extend from bit 24 */
     cpu.r[14] = (pc + 4) | 1u;
-    cpu.r[15] = (uint32_t)((int32_t)(pc + 4) + offset);
+    uint32_t target = (uint32_t)((int32_t)(pc + 4) + offset);
+    cpu.r[15] = target;
     pc_updated = 1;
+    if (__builtin_expect(callgraph_enabled, 0))
+        callgraph_record_call(pc, target);
 }
 
 /* ========================================================================

@@ -1,5 +1,39 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.35.0] - 2026-03-20
+
+### Added - Advanced Developer Tools
+
+- **ELF symbol loading** (`-symbols <elf>`): Parses .symtab/.strtab from ELF32 files for function name resolution in hotspots, profiles, callgraphs, crash reports, and memory watch logs.
+- **Call graph** (`-callgraph <file>`): Tracks BL/BLX calls to build caller→callee graph with call counts. DOT format output for Graphviz visualization.
+- **Stack watermark** (`-stack-check`): Per-core SP high-water mark tracking. Reports peak stack depth on exit with warnings if SP approaches RAM base.
+- **IRQ latency profiling** (`-irq-latency`): Measures cycles from `nvic_signal_irq()` to exception handler entry. Reports min/avg/max per IRQ number.
+- **Bus transaction logging** (`-log-uart`, `-log-spi`, `-log-i2c`): Logs every byte TX/RX with hex and printable representation to stderr.
+- **GPIO VCD trace** (`-gpio-trace <file>`): Records all GPIO pin changes with cycle-accurate timestamps in Value Change Dump format for GTKWave/PulseView.
+- **Scripted I/O** (`-script <file>`): Timestamped UART/GPIO input injection from text files (`100ms: uart0 "hello\n"`, `200ms: gpio25 1`).
+- **Expected output matching** (`-expect <file>`): Captures stdout (UART + USB CDC) and compares against golden file on exit. Exit 0 on match, 1 on diff with byte-level diff location.
+- **Memory watch log** (`-watch <addr[:len]>`): Logs every read/write to an address range to stderr with PC and symbol context. Up to 8 simultaneous regions.
+- **Fault injection** (`-inject-fault <spec>`): Schedule hardware faults at cycle counts: `flash_bitflip:cycle:addr`, `ram_corrupt:cycle:addr`, `brownout:cycle`.
+- **Cycle profiling** (`-profile <file>`): Per-PC cycle accounting with CSV output. Combined with `-symbols`, gives per-function timing breakdown.
+- **Memory heatmap** (`-mem-heatmap <file>`): Tracks read/write frequency per 256-byte RAM block. CSV output for visualization.
+
+### Files Modified
+
+- `include/devtools.h` + `src/devtools.c` — All new tools and symbol table loader
+- `src/thumb32.c` — Callgraph recording on BL instructions
+- `src/nvic.c` — IRQ latency pend timestamp recording
+- `src/uart.c` — UART TX bus logging and expect capture hooks
+- `src/usb.c` — USB CDC expect capture hook
+- `src/gpio.c` — GPIO VCD trace on SIO output writes
+- `src/membus.c` — Memory watch and heatmap hooks on RAM read/write fast paths
+- `src/cpu.c` — Profile, stack check, IRQ cycle counter in cpu_step hot path
+
+### Tests
+
+- 276 tests passing. No performance regression (all tools gated behind `__builtin_expect(flag, 0)`).
+
+---
+
 ## [0.34.0] - 2026-03-20
 
 ### Added - Developer Tools, Missing Peripherals, and Performance Audit

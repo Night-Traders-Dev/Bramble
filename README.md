@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.34.0
+## Current Status: v0.35.0
 
-276 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation, ARM semihosting, code coverage, hotspot profiling, instruction trace, and CI-friendly exit codes and timeouts.
+276 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation, ARM semihosting, code coverage, hotspot profiling, cycle profiling, call graphs, GPIO VCD traces, IRQ latency analysis, scripted I/O, golden file testing, and full CI integration.
 
 ### Coverage
 
@@ -22,7 +22,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | WiFi | CYW43 (Pico W) | gSPI-over-PIO emulation with optional TAP bridge (`-wifi`, `-tap`) |
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
 | Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate with `BRAMBLE_ESCALATED` guard |
-| Dev Tools | Complete | Semihosting, coverage, hotspots, trace, exit codes, timeouts |
+| Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus logging, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Tests | 276 | CTest integrated, 50+ categories |
 
 ### Peripherals

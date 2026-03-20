@@ -3,6 +3,18 @@
 #include "gpio.h"
 #include "emulator.h"
 #include "nvic.h"
+#include "devtools.h"
+
+/* Helper: trace GPIO changes via VCD when gpio_out is modified */
+static inline void gpio_trace_changes(uint32_t old_val, uint32_t new_val) {
+    if (__builtin_expect(!gpio_trace_enabled, 1)) return;
+    uint32_t changed = old_val ^ new_val;
+    while (changed) {
+        int pin = __builtin_ctz(changed);
+        gpio_trace_record((uint8_t)pin, (new_val >> pin) & 1);
+        changed &= changed - 1;
+    }
+}
 
 /* GPIO state */
 gpio_state_t gpio_state;
@@ -195,21 +207,30 @@ void gpio_write32(uint32_t addr, uint32_t val) {
     if (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100) {
         uint32_t old_pins = gpio_effective_pins();
         switch (addr) {
-            case SIO_GPIO_OUT:
+            case SIO_GPIO_OUT: {
+                uint32_t old = gpio_state.gpio_out;
                 gpio_state.gpio_out = val;
+                gpio_trace_changes(old, val);
                 break;
-
-            case SIO_GPIO_OUT_SET:
-                gpio_state.gpio_out |= val;  /* Atomic set */
+            }
+            case SIO_GPIO_OUT_SET: {
+                uint32_t old = gpio_state.gpio_out;
+                gpio_state.gpio_out |= val;
+                gpio_trace_changes(old, gpio_state.gpio_out);
                 break;
-
-            case SIO_GPIO_OUT_CLR:
-                gpio_state.gpio_out &= ~val;  /* Atomic clear */
+            }
+            case SIO_GPIO_OUT_CLR: {
+                uint32_t old = gpio_state.gpio_out;
+                gpio_state.gpio_out &= ~val;
+                gpio_trace_changes(old, gpio_state.gpio_out);
                 break;
-
-            case SIO_GPIO_OUT_XOR:
-                gpio_state.gpio_out ^= val;  /* Atomic toggle */
+            }
+            case SIO_GPIO_OUT_XOR: {
+                uint32_t old = gpio_state.gpio_out;
+                gpio_state.gpio_out ^= val;
+                gpio_trace_changes(old, gpio_state.gpio_out);
                 break;
+            }
 
             case SIO_GPIO_OE:
                 gpio_state.gpio_oe = val;

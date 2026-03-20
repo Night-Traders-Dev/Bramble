@@ -938,6 +938,11 @@ void cpu_exception_entry(uint32_t vector_num) {
 
     cpu.r[15] = handler_addr & ~1u;
     cpu.r[14] = 0xFFFFFFF9;
+
+    /* IRQ latency profiling: record handler entry time */
+    if (__builtin_expect(irq_latency_enabled, 0) && vector_num >= 16) {
+        irq_latency_enter(vector_num - 16);
+    }
 }
 
 void cpu_exception_return(uint32_t lr_value) {
@@ -1254,10 +1259,15 @@ pc_valid:
     uint32_t cycles = timing_instruction_cycles(instr, branch_taken);
     timing_tick(cycles);
 
-    /* Developer tools: coverage, hotspots, trace (gated by global flags) */
-    if (__builtin_expect(coverage_enabled, 0)) coverage_record(pc);
-    if (__builtin_expect(hotspots_enabled, 0)) hotspots_record(pc);
-    if (__builtin_expect(trace_enabled, 0))    trace_record(pc, instr, (uint16_t)cycles);
+    /* Developer tools: coverage, hotspots, trace, profile, heatmap (gated by global flags) */
+    if (__builtin_expect(coverage_enabled, 0))  coverage_record(pc);
+    if (__builtin_expect(hotspots_enabled, 0))  hotspots_record(pc);
+    if (__builtin_expect(trace_enabled, 0))     trace_record(pc, instr, (uint16_t)cycles);
+    if (__builtin_expect(profile_enabled, 0))   profile_record(pc, cycles);
+    if (__builtin_expect(stack_check_enabled, 0))
+        stack_check_record(get_active_core(), cpu.r[13]);
+    if (__builtin_expect(irq_latency_enabled, 0))
+        global_cycle_count += cycles;
 }
 
 /* ========================================================================
