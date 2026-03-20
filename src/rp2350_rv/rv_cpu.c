@@ -32,6 +32,7 @@
 #define OP_IMM      0x13
 #define OP_REG      0x33
 #define OP_FENCE    0x0F
+#define OP_AMO      0x2F
 #define OP_SYSTEM   0x73
 
 /* ========================================================================
@@ -706,6 +707,95 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
     case OP_FENCE:
         /* No reordering in emulator — treat as NOP */
         break;
+
+    /* ================================================================
+     * Atomics (A extension): LR.W, SC.W, AMO*.W
+     * All use opcode 0x2F, funct3=010 (word), funct5 in bits[31:27]
+     * ================================================================ */
+    case OP_AMO: {
+        if (funct3 != 2) goto illegal;  /* Only .W (word) supported */
+        uint32_t addr = cpu->x[rs1];
+        if (addr & 3) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
+        uint32_t funct5 = funct7 >> 2;  /* bits[31:27] */
+
+        switch (funct5) {
+        case 0x02: { /* LR.W */
+            uint32_t val = mem_read32(addr);
+            rv_write_rd(cpu, rd, val);
+            cpu->lr_reservation = addr;
+            cpu->lr_valid = 1;
+            break;
+        }
+        case 0x03: { /* SC.W */
+            if (cpu->lr_valid && cpu->lr_reservation == addr) {
+                mem_write32(addr, cpu->x[rs2]);
+                rv_write_rd(cpu, rd, 0);  /* Success */
+            } else {
+                rv_write_rd(cpu, rd, 1);  /* Failure */
+            }
+            cpu->lr_valid = 0;
+            break;
+        }
+        case 0x01: { /* AMOSWAP.W */
+            uint32_t old = mem_read32(addr);
+            mem_write32(addr, cpu->x[rs2]);
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x00: { /* AMOADD.W */
+            uint32_t old = mem_read32(addr);
+            mem_write32(addr, old + cpu->x[rs2]);
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x0C: { /* AMOAND.W */
+            uint32_t old = mem_read32(addr);
+            mem_write32(addr, old & cpu->x[rs2]);
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x08: { /* AMOOR.W */
+            uint32_t old = mem_read32(addr);
+            mem_write32(addr, old | cpu->x[rs2]);
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x04: { /* AMOXOR.W */
+            uint32_t old = mem_read32(addr);
+            mem_write32(addr, old ^ cpu->x[rs2]);
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x10: { /* AMOMIN.W */
+            uint32_t old = mem_read32(addr);
+            int32_t a = (int32_t)old, b = (int32_t)cpu->x[rs2];
+            mem_write32(addr, (uint32_t)(a < b ? a : b));
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x14: { /* AMOMAX.W */
+            uint32_t old = mem_read32(addr);
+            int32_t a = (int32_t)old, b = (int32_t)cpu->x[rs2];
+            mem_write32(addr, (uint32_t)(a > b ? a : b));
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x18: { /* AMOMINU.W */
+            uint32_t old = mem_read32(addr);
+            mem_write32(addr, old < cpu->x[rs2] ? old : cpu->x[rs2]);
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        case 0x1C: { /* AMOMAXU.W */
+            uint32_t old = mem_read32(addr);
+            mem_write32(addr, old > cpu->x[rs2] ? old : cpu->x[rs2]);
+            rv_write_rd(cpu, rd, old);
+            break;
+        }
+        default: goto illegal;
+        }
+        break;
+    }
 
     /* ================================================================
      * SYSTEM: ECALL, EBREAK, MRET, WFI, CSR instructions

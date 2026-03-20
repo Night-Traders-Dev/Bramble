@@ -1260,7 +1260,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 | Version | Key Features |
 |---------|-------------|
-| v0.37.0 | RP2350 RISC-V Hazard3 engine (RV32IMC — I+M+C extensions), tail-chaining, late-arriving, FAULTMASK, VREG full, multi-arch dirs |
+| v0.37.0 | RP2350 RISC-V Hazard3 engine (RV32IMAC — full ISA), tail-chaining, late-arriving, FAULTMASK, VREG full, multi-arch dirs |
 | v0.36.0 | TAP auto-config (IP/UP/NAT), FAT auto-scan, FAT12 support, build.sh rewrite, zero warnings |
 | v0.35.0 | Advanced devtools: symbols, callgraph, VCD, IRQ latency, stack check, bus logging, script I/O, expect, watch, fault injection, cycle profile, heatmap |
 | v0.34.0 | Developer tools (semihosting, coverage, hotspots, trace, exit codes, timeouts), SYSCFG + TBMAN peripherals, JIT fixes |

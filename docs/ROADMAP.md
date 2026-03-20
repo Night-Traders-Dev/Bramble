@@ -5,7 +5,7 @@
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | RP2040 CPU | 65+ Thumb-1 | Full ARMv6-M instruction set + O(1) dispatch + JIT |
-| RP2350 RV | RV32IMC | Hazard3: 80+ instructions (I+M+C), CSRs, traps, dual hart (A extension pending) |
+| RP2350 RV | RV32IMAC | Hazard3: 90+ instructions (I+M+A+C+Zicsr), traps, LR/SC atomics, dual hart — ISA complete |
 | Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + ROM (16KB) + all APB/AHB peripherals + SIO + NVIC/SCB + atomic aliases |
 | Peripherals | 100% | All 30 RP2040 peripherals emulated including VREG/BOD/CHIP_RESET, SYSCFG, TBMAN |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |

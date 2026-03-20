@@ -11,7 +11,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Area | Status | Details |
 |------|--------|---------|
 | RP2040 CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
-| RP2350 RV | RV32IMC | Hazard3: 80+ instructions (I+M+C), CSRs, trap handling, dual hart (A extension pending) |
+| RP2350 RV | RV32IMAC | Hazard3: 90+ instructions (I+M+A+C), CSRs, traps, LR/SC atomics, dual hart — ISA complete |
 | Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool, Core 1 auto-launch |
 | Memory Map | 100% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) + all 28 APB + 5 AHB peripherals + SIO + NVIC/SCB + atomic aliases |
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |

@@ -111,6 +111,10 @@ typedef struct {
     uint64_t cycle_count;
     uint64_t instret_count;
 
+    /* Atomic LR/SC reservation */
+    uint32_t lr_reservation;    /* Reserved address (set by LR.W) */
+    int lr_valid;               /* 1 if reservation is active */
+
     /* Trap state */
     int in_trap;            /* Currently handling a trap */
 
