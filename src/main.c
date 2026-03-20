@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <termios.h>
+#include <errno.h>
 
 #include "emulator.h"
 #include "gpio.h"
@@ -316,7 +317,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
-        fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash)\n");
+        fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash, sudo)\n");
         fprintf(stderr, "\nStorage:\n");
         fprintf(stderr, "  -sdcard <path>              Attach SD card image to SPI1\n");
         fprintf(stderr, "  -sdcard-spi <0|1>           SPI bus for SD card (default: 1)\n");
@@ -335,7 +336,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -wire-gpio <path>           Wire GPIO pins to peer via Unix socket\n");
         fprintf(stderr, "\nWiFi (Pico W):\n");
         fprintf(stderr, "  -wifi                       Enable CYW43 WiFi chip emulation\n");
-        fprintf(stderr, "  -tap <ifname>               Bridge WiFi to TAP interface (implies -wifi)\n");
+        fprintf(stderr, "  -tap <ifname>               Bridge WiFi to TAP interface (implies -wifi, sudo)\n");
         fprintf(stderr, "\nPerformance:\n");
         fprintf(stderr, "  -jit        Enable JIT basic block compilation for hot loops\n");
         return EXIT_FAILURE;
@@ -501,6 +502,70 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-jit") == 0) {
             jit_mode = 1;
+        }
+    }
+
+    /* ========================================================================
+     * Privilege Escalation (sudo re-exec for TAP, FUSE, etc.)
+     *
+     * Some features require superuser privileges:
+     *   -tap <ifname>   TAP/TUN device creation (CAP_NET_ADMIN)
+     *   -mount <dir>    FUSE filesystem mount (CAP_SYS_ADMIN)
+     *
+     * If a privileged flag is used and we're not root, prompt the user
+     * and re-exec via sudo. The BRAMBLE_ESCALATED env var prevents
+     * infinite re-exec loops.
+     * ======================================================================== */
+
+    {
+        int needs_privilege = (tap_name != NULL) || (mount_path != NULL);
+        if (needs_privilege && geteuid() != 0 && getenv("BRAMBLE_ESCALATED") == NULL) {
+            /* Explain why we need elevated privileges */
+            fprintf(stderr, "\n[Privilege] The following features require superuser access:\n");
+            if (tap_name)
+                fprintf(stderr, "  -tap %s      (TAP/TUN network device creation)\n", tap_name);
+            if (mount_path)
+                fprintf(stderr, "  -mount %s    (FUSE filesystem mount)\n", mount_path);
+            fprintf(stderr, "[Privilege] Re-launching with sudo...\n\n");
+
+            /* Build argv for sudo re-exec:
+             * sudo -E BRAMBLE_ESCALATED=1 /path/to/bramble [original args...] */
+            char **sudo_argv = calloc((size_t)argc + 4, sizeof(char *));
+            if (!sudo_argv) {
+                fprintf(stderr, "[Error] Failed to allocate memory for sudo re-exec\n");
+                return EXIT_FAILURE;
+            }
+
+            /* Resolve the full path to this executable */
+            char exe_path[4096];
+            ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+            if (len <= 0) {
+                /* Fallback to argv[0] */
+                strncpy(exe_path, argv[0], sizeof(exe_path) - 1);
+                exe_path[sizeof(exe_path) - 1] = '\0';
+            } else {
+                exe_path[len] = '\0';
+            }
+
+            int si = 0;
+            sudo_argv[si++] = "sudo";
+            sudo_argv[si++] = "-E";                  /* Preserve environment */
+            sudo_argv[si++] = "BRAMBLE_ESCALATED=1"; /* Prevent re-exec loop */
+            sudo_argv[si++] = exe_path;
+            for (int i = 1; i < argc; i++) {
+                sudo_argv[si++] = argv[i];
+            }
+            sudo_argv[si] = NULL;
+
+            execvp("sudo", sudo_argv);
+
+            /* execvp only returns on failure */
+            fprintf(stderr, "[Error] Failed to execute sudo: %s\n", strerror(errno));
+            fprintf(stderr, "[Hint] Run manually: sudo %s", exe_path);
+            for (int i = 1; i < argc; i++) fprintf(stderr, " %s", argv[i]);
+            fprintf(stderr, "\n");
+            free(sudo_argv);
+            return EXIT_FAILURE;
         }
     }
 
