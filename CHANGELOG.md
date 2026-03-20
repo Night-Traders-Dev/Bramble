@@ -11,10 +11,13 @@
 - Wire transport now handles partial `SOCK_STREAM` reads and writes safely without desynchronizing frames.
 - `-stdin` now stages host input until a guest console is ready, preserving littleOS interactive shells while still delivering early piped or interactive input to USB CDC firmware such as MicroPython.
 - Consolidated the old `UPDATES.md` history into this file and refreshed `README.md`, `Bramble_Guide.md`, and `docs/`.
+- Added end-to-end regression coverage for memory-mapped alias paths including flash XIP aliases, NVIC subword MMIO, XIP SSI, IO_QSPI, PADS_QSPI, and BUSCTRL.
+- Added exception-path regression coverage for SVCall entry/return, IRQ delivery through `cpu_step()`, nested exception unwind, invalid-PC HardFault entry, and double-HardFault lockup.
+- Fixed the remaining `PADS_QSPI` decode overlap so QSPI pad accesses no longer fall through the generic `PADS_BANK0` path.
 
 ### Tests
 
-- 262 tests passing, including loader hardening, watchdog reset, core pool, wire transport, USB CDC RX readiness, and stdin-routing regressions
+- 274 tests passing, including loader hardening, watchdog reset, core pool, wire transport, USB CDC RX readiness, stdin-routing regressions, memory-map alias coverage, and exception-path coverage
 
 ---
 

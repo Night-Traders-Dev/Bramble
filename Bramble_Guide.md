@@ -88,7 +88,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-The test suite contains 260 tests covering instruction execution, peripheral register behavior, memory access, exception handling, loader hardening, wire transport, and firmware boot sequences.
+The test suite contains 274 tests covering instruction execution, peripheral register behavior, memory access, memory-mapped alias routing, exception delivery/return, loader hardening, wire transport, and firmware boot sequences.
 
 ## 2.4 Running Firmware
 
@@ -1166,7 +1166,7 @@ bramble/
 │   ├── corepool.h          # Core pool definitions
 │   ├── uf2.h               # UF2 format definitions
 │   └── elf.h               # ELF format definitions
-├── tests/                  # 260 automated tests
+├── tests/                  # 274 automated tests
 ├── docs/
 │   ├── GPIO.md             # GPIO behavior and register notes
 │   ├── NVIC_audit_report.md # Historical NVIC audit (resolved issues)
@@ -1268,7 +1268,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 Bramble is designed as a practical development tool for the RP2040 ecosystem:
 - add peripheral modules as new firmware requires them
-- validate correctness with automated tests (260 and growing)
+- validate correctness with automated tests (274 and growing)
 - maintain register-level fidelity against the RP2040 datasheet
 - provide a debuggable environment that boots real firmware unmodified
 

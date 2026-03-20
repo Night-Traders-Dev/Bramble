@@ -4,7 +4,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 
 ## Current Status: post-v0.31.0 main
 
-260 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, and optional JIT acceleration.
+274 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, and regression coverage for memory-mapped aliases plus end-to-end exception delivery.
 
 ### Coverage
 
@@ -12,16 +12,16 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 |------|--------|---------|
 | CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
 | Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool |
-| Memory Map | ~95% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) |
+| Memory Map | ~97% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) + NVIC/SCB MMIO + XIP SSI/IO_QSPI/PADS_QSPI/BUSCTRL alias coverage |
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
-| Exceptions | ~90% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, exception nesting |
+| Exceptions | ~95% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, nested returns, `cpu_step()` IRQ delivery, double-fault lockup |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
 | Flash | Write-through | `-flash <path>` with immediate sync on every write |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
 | WiFi | CYW43 (Pico W) | gSPI-over-PIO emulation with optional TAP bridge (`-wifi`, `-tap`) |
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
-| Tests | 260 | CTest integrated, 50+ categories |
+| Tests | 274 | CTest integrated, 50+ categories |
 
 ### Peripherals
 
@@ -369,7 +369,7 @@ Bramble/
 │   ├── cyw43.h         # CYW43 WiFi definitions
 │   └── tapif.h         # TAP bridge definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (260 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (274 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test

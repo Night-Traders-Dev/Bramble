@@ -8,6 +8,9 @@
 > This document is preserved for historical context. The three issues identified here
 > were fixed in later releases: NVIC MMIO routing, priority-aware scheduling, and
 > exception return handling are all implemented in the current codebase.
+>
+> Current regression coverage also exercises 8/16/32-bit NVIC and SCB MMIO access,
+> SVCall and HardFault delivery, nested exception unwind, and ARMv6-M lockup behavior.
 
 ## Executive Summary
 

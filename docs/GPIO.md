@@ -233,12 +233,12 @@ typedef struct {
 1. **No Real I/O**: GPIO doesn't connect to actual hardware (emulator only)
 2. **Instant Response**: No propagation delay or glitch filtering
 3. **No Electrical Properties**: Drive strength, slew rate are stored but not simulated
-4. **Interrupt Stub**: Interrupt detection works but doesn't trigger CPU exceptions (needs NVIC)
+4. **Virtual Inputs Only**: GPIO edge/level detection and NVIC signaling work, but external pin changes still come from emulator-side sources rather than real hardware.
 
 ## Future Enhancements
 
 - [ ] **Virtual Peripherals**: Attach simulated LEDs, buttons, sensors to GPIO pins
-- [ ] **Interrupt Generation**: Trigger CPU interrupts when enabled
+- [ ] **Richer Input Sources**: Add more virtual devices and scripted stimuli that drive GPIO interrupts
 - [ ] **Waveform Logging**: Record GPIO state changes for debugging
 - [ ] **Pin Visualization**: GUI showing pin states in real-time
 - [ ] **Input Injection**: Load pin state changes from file for testing

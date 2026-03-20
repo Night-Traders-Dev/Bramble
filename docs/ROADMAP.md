@@ -5,16 +5,16 @@
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~95% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) |
+| Memory Map | ~97% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) + NVIC/SCB MMIO + IO_QSPI/PADS_QSPI/BUSCTRL aliases |
 | Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin+TCP), SPI (FIFOs+device cb), I2C (FIFO+device cb), PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, ROSC, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC + multi-packet IN), RTC (ticking), SYSINFO, IO_QSPI, PADS_QSPI |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
-| Exceptions | ~90% | Entry/return, priority preemption, SysTick, PendSV, HardFault, exception nesting |
+| Exceptions | ~95% | Entry/return, priority preemption, SysTick, PendSV, SVCall, HardFault, nested unwind, `cpu_step()` IRQ delivery, lockup |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
 | Firmware | MicroPython + CircuitPython + littleOS | Interactive MicroPython REPL, CircuitPython `code.py`, and littleOS shell |
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
-| Validation | 260 tests | Loader hardening, core pool, wire transport, watchdog reset, and console routing coverage |
+| Validation | 274 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing coverage, memory-map aliases, and exception-path coverage |
 
 ### Recent Maintenance
 
@@ -22,6 +22,8 @@
 - Watchdog and `SYSRESETREQ` reboots now reinitialize the full runtime peripheral set.
 - Core pool registry updates and wire transport framing were made safer under contention and partial stream I/O.
 - `-stdin` now routes host input to one active guest console: USB CDC when fully active, otherwise UART0.
+- Added dedicated regression coverage for flash/XIP/NVIC/SCB/QSPI/BUSCTRL memory-mapped alias behavior.
+- Added dedicated regression coverage for SVCall, external IRQ delivery, nested exception return, HardFault entry, and double-fault lockup.
 
 ---
 
