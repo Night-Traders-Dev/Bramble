@@ -319,7 +319,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
         fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash, may need sudo)\n");
-        fprintf(stderr, "  -mount-offset <hex>  Flash offset of FAT region (default: 0x100000)\n");
+        fprintf(stderr, "  -mount-offset <hex>  Flash offset of FAT region (default: auto-scan)\n");
         fprintf(stderr, "\nStorage:\n");
         fprintf(stderr, "  -sdcard <path>              Attach SD card image to SPI1\n");
         fprintf(stderr, "  -sdcard-spi <0|1>           SPI bus for SD card (default: 1)\n");
@@ -376,6 +376,7 @@ int main(int argc, char **argv) {
     char *flash_path = NULL;
     char *mount_path = NULL;
     uint32_t mount_offset = 0x100000; /* Default: CircuitPython 1MB offset */
+    int mount_offset_set = 0;
     char *sdcard_path = NULL;
     int sdcard_spi = 1;
     size_t sdcard_size = SD_DEFAULT_SIZE;
@@ -464,6 +465,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-mount-offset") == 0) {
             if (i + 1 < argc) {
                 mount_offset = (uint32_t)strtoul(argv[++i], NULL, 0);
+                mount_offset_set = 1;
             }
         } else if (strcmp(argv[i], "-sdcard") == 0) {
             if (i + 1 < argc) {
@@ -761,17 +763,42 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
         uint32_t fs_offset = mount_offset;
+
+        /* Auto-scan: if user didn't specify -mount-offset, scan flash for FAT BPB */
+        if (!mount_offset_set) {
+            uint32_t found = 0;
+            for (uint32_t off = 0; off + 512 <= FLASH_SIZE; off += 512) {
+                if (cpu.flash[off + 510] == 0x55 && cpu.flash[off + 511] == 0xAA) {
+                    /* Validate BPB: bytes_per_sector=512, sectors_per_cluster>0 */
+                    uint16_t bps = (uint16_t)cpu.flash[off + 11] |
+                                   ((uint16_t)cpu.flash[off + 12] << 8);
+                    uint8_t spc = cpu.flash[off + 13];
+                    uint8_t nfats = cpu.flash[off + 16];
+                    if (bps == 512 && spc > 0 && nfats > 0) {
+                        fs_offset = off;
+                        found = 1;
+                        fprintf(stderr, "[FUSE] Auto-detected FAT partition at flash offset 0x%06X\n", off);
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr, "[FUSE] No FAT partition found in flash. The filesystem may be created\n");
+                fprintf(stderr, "[FUSE] on first boot. Re-run after firmware has initialized flash.\n");
+                fprintf(stderr, "[FUSE] Or specify offset manually: -mount-offset <hex>\n");
+                goto skip_fuse;
+            }
+        }
+
         uint32_t fs_size = FLASH_SIZE - fs_offset;
         fuse_set_flash_offset(fs_offset);
         int fuse_rc = fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);
         if (fuse_rc < 0) {
-            fprintf(stderr, "[FUSE] Mount failed. The flash region at offset 0x%X may not contain a FAT filesystem.\n", fs_offset);
-            fprintf(stderr, "[FUSE] For firmware without FAT (e.g., littleOS), the -flash file is already\n");
-            fprintf(stderr, "[FUSE] live-synced to disk — read/write it directly from the host.\n");
-            fprintf(stderr, "[FUSE] For CircuitPython: -mount-offset 0x100000 (default)\n");
-            fprintf(stderr, "[FUSE] For MicroPython:   -mount-offset 0x1A0000\n");
+            fprintf(stderr, "[FUSE] Mount failed at offset 0x%X.\n", fs_offset);
+            fprintf(stderr, "[FUSE] The -flash file is still live-synced to disk for direct host access.\n");
         }
     }
+skip_fuse:
 
     /* Detect boot2 in firmware */
     if (!no_boot2 && cpu_has_boot2()) {
