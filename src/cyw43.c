@@ -1079,8 +1079,8 @@ void cyw43_pio_tx_write(uint32_t val) {
                 if (f && f->len > 0) {
                     int copy_len = f->len;
                     if (copy_len > (int)pio_cmd_size) copy_len = (int)pio_cmd_size;
+                    if (copy_len > (int)sizeof(pio_resp_buf)) copy_len = (int)sizeof(pio_resp_buf);
                     int words = (copy_len + 3) / 4;
-                    if (words > 512) words = 512;
                     memset(pio_resp_buf, 0, words * 4);
                     /* Copy bytes then bswap32 each word so firmware gets correct byte order */
                     memcpy(pio_resp_buf, f->data, copy_len);

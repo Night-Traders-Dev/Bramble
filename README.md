@@ -4,7 +4,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 
 ## Current Status: v0.36.0
 
-276 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence with live FUSE mount, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation, ARM semihosting, code coverage, hotspot profiling, cycle profiling, call graphs, GPIO VCD traces, IRQ latency analysis, scripted I/O, golden file testing, and full CI integration.
+276 tests passing (zero warnings). Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support with auto-configured TAP bridge + NAT, USB CDC REPL, flash write-through persistence with live FUSE mount (FAT12/16 auto-scan), SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation, ARM semihosting, code coverage, hotspot profiling, cycle profiling, call graphs, GPIO VCD traces, IRQ latency analysis, scripted I/O, golden file testing, and full CI integration.
 
 ### Coverage
 
@@ -19,7 +19,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
-| WiFi | CYW43 (Pico W) | gSPI-over-PIO emulation with optional TAP bridge (`-wifi`, `-tap`) |
+| WiFi | CYW43 (Pico W) | gSPI-over-PIO, TAP bridge with auto IP/NAT (`-wifi`, `-tap`) |
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
 | Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus logging, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |

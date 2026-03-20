@@ -786,8 +786,7 @@ void callgraph_dump(const char *path) {
 
     for (int i = 0; i < CALLGRAPH_MAP_SIZE; i++) {
         if (cg_map[i].count == 0) continue;
-        uint32_t off;
-        const char *caller_name = symbols_lookup(cg_map[i].caller, &off);
+        const char *caller_name = symbols_lookup(cg_map[i].caller, NULL);
         const char *callee_name = symbols_lookup(cg_map[i].callee, NULL);
 
         if (caller_name && callee_name) {
@@ -1054,7 +1053,7 @@ void profile_dump(const char *path) {
     fprintf(f, "address,cycles,count,avg_cycles,function\n");
     for (int i = 0; i < PROFILE_MAP_SIZE; i++) {
         if (profile_map[i].count == 0) continue;
-        uint32_t off;
+        uint32_t off = 0;
         const char *name = symbols_lookup(profile_map[i].pc, &off);
         fprintf(f, "0x%08X,%u,%u,%u,%s+0x%X\n",
                 profile_map[i].pc, profile_map[i].total_cycles,
@@ -1089,7 +1088,7 @@ void profile_report(void) {
     fprintf(stderr, " Cycle Profile (top %d of %d):\n", n, count);
     fprintf(stderr, "   %-12s  %-12s  %-8s  %s\n", "Address", "Cycles", "Count", "Function");
     for (int i = 0; i < n; i++) {
-        uint32_t off;
+        uint32_t off = 0;
         const char *name = symbols_lookup(sorted[i].pc, &off);
         if (name) {
             fprintf(stderr, "   0x%08X  %-12u  %-8u  %s+0x%X\n",

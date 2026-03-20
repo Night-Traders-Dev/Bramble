@@ -692,9 +692,6 @@ static void t32_ldst_single(uint32_t pc, uint16_t upper, uint16_t lower) {
         /* T3: 12-bit unsigned offset. lower = Rt(4):imm12(12) */
         int imm12 = lower & 0xFFF;
         uint32_t base = (Rn == 15) ? ((pc + 4) & ~3u) : cpu.r[Rn];
-        uint32_t addr;
-        if (Rn == 15) addr = base + imm12;  /* LDR PC-relative always adds */
-        else addr = base + (uint32_t)imm12;
 
         /* Decode by upper[7:4] */
         int bits74 = (upper >> 4) & 0xF;

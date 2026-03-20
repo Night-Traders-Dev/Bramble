@@ -75,15 +75,23 @@ static void set_ip_forwarding(int enable) {
     }
 }
 
+/* Copy interface name safely (always null-terminated, no truncation warning) */
+static void copy_ifname(char *dst, const char *src) {
+    memset(dst, 0, IFNAMSIZ);
+    size_t len = strlen(src);
+    if (len >= IFNAMSIZ) len = IFNAMSIZ - 1;
+    memcpy(dst, src, len);
+}
+
 /* Assign IP address and bring interface UP using ioctl (no shell commands) */
-static int configure_interface(int fd, const char *ifname) {
+static int configure_interface(const char *ifname) {
     struct ifreq ifr;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) return -1;
 
     /* Set IP address */
     memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    copy_ifname(ifr.ifr_name, ifname);
     struct sockaddr_in *addr = (struct sockaddr_in *)&ifr.ifr_addr;
     addr->sin_family = AF_INET;
     inet_pton(AF_INET, TAP_HOST_IP, &addr->sin_addr);
@@ -103,7 +111,7 @@ static int configure_interface(int fd, const char *ifname) {
 
     /* Bring interface UP */
     memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    copy_ifname(ifr.ifr_name, ifname);
     if (ioctl(sock, SIOCGIFFLAGS, &ifr) < 0) {
         close(sock);
         return -1;
@@ -116,12 +124,11 @@ static int configure_interface(int fd, const char *ifname) {
     }
 
     close(sock);
-    (void)fd;
     return 0;
 }
 
 /* Set up NAT masquerade for internet access */
-static int setup_nat(const char *ifname) {
+static int setup_nat(void) {
     /* Detect outgoing interface */
     if (detect_outgoing_iface(tap_outgoing_iface, sizeof(tap_outgoing_iface)) < 0) {
         fprintf(stderr, "[TAP] No default route found — NAT not configured\n");
@@ -197,12 +204,12 @@ int tapif_open(const char *name) {
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
     /* Save interface name for cleanup */
-    strncpy(tap_ifname, ifr.ifr_name, IFNAMSIZ - 1);
+    copy_ifname(tap_ifname, ifr.ifr_name);
 
     fprintf(stderr, "[TAP] Interface '%s' created (fd=%d)\n", ifr.ifr_name, fd);
 
     /* Configure host side: IP, bring UP, NAT */
-    if (configure_interface(fd, ifr.ifr_name) == 0) {
+    if (configure_interface(ifr.ifr_name) == 0) {
         fprintf(stderr, "[TAP] Configured %s as %s/%s\n", ifr.ifr_name, TAP_HOST_IP, TAP_NETMASK);
     } else {
         fprintf(stderr, "[TAP] Auto-configuration failed. Manual setup:\n");
@@ -210,7 +217,7 @@ int tapif_open(const char *name) {
         fprintf(stderr, "[TAP]   sudo ip link set %s up\n", ifr.ifr_name);
     }
 
-    setup_nat(ifr.ifr_name);
+    setup_nat();
 
     return fd;
 }

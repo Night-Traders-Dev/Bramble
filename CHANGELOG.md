@@ -2,19 +2,29 @@
 
 ## [0.36.0] - 2026-03-20
 
-### Fixed - FUSE Flash Sharing, FAT12 Support, and TAP Bridge Hardening
+### Added - TAP Auto-Configuration, FAT Auto-Scan, and Warning-Free Build
 
-- **Flash initialized to 0xFF**: `cpu.flash[]` now starts erased (all 0xFF) matching real RP2040 hardware. Previously flash was zeroed, causing flash persistence sector detection to treat empty sectors as firmware (since 0x00 != 0xFF), breaking non-firmware data restoration.
-- **FAT12 filesystem support**: The FAT driver now handles FAT12 in addition to FAT16. CircuitPython creates a small FAT12 partition (~500KB, 980 clusters) at offset 0x181000 in flash. FAT12 uses 12-bit packed entries (1.5 bytes per entry) vs FAT16's 16-bit entries.
-- **Configurable filesystem offset**: New `-mount-offset <hex>` flag (default `0x100000`) replaces the hardcoded CircuitPython offset. CircuitPython actually uses 0x181000 for its FAT12 partition.
-- **FUSE flash mutex race**: ROM `flash_range_erase` and `flash_range_program` now lock `fuse_flash_mutex` before modifying `cpu.flash[]`.
-- **FUSE mount error reporting**: Clear diagnostics when mount fails — reports the exact error (e.g., "Operation not permitted"), suggests sudo when needed, and explains that firmware without FAT can use the flash file directly.
-- **TAP partial write retry**: `tapif_write()` now retries on partial `write()` returns.
-- **TAP MTU clamping**: `tapif_read()` clamps reads to 1518 bytes (max Ethernet frame).
+- **TAP full host-side configuration**: `tapif_open()` now automatically assigns 192.168.4.1/24 to the TAP interface, brings it UP, enables IP forwarding, and sets up NAT masquerade via iptables/nft. On close, NAT rules are removed and forwarding is restored. No manual `ip addr add` needed.
+- **FAT partition auto-scan**: `-mount` without `-mount-offset` now scans the entire `cpu.flash[]` (UF2 firmware + persisted data) for a valid FAT BPB (0x55AA signature + valid geometry). Automatically finds CircuitPython's FAT12 at 0x181000 or any other offset.
+- **`-mount` works without `-flash`**: Volatile mount from UF2-loaded flash data (changes lost on exit). With `-flash`, changes persist across runs.
+
+### Fixed
+
+- **Flash initialized to 0xFF**: `cpu.flash[]` now starts erased (all 0xFF) matching real RP2040 hardware, fixing flash persistence sector detection.
+- **FAT12 filesystem support**: FAT driver handles FAT12 (12-bit packed entries, EOC 0xFF8) in addition to FAT16.
+- **FUSE flash mutex race**: ROM flash writes now lock `fuse_flash_mutex`.
+- **TAP persistent read errors**: `cyw43_tap_poll()` closes TAP fd on error instead of spin-polling.
+- **CYW43 PIO buffer overflow**: `pio_resp_buf` copy length clamped to buffer size.
+- **All compiler warnings resolved**: Fixed unused variables (`addr` in thumb32, `raw_best_ms` in benchmark), unused parameters (`ifname` in setup_nat), uninitialized variables (`off` in devtools), `strncpy` truncation (replaced with `memcpy`+`memset`), suppressed GCC 15 false-positive `stringop-overflow` from system headers.
+
+### Changed
+
+- **`build.sh` rewritten**: Auto-detects FUSE, supports `--clean`/`--no-fuse`/`--release`/`--debug`/`--help`. No longer destructive (no `git pull` or `rm -rf`).
+- **CMakeLists.txt updated**: Version 0.36.0, FUSE definitions applied to all targets, deduplicated source lists, build summary output.
 
 ### Tests
 
-- 276 tests passing.
+- 276 tests passing, zero compiler warnings.
 
 ---
 

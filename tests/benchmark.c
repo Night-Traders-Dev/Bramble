@@ -258,7 +258,6 @@ int main(void) {
     /* ---- Benchmark 1: Raw dispatch (no icache, no JIT) ---- */
     printf("[1/3] Raw dispatch (no icache, no JIT)...\n");
     double raw_best_mips = 0;
-    double raw_best_ms = 0;
     for (int r = 0; r < runs; r++) {
         reset_core();
         icache_enable(0);
@@ -272,7 +271,6 @@ int main(void) {
         double mips = (double)insns / ((double)(t1 - t0) / 1e9) / 1e6;
         if (mips > raw_best_mips) {
             raw_best_mips = mips;
-            raw_best_ms = ms;
         }
         printf("  Run %d: %u insns in %.1f ms (%.2f MIPS)\n", r + 1, insns, ms, mips);
     }

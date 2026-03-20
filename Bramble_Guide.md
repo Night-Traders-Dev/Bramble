@@ -1260,7 +1260,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 | Version | Key Features |
 |---------|-------------|
-| v0.36.0 | FUSE flash mutex fix, TAP partial write/MTU hardening, configurable mount offset, FUSE no longer needs sudo |
+| v0.36.0 | TAP auto-config (IP/UP/NAT), FAT auto-scan, FAT12 support, build.sh rewrite, zero warnings |
 | v0.35.0 | Advanced devtools: symbols, callgraph, VCD, IRQ latency, stack check, bus logging, script I/O, expect, watch, fault injection, cycle profile, heatmap |
 | v0.34.0 | Developer tools (semihosting, coverage, hotspots, trace, exit codes, timeouts), SYSCFG + TBMAN peripherals, JIT fixes |
 | v0.33.0 | Auto-sudo for `-tap`/`-mount`, watchdog reboot resets full multicore state, SysTick reset on reboot |

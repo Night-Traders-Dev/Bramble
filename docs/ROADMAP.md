@@ -20,10 +20,12 @@
 
 ### Recent Changes (v0.36.0)
 
-- **FUSE flash sharing hardened**: ROM flash writes now lock `fuse_flash_mutex`, preventing torn reads during concurrent host/firmware access.
-- **FUSE no longer requires sudo**: Removed from privilege escalation (only `-tap` needs root).
-- **Configurable mount offset**: `-mount-offset <hex>` replaces hardcoded 1MB CircuitPython offset.
-- **TAP bridge hardened**: partial write retry, MTU clamping to 1518 bytes.
+- **TAP auto-configuration**: Creates TAP, assigns 192.168.4.1/24, brings UP, enables IP forwarding, sets up NAT masquerade via iptables/nft. Cleans up on exit.
+- **FAT auto-scan**: `-mount` scans `cpu.flash[]` (UF2 + persisted data) for FAT BPB signatures. Auto-detects CircuitPython's FAT12 at 0x181000.
+- **FAT12 support**: 12-bit packed entries, EOC 0xFF8. CircuitPython creates FAT12 (~980 clusters).
+- **Flash 0xFF init**: `cpu.flash[]` starts erased matching real hardware.
+- **Zero compiler warnings**: All `-Wall -Wextra -pedantic` warnings resolved.
+- **build.sh rewritten**: Auto-detects FUSE, `--clean`/`--no-fuse`/`--release`/`--debug`/`--help`.
 - 12 new developer tools (v0.35.0): symbols, callgraph, stack check, IRQ latency, bus logging, GPIO VCD, scripted I/O, expect, watch, fault injection, cycle profiling, memory heatmap.
 
 ---
