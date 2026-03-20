@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <termios.h>
 
 #include "emulator.h"
 #include "gpio.h"
@@ -51,34 +52,155 @@ int any_core_running(void);
 /* ============================================================================
  * UART Stdin Polling
  *
- * When enabled with -stdin, polls stdin for input and pushes bytes into
- * UART0's RX FIFO. Uses non-blocking I/O to avoid stalling the emulator.
+ * When enabled with -stdin, polls stdin for input and stages bytes until the
+ * guest console that can actually consume them is ready. Uses non-blocking
+ * I/O to avoid stalling the emulator.
  * ============================================================================ */
 
 static int stdin_enabled = 0;
-static int stdin_nonblock_set = 0;
+static int stdin_saved_flags = -1;
+static int stdin_is_tty = 0;
+static int stdin_termios_saved = 0;
+static struct termios stdin_saved_termios;
+
+#define STDIN_PENDING_SIZE 1024
+
+typedef enum {
+    STDIN_TARGET_NONE = 0,
+    STDIN_TARGET_UART0,
+    STDIN_TARGET_USB_CDC,
+} stdin_target_t;
+
+static uint8_t stdin_pending[STDIN_PENDING_SIZE];
+static size_t stdin_pending_head = 0;
+static size_t stdin_pending_tail = 0;
+static size_t stdin_pending_count = 0;
+static int stdin_pending_overflow_reported = 0;
+
+static int stdin_pending_push(uint8_t byte) {
+    if (stdin_pending_count >= STDIN_PENDING_SIZE) {
+        if (!stdin_pending_overflow_reported) {
+            fprintf(stderr, "[stdin] Host input queue full, dropping bytes\n");
+            stdin_pending_overflow_reported = 1;
+        }
+        return 0;
+    }
+
+    stdin_pending[stdin_pending_head] = byte;
+    stdin_pending_head = (stdin_pending_head + 1) % STDIN_PENDING_SIZE;
+    stdin_pending_count++;
+    return 1;
+}
+
+static int stdin_pending_peek(uint8_t *byte) {
+    if (stdin_pending_count == 0) {
+        return 0;
+    }
+
+    *byte = stdin_pending[stdin_pending_tail];
+    return 1;
+}
+
+static void stdin_pending_pop(void) {
+    if (stdin_pending_count == 0) {
+        return;
+    }
+
+    stdin_pending_tail = (stdin_pending_tail + 1) % STDIN_PENDING_SIZE;
+    stdin_pending_count--;
+}
+
+static int stdin_uart0_rx_ready(void) {
+    uint32_t uart0_cr = uart_state[0].cr;
+    return (uart0_cr & UART_CR_UARTEN) && (uart0_cr & UART_CR_RXE);
+}
 
 static void uart_stdin_init(void) {
+    stdin_is_tty = isatty(STDIN_FILENO);
+    stdin_pending_head = 0;
+    stdin_pending_tail = 0;
+    stdin_pending_count = 0;
+    stdin_pending_overflow_reported = 0;
+
     /* Set stdin to non-blocking mode */
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     if (flags != -1) {
+        stdin_saved_flags = flags;
         fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
-        stdin_nonblock_set = 1;
     }
-}
 
-static void uart_stdin_cleanup(void) {
-    if (stdin_nonblock_set) {
-        int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-        if (flags != -1) {
-            fcntl(STDIN_FILENO, F_SETFL, flags & ~O_NONBLOCK);
+    /* Interactive terminal input should behave like a serial console:
+     * disable local echo and canonical line buffering, but keep ISIG so
+     * Ctrl-C still works as expected on the host. */
+    if (stdin_is_tty && tcgetattr(STDIN_FILENO, &stdin_saved_termios) == 0) {
+        struct termios raw = stdin_saved_termios;
+        raw.c_lflag &= ~(ECHO | ICANON);
+        raw.c_iflag &= ~(IXON | ICRNL);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) {
+            stdin_termios_saved = 1;
         }
     }
 }
 
-/* Poll stdin and push any available bytes into the active guest console.
- * Prefer USB CDC once a bidirectional CDC console is fully enumerated;
- * otherwise fall back to UART0. */
+static void uart_stdin_cleanup(void) {
+    if (stdin_termios_saved) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &stdin_saved_termios);
+        stdin_termios_saved = 0;
+    }
+
+    if (stdin_saved_flags != -1) {
+        fcntl(STDIN_FILENO, F_SETFL, stdin_saved_flags);
+        stdin_saved_flags = -1;
+    }
+}
+
+/* Select the most likely guest input target for stdin.
+ * Interactive shells like littleOS keep UART0 RX enabled even when they
+ * render output over USB CDC, while USB-only REPLs typically do not.
+ * Host input stays queued until at least one guest console is ready. */
+static stdin_target_t stdin_select_target(void) {
+    int usb_ready = usb_cdc_stdout_enabled && usb_cdc_stdio_active();
+    int uart_ready = stdin_uart0_rx_ready();
+
+    if (usb_ready) {
+        if (stdin_is_tty && uart_ready) {
+            return STDIN_TARGET_UART0;
+        }
+        return STDIN_TARGET_USB_CDC;
+    }
+
+    if (uart_ready) {
+        return STDIN_TARGET_UART0;
+    }
+
+    return STDIN_TARGET_NONE;
+}
+
+static void stdin_pending_flush(void) {
+    stdin_target_t target = stdin_select_target();
+    uint8_t byte;
+
+    while (target != STDIN_TARGET_NONE && stdin_pending_peek(&byte)) {
+        int pushed = 0;
+
+        if (target == STDIN_TARGET_USB_CDC) {
+            pushed = usb_cdc_rx_push(byte);
+        } else {
+            pushed = uart_rx_push(0, byte);
+        }
+
+        if (!pushed) {
+            break;
+        }
+
+        stdin_pending_pop();
+    }
+}
+
+/* Poll stdin and push any available bytes into the guest console.
+ * Bytes stay buffered until the chosen guest console is ready. */
 static void uart_stdin_poll(void) {
     struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
     if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
@@ -89,14 +211,12 @@ static void uart_stdin_poll(void) {
                 uint8_t ch = buf[i];
                 /* Translate LF→CR: serial devices expect CR as line ending */
                 if (ch == '\n') ch = '\r';
-                if (usb_cdc_stdout_enabled && usb_cdc_stdio_active()) {
-                    usb_cdc_rx_push(ch);
-                } else {
-                    uart_rx_push(0, ch);
-                }
+                stdin_pending_push(ch);
             }
         }
     }
+
+    stdin_pending_flush();
 }
 
 static void attach_spi_devices(sdcard_t *sdcard, const char *sdcard_path, int sdcard_spi,
@@ -164,7 +284,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -debug1    Enable debug output for Core 1 (dual-core only)\n");
         fprintf(stderr, "  -asm       Show assembly instruction tracing\n");
         fprintf(stderr, "  -status    Print periodic status updates\n");
-        fprintf(stderr, "  -stdin     Enable stdin polling for UART0 Rx input\n");
+        fprintf(stderr, "  -stdin     Enable stdin polling for guest console input\n");
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
         fprintf(stderr, "  -cores <N|auto> Active cores per instance (1, 2, or auto; default: 2)\n");

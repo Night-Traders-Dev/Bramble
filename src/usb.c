@@ -422,16 +422,19 @@ static void usb_handle_cdc(void) {
 }
 
 /* Push a byte into the CDC OUT endpoint (for stdin input) */
-void usb_cdc_rx_push(uint8_t byte) {
-    if (usb_state.enum_state != USB_ENUM_ACTIVE) return;
-    if (usb_state.cdc_out_ep == 0) return;
+int usb_cdc_rx_push(uint8_t byte) {
+    if (usb_state.enum_state != USB_ENUM_ACTIVE) return 0;
+    if (usb_state.cdc_out_ep == 0) return 0;
 
     /* Queue into CDC RX FIFO */
     if (usb_state.cdc_rx_count < (int)sizeof(usb_state.cdc_rx_fifo)) {
         usb_state.cdc_rx_fifo[usb_state.cdc_rx_head] = byte;
         usb_state.cdc_rx_head = (usb_state.cdc_rx_head + 1) % (int)sizeof(usb_state.cdc_rx_fifo);
         usb_state.cdc_rx_count++;
+        return 1;
     }
+
+    return 0;
 }
 
 int usb_cdc_stdio_active(void) {

@@ -2467,6 +2467,23 @@ TEST(test_usb_cdc_stdio_active_requires_bidirectional_console) {
     PASS();
 }
 
+TEST(test_usb_cdc_rx_push_requires_ready_console) {
+    usb_init();
+    ASSERT_EQ(0, usb_cdc_rx_push('A'), "CDC RX push should fail before enumeration");
+
+    usb_state.enum_state = USB_ENUM_ACTIVE;
+    ASSERT_EQ(0, usb_cdc_rx_push('B'), "CDC RX push should require an OUT endpoint");
+
+    usb_state.cdc_out_ep = 2;
+    ASSERT_EQ(1, usb_cdc_rx_push('C'), "CDC RX push should succeed once console is ready");
+    ASSERT_EQ(1, usb_state.cdc_rx_count, "CDC RX FIFO count should increase");
+    ASSERT_EQ('C', usb_state.cdc_rx_fifo[0], "CDC RX FIFO should contain the pushed byte");
+
+    usb_state.cdc_rx_count = (int)sizeof(usb_state.cdc_rx_fifo);
+    ASSERT_EQ(0, usb_cdc_rx_push('D'), "CDC RX push should fail when FIFO is full");
+    PASS();
+}
+
 /* ========================================================================
  * Flash ROM Function Tests
  * ======================================================================== */
@@ -3839,6 +3856,7 @@ int main(void) {
     RUN_TEST(test_usb_sie_status_disconnected);
     RUN_TEST(test_usb_main_ctrl_readback);
     RUN_TEST(test_usb_cdc_stdio_active_requires_bidirectional_console);
+    RUN_TEST(test_usb_cdc_rx_push_requires_ready_console);
     END_CATEGORY("USB Controller");
 
     BEGIN_CATEGORY("Flash ROM Functions");

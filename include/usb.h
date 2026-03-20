@@ -164,8 +164,9 @@ void     usb_write32(uint32_t addr, uint32_t val);
 /* Called from main loop to advance USB host simulation */
 void     usb_step(void);
 
-/* Push a byte into USB CDC OUT endpoint (for stdin bridging) */
-void     usb_cdc_rx_push(uint8_t byte);
+/* Push a byte into USB CDC OUT endpoint (for stdin bridging).
+ * Returns 1 on success, 0 if the CDC console is not ready or its FIFO is full. */
+int      usb_cdc_rx_push(uint8_t byte);
 int      usb_cdc_stdio_active(void);
 
 /* Set to 1 to allow USB CDC IN data to appear on stdout (set by -stdin flag) */
