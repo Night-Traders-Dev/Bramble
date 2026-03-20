@@ -258,7 +258,7 @@ void icache_invalidate_all(void) {
  * to JIT_BLOCK_MAX_INSN instructions (~32 cycles worst case).
  * ======================================================================== */
 
-#define JIT_BLOCK_MAX_INSN   32
+#define JIT_BLOCK_MAX_INSN   64
 #define JIT_CACHE_BLOCKS     16384
 #define JIT_CACHE_BMASK      (JIT_CACHE_BLOCKS - 1)
 
@@ -266,10 +266,11 @@ typedef struct {
     uint32_t start_pc;                       /* Block start address (tag) */
     uint16_t instrs[JIT_BLOCK_MAX_INSN];     /* Pre-fetched instructions */
     uint8_t  length;                         /* Number of instructions in block */
-} __attribute__((packed)) jit_block_t;
-/* ~72 bytes per block, 16384 blocks = ~1.1 MB (fits in L2).
+} jit_block_t;
+/* ~136 bytes per block, 16384 blocks = ~2.1 MB.
  * Handlers derived from dispatch_table[instr>>8] (2KB, L1-hot).
- * Cycle costs derived from timing_lut[instr>>8] (256B, L1-hot). */
+ * Cycle costs derived from timing_lut[instr>>8] (256B, L1-hot).
+ * Removing __attribute__((packed)) avoids unaligned field access overhead. */
 
 static jit_block_t jit_cache[JIT_CACHE_BLOCKS];
 static int jit_enabled = 0;
@@ -292,27 +293,48 @@ void jit_enable(int enable) {
     jit_enabled = enable;
 }
 
-/* Check if a 16-bit instruction is a branch or control flow change */
-static int jit_is_terminal(uint16_t instr) {
-    uint8_t top8 = instr >> 8;
+/* Check if a 16-bit instruction is a branch or control flow change.
+ * Uses a 256-bit bitmap for O(1) lookup in the hot path. */
+static uint32_t jit_terminal_bitmap[8]; /* 256 bits = 8 x uint32_t */
+static int jit_terminal_init_done = 0;
+
+static void jit_terminal_init(void) {
+    memset(jit_terminal_bitmap, 0, sizeof(jit_terminal_bitmap));
+
+    /* Helper: set bit for top8 value */
+    #define TERM(x) jit_terminal_bitmap[(x) >> 5] |= (1u << ((x) & 31))
 
     /* Conditional branches: 0xD0-0xDE */
-    if (top8 >= 0xD0 && top8 <= 0xDE) return 1;
+    for (int i = 0xD0; i <= 0xDE; i++) TERM(i);
     /* Unconditional branch: 0xE0-0xE7 */
-    if (top8 >= 0xE0 && top8 <= 0xE7) return 1;
+    for (int i = 0xE0; i <= 0xE7; i++) TERM(i);
     /* BX/BLX register: 0x47 */
-    if (top8 == 0x47) return 1;
+    TERM(0x47);
     /* SVC: 0xDF */
-    if (top8 == 0xDF) return 1;
+    TERM(0xDF);
     /* POP with PC: 0xBD */
-    if (top8 == 0xBD) return 1;
+    TERM(0xBD);
     /* BKPT: 0xBE */
-    if (top8 == 0xBE) return 1;
+    TERM(0xBE);
     /* CPS (CPSIE/CPSID): changes interrupt state */
-    if (top8 == 0xB6) return 1;
+    TERM(0xB6);
+    /* CBZ: 0xB1, 0xB3 */
+    TERM(0xB1); TERM(0xB3);
+    /* CBNZ: 0xB9, 0xBB */
+    TERM(0xB9); TERM(0xBB);
+
+    /* WFI/WFE/SEV/YIELD: 0xBF — handled specially below (only non-NOP) */
+
+    #undef TERM
+    jit_terminal_init_done = 1;
+}
+
+static inline int jit_is_terminal(uint16_t instr) {
+    uint8_t top8 = instr >> 8;
+    if (jit_terminal_bitmap[top8 >> 5] & (1u << (top8 & 31)))
+        return 1;
     /* WFI/WFE/SEV/YIELD hints: 0xBF with non-NOP */
     if (top8 == 0xBF && (instr & 0x00F0) != 0) return 1;
-
     return 0;
 }
 
@@ -334,8 +356,9 @@ static jit_block_t *jit_compile(uint32_t pc) {
     uint32_t cur_pc = pc;
 
     for (int i = 0; i < JIT_BLOCK_MAX_INSN; i++) {
-        /* Bounds check */
-        if (cur_pc >= FLASH_BASE + FLASH_SIZE && cur_pc >= ROM_SIZE)
+        /* Bounds check: PC must be in flash or ROM range */
+        if (!(cur_pc < ROM_SIZE ||
+              (cur_pc >= FLASH_BASE && cur_pc < FLASH_BASE + FLASH_SIZE)))
             break;
 
         uint16_t instr = cpu_fetch16_fast(cur_pc);
@@ -777,6 +800,11 @@ void cpu_init(void) {
     if (!dispatch_initialized) {
         init_dispatch_table();
         dispatch_initialized = 1;
+    }
+
+    /* Initialize JIT terminal bitmap */
+    if (!jit_terminal_init_done) {
+        jit_terminal_init();
     }
 
     /* Initialize decoded instruction cache */

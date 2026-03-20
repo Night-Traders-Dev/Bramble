@@ -980,10 +980,20 @@ static uint32_t sio_read32(uint32_t offset) {
  * ======================================================================== */
 
 void mem_write32(uint32_t addr, uint32_t val) {
-    gdb_check_watchpoint_write(addr, 4);
+    if (__builtin_expect(gdb.active, 0))
+        gdb_check_watchpoint_write(addr, 4);
 
     /* SRAM alias translation (0x21xxxxxx -> 0x20xxxxxx) */
     addr = sram_alias_translate(addr);
+
+    /* Fast path: RAM writes are the most common case */
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
+        memcpy(&get_ram()[offset], &val, 4);
+        icache_invalidate_addr(addr);
+        jit_invalidate_addr(addr);
+        return;
+    }
 
     /* Writes to XIP flash (and uncached aliases) are ignored */
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
@@ -1025,13 +1035,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
-        uint32_t offset = addr - active_ram_base;
-        memcpy(&get_ram()[offset], &val, 4);
-        icache_invalidate_addr(addr);
-        jit_invalidate_addr(addr);
-        return;
-    }
+    /* (RAM handled in fast path above) */
 
     /* UART registers (including atomic aliases) */
     {
@@ -1296,7 +1300,8 @@ void mem_write32(uint32_t addr, uint32_t val) {
 }
 
 void mem_write16(uint32_t addr, uint16_t val) {
-    gdb_check_watchpoint_write(addr, 2);
+    if (__builtin_expect(gdb.active, 0))
+        gdb_check_watchpoint_write(addr, 2);
     addr = sram_alias_translate(addr);
 
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
@@ -1352,7 +1357,8 @@ void mem_write16(uint32_t addr, uint16_t val) {
 }
 
 void mem_write8(uint32_t addr, uint8_t val) {
-    gdb_check_watchpoint_write(addr, 1);
+    if (__builtin_expect(gdb.active, 0))
+        gdb_check_watchpoint_write(addr, 1);
     addr = sram_alias_translate(addr);
 
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
@@ -1406,9 +1412,18 @@ void mem_write8(uint32_t addr, uint8_t val) {
 }
 
 uint32_t mem_read32(uint32_t addr) {
-    gdb_check_watchpoint_read(addr, 4);
+    if (__builtin_expect(gdb.active, 0))
+        gdb_check_watchpoint_read(addr, 4);
     /* SRAM alias translation */
     addr = sram_alias_translate(addr);
+
+    /* Fast path: RAM reads are extremely common */
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
+        uint32_t val;
+        memcpy(&val, &get_ram()[offset], 4);
+        return val;
+    }
 
     /* ROM (0x00000000 - 0x00000FFF) */
     if (addr < ROM_SIZE) {
@@ -1460,12 +1475,7 @@ uint32_t mem_read32(uint32_t addr) {
         return xip_ssi_read(offset);
     }
 
-    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
-        uint32_t offset = addr - active_ram_base;
-        uint32_t val;
-        memcpy(&val, &get_ram()[offset], 4);
-        return val;
-    }
+    /* (RAM handled in fast path above) */
 
     /* UART registers (including atomic aliases) */
     {
@@ -1606,7 +1616,8 @@ uint32_t mem_read32(uint32_t addr) {
 }
 
 uint16_t mem_read16(uint32_t addr) {
-    gdb_check_watchpoint_read(addr, 2);
+    if (__builtin_expect(gdb.active, 0))
+        gdb_check_watchpoint_read(addr, 2);
     addr = sram_alias_translate(addr);
 
     /* ROM */
@@ -1662,7 +1673,8 @@ uint16_t mem_read16(uint32_t addr) {
 }
 
 uint8_t mem_read8(uint32_t addr) {
-    gdb_check_watchpoint_read(addr, 1);
+    if (__builtin_expect(gdb.active, 0))
+        gdb_check_watchpoint_read(addr, 1);
     addr = sram_alias_translate(addr);
 
     /* ROM */
