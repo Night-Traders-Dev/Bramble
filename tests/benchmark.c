@@ -168,42 +168,34 @@ static void build_firmware(void) {
  */
 static uint32_t run_until_halt(uint32_t max_steps) {
     uint32_t count = 0;
+    cpu_bind_context_t ctx;
+
+    if (!cpu_bind_core_context(CORE0, &ctx)) {
+        return 0;
+    }
 
     for (uint32_t s = 0; s < max_steps; s++) {
         if (cores[CORE0].is_halted) break;
 
-        /* Context switch core 0 into the single-core engine */
-        set_active_core(CORE0);
-        memcpy(cpu.r, cores[CORE0].r, sizeof(cpu.r));
-        cpu.xpsr = cores[CORE0].xpsr;
-        cpu.vtor = cores[CORE0].vtor;
-        cpu.step_count = cores[CORE0].step_count;
-        cpu.current_irq = cores[CORE0].current_irq;
-        cpu.primask = cores[CORE0].primask;
-        cpu.control = cores[CORE0].control;
         cpu.debug_enabled = 0;
-        mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
-
         cpu_step();
-
-        /* Save back */
-        memcpy(cores[CORE0].r, cpu.r, sizeof(cpu.r));
-        cores[CORE0].step_count = cpu.step_count;
-        cores[CORE0].xpsr = cpu.xpsr;
-        cores[CORE0].current_irq = cpu.current_irq;
-        cores[CORE0].primask = cpu.primask;
-        cores[CORE0].control = cpu.control;
 
         count++;
 
         /* Detect B . (0xE7FE): instruction at current PC is unconditional branch to self */
-        uint32_t cur_pc = cores[CORE0].r[15];
+        uint32_t cur_pc = cpu.r[15];
         if (cur_pc >= FLASH_BASE && cur_pc < FLASH_BASE + FLASH_SIZE) {
             uint16_t cur_instr;
             memcpy(&cur_instr, &cpu.flash[cur_pc - FLASH_BASE], 2);
             if (cur_instr == 0xE7FE) break;  /* B . */
         }
+
+        if (cpu.r[15] == 0xFFFFFFFF) {
+            break;
+        }
     }
+
+    cpu_unbind_core_context(CORE0, &ctx);
 
     /* Return actual instruction count from cpu step counter, not loop iterations.
      * With JIT, one cpu_step() call may execute multiple instructions. */

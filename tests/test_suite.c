@@ -465,6 +465,40 @@ TEST(test_dual_core_shared_ram) {
     PASS();
 }
 
+TEST(test_cpu_bind_core_context_roundtrip) {
+    reset_cpu();
+    dual_core_init();
+
+    cpu.r[0] = 0xAAAAAAAA;
+    cpu.r[15] = FLASH_BASE + 0x180;
+    cpu.current_irq = 0xFFFFFFFF;
+    set_active_core(CORE1);
+
+    cores[CORE0].r[0] = 0x11111111;
+    cores[CORE0].r[15] = FLASH_BASE + 0x220;
+    cores[CORE0].current_irq = 16;
+
+    cpu_bind_context_t ctx;
+    ASSERT_TRUE(cpu_bind_core_context(CORE0, &ctx), "Binding a running core should succeed");
+    ASSERT_EQ(0x11111111, cpu.r[0], "Bound CPU state should come from the selected core");
+    ASSERT_EQ(FLASH_BASE + 0x220, cpu.r[15], "Bound PC should come from the selected core");
+    ASSERT_EQ(16, cpu.current_irq, "Bound IRQ state should come from the selected core");
+    ASSERT_EQ(CORE0, get_active_core(), "Binding should switch the active core");
+
+    cpu.r[0] = 0x22222222;
+    cpu.r[15] = FLASH_BASE + 0x224;
+    cpu.current_irq = 17;
+
+    cpu_unbind_core_context(CORE0, &ctx);
+    ASSERT_EQ(0x22222222, cores[CORE0].r[0], "Unbinding should save updated registers back to the core");
+    ASSERT_EQ(FLASH_BASE + 0x224, cores[CORE0].r[15], "Unbinding should save the updated PC back to the core");
+    ASSERT_EQ(17, cores[CORE0].current_irq, "Unbinding should save IRQ state back to the core");
+    ASSERT_EQ(0xAAAAAAAA, cpu.r[0], "Global CPU state should be restored after unbind");
+    ASSERT_EQ(FLASH_BASE + 0x180, cpu.r[15], "Global PC should be restored after unbind");
+    ASSERT_EQ(CORE1, get_active_core(), "Active core should be restored after unbind");
+    PASS();
+}
+
 /* ========================================================================
  * ELF Loader Tests
  * ======================================================================== */
@@ -3851,6 +3885,7 @@ int main(void) {
     RUN_TEST(test_dual_core_ram_isolation);
     RUN_TEST(test_dual_core_shared_flash);
     RUN_TEST(test_dual_core_shared_ram);
+    RUN_TEST(test_cpu_bind_core_context_roundtrip);
     END_CATEGORY("Dual-Core Memory");
 
     BEGIN_CATEGORY("UF2 Loader");

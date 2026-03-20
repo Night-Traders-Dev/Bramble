@@ -280,10 +280,25 @@ void jit_report_stats(void);
  * CPU Control Functions (Dual-Core)
  * ======================================================================== */
 
+typedef struct {
+    uint32_t r[16];
+    uint32_t xpsr;
+    uint32_t vtor;
+    uint32_t step_count;
+    int debug_enabled;
+    int debug_asm;
+    uint32_t current_irq;
+    uint32_t primask;
+    uint32_t control;
+    int active_core;
+} cpu_bind_context_t;
+
 /* Initialization */
 void dual_core_init(void);
 
 /* Per-core execution */
+int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx);
+void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx);
 void cpu_step_core(int core_id);
 void cpu_reset_core(int core_id);
 int cpu_is_halted_core(int core_id);

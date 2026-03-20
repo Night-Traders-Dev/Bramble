@@ -1266,78 +1266,82 @@ void dual_core_init(void) {
  * ======================================================================== */
 
 /*
- * Context-switch a specific core into the single-core engine.
+ * Bind a specific core's register state into the single-core engine.
  *
  * Register state is per-core, but RP2040 SRAM is shared across both cores.
- * Keep the active memory bus pointed at the full shared SRAM image while
- * swapping only the lightweight CPU register state.
+ * Callers can bind once, execute multiple cpu_step() calls, then unbind to
+ * amortize the save/restore overhead in hot dual-core paths.
  */
-static void cpu_step_core_via_single(int core_id) {
-    if (core_id >= NUM_CORES) return;
-    if (cores[core_id].is_halted) return;
-
-    /* 1. Save current register state */
-    uint32_t saved_r[16];
-    memcpy(saved_r, cpu.r, sizeof(saved_r));
-    uint32_t saved_xpsr = cpu.xpsr;
-    uint32_t saved_vtor = cpu.vtor;
-    uint32_t saved_step = cpu.step_count;
-    int saved_debug = cpu.debug_enabled;
-    int saved_debug_asm = cpu.debug_asm;
-    uint32_t saved_irq = cpu.current_irq;
-    uint32_t saved_primask = cpu.primask;
-    uint32_t saved_control = cpu.control;
-
-    /* 2. Load core registers into global cpu */
-    memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
-    cpu.xpsr         = cores[core_id].xpsr;
-    cpu.vtor         = cores[core_id].vtor;
-    cpu.step_count   = cores[core_id].step_count;
-    cpu.debug_enabled= cores[core_id].debug_enabled;
-    cpu.debug_asm    = cores[core_id].debug_asm;
-    cpu.current_irq  = cores[core_id].current_irq;
-    cpu.primask      = cores[core_id].primask;
-    cpu.control      = cores[core_id].control;
-
-    /* 3. Point the memory bus at shared SRAM for all cores */
-    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
-
-    /* 4. Set active core for SIO routing */
-    set_active_core(core_id);
-
-    /* 5. Execute ONE instruction */
-    cpu_step();
-
-    /* 6. Save updated state back to core */
-    memcpy(cores[core_id].r, cpu.r, sizeof(cpu.r));
-    cores[core_id].xpsr         = cpu.xpsr;
-    cores[core_id].vtor         = cpu.vtor;
-    cores[core_id].step_count   = cpu.step_count;
-    cores[core_id].current_irq  = cpu.current_irq;
-    cores[core_id].primask      = cpu.primask;
-    cores[core_id].control      = cpu.control;
-
-    if (cpu.r[15] == 0xFFFFFFFF) {
-        cores[core_id].is_halted = 1;
+int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx) {
+    if (!ctx || core_id >= NUM_CORES || cores[core_id].is_halted) {
+        return 0;
     }
 
-    /* 7. Restore saved register state */
-    memcpy(cpu.r, saved_r, sizeof(saved_r));
-    cpu.xpsr = saved_xpsr;
-    cpu.vtor = saved_vtor;
-    cpu.step_count = saved_step;
-    cpu.debug_enabled = saved_debug;
-    cpu.debug_asm = saved_debug_asm;
-    cpu.current_irq = saved_irq;
-    cpu.primask = saved_primask;
-    cpu.control = saved_control;
+    memcpy(ctx->r, cpu.r, sizeof(ctx->r));
+    ctx->xpsr = cpu.xpsr;
+    ctx->vtor = cpu.vtor;
+    ctx->step_count = cpu.step_count;
+    ctx->debug_enabled = cpu.debug_enabled;
+    ctx->debug_asm = cpu.debug_asm;
+    ctx->current_irq = cpu.current_irq;
+    ctx->primask = cpu.primask;
+    ctx->control = cpu.control;
+    ctx->active_core = get_active_core();
 
-    /* 8. Restore memory bus to default */
+    memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
+    cpu.xpsr          = cores[core_id].xpsr;
+    cpu.vtor          = cores[core_id].vtor;
+    cpu.step_count    = cores[core_id].step_count;
+    cpu.debug_enabled = cores[core_id].debug_enabled;
+    cpu.debug_asm     = cores[core_id].debug_asm;
+    cpu.current_irq   = cores[core_id].current_irq;
+    cpu.primask       = cores[core_id].primask;
+    cpu.control       = cores[core_id].control;
+
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
+    set_active_core(core_id);
+    return 1;
+}
+
+void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx) {
+    if (!ctx || core_id >= NUM_CORES) {
+        return;
+    }
+
+    memcpy(cores[core_id].r, cpu.r, sizeof(cpu.r));
+    cores[core_id].xpsr          = cpu.xpsr;
+    cores[core_id].vtor          = cpu.vtor;
+    cores[core_id].step_count    = cpu.step_count;
+    cores[core_id].debug_enabled = cpu.debug_enabled;
+    cores[core_id].debug_asm     = cpu.debug_asm;
+    cores[core_id].current_irq   = cpu.current_irq;
+    cores[core_id].primask       = cpu.primask;
+    cores[core_id].control       = cpu.control;
+    cores[core_id].is_halted     = (cpu.r[15] == 0xFFFFFFFF);
+
+    memcpy(cpu.r, ctx->r, sizeof(cpu.r));
+    cpu.xpsr = ctx->xpsr;
+    cpu.vtor = ctx->vtor;
+    cpu.step_count = ctx->step_count;
+    cpu.debug_enabled = ctx->debug_enabled;
+    cpu.debug_asm = ctx->debug_asm;
+    cpu.current_irq = ctx->current_irq;
+    cpu.primask = ctx->primask;
+    cpu.control = ctx->control;
+
+    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
+    set_active_core(ctx->active_core);
 }
 
 void cpu_step_core(int core_id) {
-    cpu_step_core_via_single(core_id);
+    cpu_bind_context_t ctx;
+
+    if (!cpu_bind_core_context(core_id, &ctx)) {
+        return;
+    }
+
+    cpu_step();
+    cpu_unbind_core_context(core_id, &ctx);
 }
 
 void dual_core_step(void) {

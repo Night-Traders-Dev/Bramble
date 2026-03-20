@@ -311,19 +311,30 @@ static void *core_thread_fn(void *arg) {
             cores[core_id].is_wfi = 0;
         }
 
+        cpu_bind_context_t ctx;
+        if (!cpu_bind_core_context(core_id, &ctx)) {
+            pthread_mutex_unlock(&corepool.emu_lock);
+            continue;
+        }
+
         for (int steps = 0; steps < corepool.step_quantum; steps++) {
-            if (!corepool.running || cores[core_id].is_halted || cores[core_id].is_wfi) {
+            if (!corepool.running || cores[core_id].is_wfi) {
                 break;
             }
 
-            cpu_step_core(core_id);
+            cpu_step();
 
             /* Shared peripheral progression stays tied to guest instruction flow. */
             if (core_id == CORE0) {
                 pio_step();
                 usb_step();
             }
+
+            if (cpu.r[15] == 0xFFFFFFFF) {
+                break;
+            }
         }
+        cpu_unbind_core_context(core_id, &ctx);
 
         pthread_mutex_unlock(&corepool.emu_lock);
 
