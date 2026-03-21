@@ -223,6 +223,13 @@ extern int mem_debug_unmapped;
 void mem_write32(uint32_t addr, uint32_t val);
 uint32_t mem_read32(uint32_t addr);
 
+/* RP2350 mode flag: enables RP2350 SYSINFO, peripheral routing, 520KB SRAM */
+extern int membus_rp2350_mode;
+/* RP2350 peripheral state for M33 mode (set by main.c) — void* to avoid header dependency */
+extern void *membus_rp2350_periph;
+/* RP2350 SRAM pointer (520KB, set by main.c for M33 mode) */
+extern uint8_t *rp2350_sram_ptr;
+
 void mem_write16(uint32_t addr, uint16_t val);
 uint16_t mem_read16(uint32_t addr);
 

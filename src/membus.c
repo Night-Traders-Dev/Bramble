@@ -47,6 +47,22 @@ static uint8_t xip_sram[XIP_SRAM_SIZE];
 /* Debug logging for unmapped peripheral accesses */
 int mem_debug_unmapped = 0;  /* Set via -debug-mem flag */
 
+/* RP2350 mode: when set, SYSINFO returns RP2350 chip ID and
+ * RP2350-specific peripherals are routed through rp2350_periph.
+ * Set by main.c when -arch m33 or -arch rv32. */
+int membus_rp2350_mode = 0;
+
+/* RP2350 peripheral state pointer (set by main.c for M33 mode) */
+#include "rp2350_rv/rp2350_periph.h"
+#include "rp2350_rv/rp2350_memmap.h"
+void *membus_rp2350_periph = NULL;
+uint8_t *rp2350_sram_ptr = NULL;
+
+/* Helper to cast the void* to typed pointer */
+static inline rp2350_periph_state_t *get_rp2350_periph(void) {
+    return (rp2350_periph_state_t *)membus_rp2350_periph;
+}
+
 /* ========================================================================
  * SYSINFO Registers (0x40000000)
  *
@@ -62,11 +78,15 @@ int mem_debug_unmapped = 0;  /* Set via -debug-mem flag */
 #define RP2040_CHIP_ID      ((2u << 28) | (0x0002u << 12) | (0x927u << 1) | 1u)
 #define RP2040_PLATFORM     0x00000002  /* ASIC=1, FPGA=0 */
 
+/* RP2350 SYSINFO values */
+#define RP2350_CHIP_ID_VAL  ((1u << 28) | (0x0002u << 12) | (0x927u << 1) | 1u)
+
 static uint32_t sysinfo_read(uint32_t offset) {
     switch (offset) {
-    case SYSINFO_CHIP_ID:  return RP2040_CHIP_ID;
+    case SYSINFO_CHIP_ID:
+        return membus_rp2350_mode ? RP2350_CHIP_ID_VAL : RP2040_CHIP_ID;
     case SYSINFO_PLATFORM: return RP2040_PLATFORM;
-    case SYSINFO_GITREF:   return 0x00000001;  /* Bootrom version */
+    case SYSINFO_GITREF:   return 0x00000001;
     default:               return 0;
     }
 }
@@ -1319,10 +1339,21 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* RP2350-specific peripherals */
+    /* RP2350-specific peripherals (both shared stubs and M33-mode routing) */
     if (sha256_match(addr)) { sha256_write(addr & 0xFFF, val); return; }
     if (hstx_match(addr)) { hstx_write(addr & 0xFFF, val); return; }
     if (ticks_match(addr)) { ticks_write(addr & 0xFFF, val); return; }
+
+    /* RP2350 M33 mode: route RP2350-specific peripherals */
+    if (membus_rp2350_mode && get_rp2350_periph()) {
+        if (rp2350_periph_match(addr)) {
+            rp2350_periph_write32(get_rp2350_periph(), addr, val);
+            return;
+        }
+    }
+
+    /* ROM area writes (0x00000000-0x00007FFF) — silently ignore */
+    if (addr < 0x00008000) return;
 
     /* Stub out other peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) {
@@ -1654,6 +1685,15 @@ uint32_t mem_read32(uint32_t addr) {
     if (otp_match(addr)) return otp_read(addr & 0xFFF);
     if (hstx_match(addr)) return hstx_read(addr & 0xFFF);
     if (ticks_match(addr)) return ticks_read(addr & 0xFFF);
+
+    /* RP2350 M33 mode: route RP2350-specific peripherals */
+    if (membus_rp2350_mode && get_rp2350_periph()) {
+        if (rp2350_periph_match(addr))
+            return rp2350_periph_read32(get_rp2350_periph(), addr);
+    }
+
+    /* ROM area reads in RP2350 mode */
+    if (addr < 0x00008000 && membus_rp2350_mode) return 0;
 
     /* Stub peripheral reads: return 0 for now. */
     if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {

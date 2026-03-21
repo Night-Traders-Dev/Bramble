@@ -1534,7 +1534,12 @@ int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx) {
     cpu.faultmask     = cores[core_id].faultmask;
     cpu.control       = cores[core_id].control;
 
-    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
+    /* Use RP2350 SRAM if in RP2350 mode, otherwise RP2040 SRAM */
+    if (membus_rp2350_mode && rp2350_sram_ptr) {
+        mem_set_ram_ptr(rp2350_sram_ptr, 0x20000000, 520 * 1024);
+    } else {
+        mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
+    }
     set_active_core(core_id);
     return 1;
 }

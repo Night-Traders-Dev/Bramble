@@ -1,5 +1,29 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.43.0] - 2026-03-21
+
+### Added - littleOS RP2350 Boot Fixes (M33 520KB SRAM, RP2350 Peripheral Routing)
+
+- **M33 520KB SRAM**: Cortex-M33 mode now uses a 520KB SRAM buffer (0x20000000-0x20082000) instead of the RP2040's 264KB. Set via `mem_set_ram_ptr()` + `rp2350_sram_ptr` global so `cpu_bind_core_context()` preserves the expanded SRAM during execution.
+- **RP2350 peripheral routing in ARM membus**: When `membus_rp2350_mode=1`, the shared ARM membus routes reads/writes to RP2350-specific peripherals (TICKS, POWMAN, QMI, OTP, BOOTRAM, TIMER1, GLITCH, CORESIGHT, ACCESSCTRL) via `rp2350_periph_match/read/write`. Previously only available in the RV membus path.
+- **RP2350 SYSINFO CHIP_ID**: `sysinfo_read()` returns RP2350 chip ID when in RP2350 mode (M33 or RV32).
+- **ROM write suppression**: Writes to address 0x00000000-0x00007FFF (ROM area) silently ignored instead of logged as unmapped. RP2350 firmware writes to VTOR at address 0 during boot.
+- **littleOS pico2 ARM tested**: Built with Pico SDK 2.x for `pico2` target (rp2350-arm-s). Loads and executes **171 million instructions** in 5 seconds. M33 CPUID, BASEPRI, 520KB SRAM all active.
+- **littleOS pico2 RISC-V tested**: Built for `pico2_riscv` target (rp2350-riscv). Picobin boot at PC=0x10000036. Executes **248 million instructions** in 5 seconds with ICache 99.97% hit rate.
+- **Both firmwares execute through boot code**: Firmware initializes, copies code to SRAM, and enters main execution loop. No UART/USB output yet (requires USB CDC enumeration completion).
+
+### Changed
+
+- `src/membus.c`: Added `membus_rp2350_mode`, `membus_rp2350_periph`, `rp2350_sram_ptr` globals. RP2350 peripheral routing in read/write paths. ROM write suppression. RP2350 SYSINFO CHIP_ID.
+- `src/cpu.c`: `cpu_bind_core_context()` uses `rp2350_sram_ptr` when in RP2350 mode.
+- `src/main.c`: M33 mode allocates 520KB SRAM, sets `rp2350_sram_ptr`, initializes RP2350 peripherals. RV mode also sets `membus_rp2350_mode`.
+
+### Tests
+
+- 300 tests passing (RP2040 tests unaffected), zero warnings.
+
+---
+
 ## [0.42.0] - 2026-03-20
 
 ### Added - Picobin Boot, Real Pico 2 Firmware Support
