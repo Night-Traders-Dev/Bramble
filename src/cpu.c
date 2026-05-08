@@ -21,6 +21,8 @@
 #include "rtc.h"
 #include "corepool.h"
 #include "devtools.h"
+#include "rp2350_rv/rp2350_periph.h"
+#include "rp2350_rv/rp2350_memmap.h"
 
 /* ========================================================================
  * Single-Core Global State
@@ -1659,6 +1661,11 @@ void dual_core_step(void) {
                     timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
                     timer_tick(us);
                     rtc_tick(us);
+                    /* Tick RP2350 TIMER1 if active */
+                    if (membus_rp2350_mode && membus_rp2350_periph) {
+                        rp2350_periph_state_t *ps = (rp2350_periph_state_t *)membus_rp2350_periph;
+                        rp2350_timer1_tick(ps, us);
+                    }
                 }
             }
 

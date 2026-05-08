@@ -1,1319 +1,1583 @@
-
 # Part 1: Architecture Overview and Design Philosophy
 
-## 1.1 Design Goals
+## 1.1 Project Summary
 
-Bramble is designed as a **development and debugging tool** for RP2040 and RP2350 firmware that:
+Bramble is a from-scratch emulator for Raspberry Pi RP2040 and RP2350
+microcontrollers written in C99 with POSIX extensions. It executes real
+firmware---UF2 and ELF binaries produced by the Pico SDK, MicroPython,
+CircuitPython, littleOS, and other projects---without modification.
 
-- **Boots real firmware**: UF2 and ELF binaries produced by the Pico SDK, MicroPython, CircuitPython, and third-party projects run unmodified.
-- **Emulates both cores**: RP2040: true dual-core ARM with per-core NVIC, SysTick, exception stacks, and inter-core FIFO. RP2350: dual Hazard3 RISC-V harts with CLINT interrupt controller.
-- **Provides full peripheral coverage**: GPIO, Timer, UART, SPI, I2C, PWM, DMA, PIO, ADC, USB, RTC, and CYW43 WiFi — all register-accurate against the RP2040/RP2350 datasheets.
-- **Supports interactive debugging**: GDB remote serial protocol with breakpoints, watchpoints, conditional breakpoints, and dual-core thread support.
-- **Enables multi-device systems**: UART-to-TCP bridging, Unix-domain-socket wiring between Bramble instances, SPI-attached SD card and eMMC emulation.
-- **Auto-detects firmware architecture**: UF2 family ID and ELF machine type automatically select RP2040 ARM or RP2350 RISC-V execution mode.
+The emulator provides **tri-architecture** support:
 
-## 1.2 System Characteristics
+- **RP2040 Cortex-M0+** (`-arch m0+`): 65+ Thumb-1 instructions with O(1) dispatch, JIT basic block compilation, and full dual-core emulation.
+- **RP2350 Cortex-M33** (`-arch m33`): Full Thumb-2 ISA reusing the existing ARM engine with BASEPRI, M33 CPUID, and 520 KB SRAM.
+- **RP2350 Hazard3 RISC-V** (`-arch rv32`): Complete RV32IMAC + Zba + Zbb + Zbs + Zcb + Zcmp (140+ instructions) with CLINT interrupt controller, SDK-compatible bootrom, and picobin boot.
+
+All three architectures share the same peripheral infrastructure, storage
+subsystem, networking stack, and developer tools.
+
+### Project Statistics
+
+| Metric | Value |
+|--------|-------|
+| Source lines | 22,663 (42 `.c` files) |
+| Header files | 40 `.h` files |
+| Test suite | 300 tests across 57 categories |
+| Compiler warnings | Zero (`-Wall -Wextra -pedantic`) |
+| Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350) |
+| Version | 0.43.0 |
+
+## 1.2 Design Goals
+
+1. **Boot real firmware unmodified.** Any UF2 or ELF produced by the Pico SDK, MicroPython, CircuitPython, or compatible toolchains should load and execute without patching.
+
+2. **Register-level peripheral fidelity.** Every emulated peripheral reproduces the documented register layout and behavior from the RP2040/RP2350 datasheets. Firmware that reads status bits, sets interrupt masks, or polls FIFO levels gets correct values.
+
+3. **Automatic architecture detection.** UF2 family IDs (`0xE48BFF56` for RP2040, `0xE48BFF59` for RP2350 ARM, `0xE48BFF5A` for RP2350 RISC-V), ELF machine types (`EM_ARM` = 40, `EM_RISCV` = 243), and picobin IMAGE_DEF blocks automatically select the correct execution engine and memory map.
+
+4. **Interactive debugging.** The integrated GDB stub supports breakpoints, watchpoints, conditional breakpoints, dual-core thread selection, and architecture-aware register layouts (17 registers for ARM, 33 for RISC-V).
+
+5. **Multi-device and network support.** UART-to-TCP bridging, Unix socket IPC between Bramble instances, SPI-attached SD card and eMMC, and CYW43 WiFi emulation with TAP bridging enable complex system-level testing.
+
+6. **Developer tooling.** 18 built-in tools: semihosting, code coverage, hotspot analysis, instruction trace, call graph, VCD waveform export, IRQ latency measurement, stack checking, bus logging, scripted I/O, expected output matching, memory watch, fault injection, cycle profiling, and memory heatmap.
+
+## 1.3 System Characteristics
 
 | Feature | Details |
 |---------|---------|
-| **Targets** | RP2040 (dual ARM Cortex-M0+), RP2350 (dual Hazard3 RISC-V RV32IMAC) |
-| **Language** | C99 with POSIX extensions |
-| **Build** | CMake, links `-lm -lpthread` |
-| **Instruction Sets** | ARM: 65+ Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB. RISC-V: 93 RV32IMAC (I+M+A+C+Zicsr) |
-| **Memory** | RP2040: 2MB flash, 264KB SRAM, 16KB ROM. RP2350: 2MB flash, 520KB SRAM, 32KB ROM |
-| **Peripherals** | 30+ modules (GPIO, Timer, NVIC, UART, SPI, I2C, PWM, DMA, PIO, ADC, USB, RTC, Clocks, XOSC, PLLs, ROSC, Watchdog, SIO, CYW43, CLINT) |
-| **Cores** | RP2040: 1-2 cores, cooperative or host-threaded. RP2350: dual-hart cooperative |
-| **Firmware Formats** | UF2 (with family ID auto-detect), ELF32 ARM/RISC-V |
-| **Debugging** | GDB RSP over TCP; 16 breakpoints, 16 watchpoints, conditional breakpoints |
-| **Clock Model** | Configurable cycles-per-µs (`-clock <MHz>`); ARMv6-M instruction timing table |
-| **Performance** | Instruction cache (64K entries) + optional JIT basic block compilation (`-jit`) |
-| **Storage** | Flash persistence, SPI-attached SD card, eMMC, FUSE mount |
-| **Networking** | UART-to-TCP bridge, Unix socket wire protocol |
-| **Output** | Firmware UART/USB CDC output on stdout; all diagnostics on stderr |
+| **Language** | C99 with POSIX extensions (pthreads, sockets, mmap) |
+| **Build system** | CMake 3.10+; links `-lm -lpthread`; optional `-lfuse3` |
+| **Host platforms** | Linux (primary), macOS (compatible) |
+| **RP2040 ARM ISA** | 65+ Thumb-1 + 32-bit BL/MSR/MRS/DSB/DMB/ISB. See Section 5.4 for full listing. |
+| **RP2350 Thumb-2 ISA** | Full ARMv8-M: MOVW/MOVT, SDIV/UDIV, CLZ, MLA/MLS, SMULL/UMULL/SMLAL/UMLAL, BFI/BFC, UBFX/SBFX, B.W, TBB/TBH, wide LD/ST. See Section 5.4.2. |
+| **RISC-V ISA** | RV32I (37) + M (8) + A (11) + C (36) + Zicsr (6) + Zba (3) + Zbb (16) + Zbs (8) + Zcb (11) + Zcmp (4) = 140+ instructions. See Section 6. |
+| **RP2040 memory** | 4 MB flash array (2 MB default), 264 KB SRAM (6 banks), 16 KB ROM |
+| **RP2350 memory** | 4 MB flash array, 520 KB SRAM (10 banks + scratch), 32 KB ROM |
+| **Peripherals** | 30+ modules. See Section 4.3 for complete peripheral address table. |
+| **Firmware formats** | UF2 (family ID auto-detect), ELF32 (ARM + RISC-V), picobin IMAGE_DEF |
+| **Debugging** | GDB RSP; 16 breakpoints, 16 watchpoints; conditional BPs; dual-core threads; ARM + RISC-V registers |
+| **Clock model** | Configurable `-clock <MHz>` (default 1; RP2040: 125; RP2350: 150). ARMv6-M cycle timing per DDI 0484C. |
+| **ARM performance** | 64K icache + optional 16384-entry JIT (`-jit`, ~1.5x speedup) |
+| **RISC-V performance** | 64K icache for flash/ROM; 99.97%+ hit rates observed |
+| **Storage** | Flash persistence, FUSE mount, SPI SD card (SDHC), SPI eMMC, FAT12/FAT16 |
+| **Networking** | UART-to-TCP, Unix socket wire protocol, CYW43 WiFi gSPI + TAP bridge |
+| **Output model** | Firmware output (UART TX, USB CDC) on `stdout`; all diagnostics on `stderr` |
 
-## 1.3 Execution Model
+## 1.4 Execution Modes
 
-Bramble operates in two execution modes:
+Bramble supports four execution modes, selected by architecture and CLI flags:
 
-**Cooperative mode** (default, or when GDB is active):
-1. `dual_core_step()` executes one instruction on each active core in round-robin
-2. `pio_step()` advances all enabled PIO state machines
-3. `usb_step()` advances USB enumeration state machine
-4. Peripherals (timer, SysTick) tick based on accumulated CPU cycles
-5. Stdin, network, and wire polling occurs every 1024 steps
+### 1.4.1 Cooperative ARM Mode (default)
 
-**Threaded mode** (`-cores N` or `-cores auto`):
-1. One host pthread per emulated core, each running its own execution loop
-2. A big lock (mutex) serializes access to shared state (peripherals, memory)
-3. WFI/WFE instructions release the lock and sleep on a condition variable
-4. `corepool_wake_cores()` signals sleeping cores when interrupts become pending
-5. Main thread handles I/O polling, watchdog, and storage flush
+This is the primary execution mode for RP2040 and RP2350 Cortex-M33 firmware:
 
-**RISC-V mode** (`-arch rv32` or auto-detected):
+1. `dual_core_step()` executes one instruction on each active core via round-robin scheduling. It calls `cpu_bind_core_context()` to swap the active register file into the global `cpu` struct, executes `cpu_step()`, then calls `cpu_unbind_core_context()` to save back.
 
-1. Both harts stepped cooperatively in a single loop (hart 0, then hart 1 if active)
-2. CLINT mtime advances each step based on configured clock frequency
-3. `rv_clint_check_interrupts()` evaluates mip/mie/mstatus.MIE and delivers pending interrupts
-4. Interrupt priority: MEIP (external) > MSIP (software) > MTIP (timer)
-5. WFI halts the hart until any pending+enabled interrupt wakes it
-6. Hart 1 starts halted; firmware launches it via SIO or custom mechanism
-7. Memory accesses route through RP2350 bus: 520KB SRAM locally, shared peripherals via RP2040 bus
+2. `pio_step()` advances all enabled PIO state machines (across all 3 PIO blocks). Each SM's fractional clock divider (16.8 fixed-point accumulator) is checked; SMs only step when their accumulator overflows.
 
-## 1.4 Boot Sequence
+3. `usb_step()` advances the USB host enumeration state machine.
+   It transitions through states: IDLE, BUS_RESET, GET_DEVICE_DESCRIPTOR,
+   SET_ADDRESS, GET_CONFIG_DESCRIPTOR, SET_CONFIGURATION,
+   SET_CONTROL_LINE_STATE, ACTIVE. Each transition is paced by
+   the firmware's response (writing AVAILABLE to endpoint buf_ctrl).
 
-1. CPU, ROM, and all peripherals are initialized
-2. Firmware is loaded from UF2 or ELF file into flash at `0x10000000`
-3. If `-flash <path>` specified, non-firmware flash sectors are restored from file
-4. Boot2 auto-detection: if the first 256 bytes of flash contain valid boot2 code, Core 0 starts at `0x10000000`; otherwise it starts at `0x10000100` (application entry)
-5. Vector table is read: SP from word 0, reset vector from word 1
-6. Core 0 begins execution; Core 1 starts halted (launched by firmware via SIO FIFO protocol)
+4. `timing_tick()` accumulates CPU cycles. When `cycle_accumulator >= cycles_per_us`, it converts to microseconds and calls `timer_tick()`, `rtc_tick()`, and `systick_tick_for_core()` for each active core.
 
+5. Stdin polling (`uart_stdin_poll()`), network bridge polling (`net_bridge_poll()`), and wire protocol polling (`wire_poll()`) occur every 1024 steps.
+
+### 1.4.2 Threaded ARM Mode (`-cores N` or `-cores auto`)
+
+When threading is enabled, each emulated core gets its own host pthread:
+
+1. Each thread acquires a global mutex ("big lock") before executing guest instructions.
+
+2. The thread executes `step_quantum` instructions (default 64, configurable via `-thread-quantum`), then releases the lock.
+
+3. When a core executes WFI or WFE, it releases the lock and sleeps on a condition variable. `corepool_wake_cores()` signals the condvar when an interrupt becomes pending (NVIC set_pending, SysTick tick, ICSR PendSV/SysTick set, Core 1 launch).
+
+4. The main thread handles I/O polling (stdin, network, wire, WiFi TAP), watchdog checking, and periodic storage flush.
+
+5. A file-based core pool registry at `/tmp/bramble-corepool.reg` tracks running instances. `-cores auto` queries this registry to determine optimal allocation (total host CPUs minus already-claimed cores).
+
+### 1.4.3 RISC-V Mode (`-arch rv32` or auto-detected)
+
+The RISC-V execution path runs independently from the ARM CPU engine:
+
+1. Two `rv_cpu_state_t` structs represent the dual Hazard3 harts. Each has 32 general-purpose registers (x0 hardwired to zero), a PC, 4096 CSR slots, 64-bit cycle/instret counters, LR/SC reservation state, and a bus pointer.
+
+2. An `rv_membus_state_t` provides the RP2350 memory landscape: 520 KB SRAM, 32 KB ROM, CLINT registers, and RP2350-specific peripherals. Unhandled addresses fall through to the shared RP2040 peripheral bus (`mem_read32`/`mem_write32`), which provides UART, SPI, I2C, GPIO, Timer, PWM, DMA, PIO, USB, etc.
+
+3. Each iteration of the main loop:
+   - Checks for ROM function interception (`rv_rom_intercept()`). If the PC is at a ROM function stub (0x0400--0x0437), the operation is performed natively in C and the PC advances to the return address.
+   - Steps hart 0 (if not WFI): `rv_cpu_step()` fetches via the instruction cache (`rv_icache_lookup`), decodes (compressed if bits [1:0] != 11), and executes. Supports full RV32IMAC + Zba, Zbb, Zbs, Zcb, and Zcmp extensions.
+   - Steps hart 1 (if not halted and not WFI).
+   - Advances CLINT timer: `rv_clint_tick(&bus.clint, 1)` accumulates cycles and increments `mtime` when a microsecond boundary is crossed. Also ticks TIMER1 via `rp2350_timer1_tick()`.
+   - Checks and delivers interrupts: `rv_clint_check_interrupts()` computes `mip` from hardware state (timer compare, MSIP, external pending), checks `mstatus.MIE` and `mie`, and calls `rv_trap_enter()` for the highest-priority deliverable interrupt. Priority order: MEIP (external, cause `0x8000000B`) > MSIP (software, cause `0x80000003`) > MTIP (timer, cause `0x80000007`).
+   - Checks hart 1 launch mailbox: if `rv_membus_check_hart1_launch()` detects a pending launch (firmware wrote to SIO at `0xD00001CC`), resets hart 1 with the specified entry PC, SP (x2), and argument (a0/x10).
+   - Checks for RISC-V semihosting: if hart 0's `mcause` is `MCAUSE_BREAKPOINT` and `x[10]` (a0) is `0x20026`, triggers SYS_EXIT.
+   - Polls stdin, network, and wire every 1024 steps.
+
+### 1.4.4 Cortex-M33 Mode (`-arch m33` or auto-detected)
+
+The M33 mode runs on the existing ARM CPU engine with an overlay:
+
+1. `m33_init_overlay()` sets the CPUID to `0x410FD210`
+   (Cortex-M33 r0p0) and initializes BASEPRI to 0.
+
+2. A static 520 KB SRAM buffer is allocated and installed via
+   `mem_set_ram_ptr()`. The `cpu_bind_core_context()` function
+   checks `membus_rp2350_mode` and uses the 520 KB pointer
+   instead of the RP2040's 264 KB.
+
+3. `membus_rp2350_mode = 1` enables RP2350-specific peripheral
+   routing in the shared membus: SYSINFO returns RP2350 CHIP_ID,
+   RP2350 peripherals are routed, and ROM writes are silently
+   suppressed.
+
+4. The MSR/MRS handlers in `instructions.c` support BASEPRI
+   (SYSm `0x11`) and BASEPRI_MAX (SYSm `0x12`, write-if-greater
+   semantics).
+
+5. All Thumb-2 instructions are already implemented in
+   `thumb32.c` (called when bits [15:11] of the first halfword
+   indicate a 32-bit encoding). This includes MOVW/MOVT,
+   SDIV/UDIV, CLZ, MLA/MLS, SMULL/UMULL/UMLAL/SMLAL,
+   BFI/BFC, UBFX/SBFX, B.W, TBB/TBH, wide loads/stores, and
+   data processing with shifted registers.
+
+## 1.5 Boot Sequences
+
+### 1.5.1 RP2040 Boot
+
+```
+cpu_init()
+  └─ cpu.flash[] initialized to 0xFF (erased state)
+load_uf2() or load_elf()
+  └─ Firmware written to cpu.flash[] starting at offset 0
+     (target address 0x10000000)
+  └─ UF2 family ID detected; loader_detected_arch() set
+Flash persistence restore
+  └─ If -flash <path>: non-firmware 4KB sectors restored from file
+Boot2 detection
+  └─ First flash word checked for valid ARM vector (SP value)
+  └─ If valid: Core 0 PC = 0x10000000 (boot2 entry)
+  └─ If invalid or -no-boot2: Core 0 PC = 0x10000100
+Vector table read
+  └─ SP from flash[boot_offset + 0]
+  └─ Reset vector from flash[boot_offset + 4]
+Core 0 begins execution
+Core 1 starts halted
+  └─ Launched by firmware via SIO FIFO protocol
+     (write 0, 0, 1, VTOR, SP, entry to FIFO)
+```
+
+### 1.5.2 RP2350 RISC-V Boot (Picobin)
+
+```
+load_uf2()
+  └─ UF2 family ID 0xE48BFF57 or 0xE48BFF5A detected
+  └─ Blocks loaded into cpu.flash[] (up to 4MB offset)
+rv_membus_init()
+  └─ 520KB SRAM zeroed
+  └─ CLINT initialized (mtimecmp = UINT64_MAX)
+  └─ RP2350 peripherals initialized
+rv_bootrom_init()
+  └─ 32KB ROM populated with:
+     - Reset vector at 0x0000 (JAL to boot code)
+     - Trap handler at 0x0004 (C.J self, infinite loop)
+     - Magic header at 0x0010: 'R', 'P', 0x02
+     - Function table at 0x0100 (9 entries)
+     - Lookup function at 0x0300 (RISC-V code)
+     - ROM function stubs at 0x0400+ (RET instructions)
+     - Boot code at 0x0020: LUI SP, ADDI SP, LUI GP,
+       ADDI t0(mtvec), CSRRW mtvec, LUI t0(flash), JALR t0
+picobin_scan(cpu.flash, 4096)
+  └─ Scans first 4KB for marker 0xFFFFDED3
+  └─ Parses IMAGE_TYPE item (flags word):
+     - bits[3:0] = image type (1=EXE)
+     - bits[10:8] = CPU (0=ARM, 1=RISC-V)
+     - bits[14:12] = chip (0=RP2040, 1=RP2350)
+  └─ Parses ENTRY_POINT item: PC and SP
+  └─ Parses VECTOR_TABLE item (ARM only): VTOR
+If picobin found with valid entry:
+  └─ Hart 0 reset to picobin entry PC
+  └─ SP (x2) set to picobin entry SP
+Else:
+  └─ Hart 0 reset to 0x00000000 (ROM bootrom)
+Hart 1 starts halted
+  └─ Launched via SIO mailbox at 0xD00001C0
+```
+
+### 1.5.3 RP2350 ARM Boot
+
+```
+load_uf2()
+  └─ UF2 family ID 0xE48BFF59 or auto-detected
+m33_init_overlay()
+  └─ nvic_cpuid_value = 0x410FD210
+  └─ 520KB SRAM allocated and installed
+  └─ membus_rp2350_mode = 1
+  └─ RP2350 peripherals initialized
+Standard ARM vector table boot
+  └─ SP from flash[0], PC from flash[4] (Thumb bit stripped)
+  └─ Same as RP2040 boot but with M33 features active
+```
+
+---
 
 # Part 2: Building and Running
 
-## 2.1 Build Requirements
+## 2.1 Prerequisites
 
-- C99 compiler (GCC or Clang)
+**Required:**
+
+- C99 compiler (GCC 10+ or Clang 12+)
 - CMake 3.10+
-- POSIX system (Linux, macOS)
+- POSIX-compatible OS (Linux or macOS)
 - pthreads (included on all POSIX systems)
+- libmath (`-lm`)
+
+**Optional:**
+
+- `libfuse3-dev` --- for `-mount` filesystem passthrough support
+- `arm-none-eabi-gcc` --- to build RP2040 test firmware
+- `riscv32-unknown-elf-gcc` --- to build RP2350 RISC-V test firmware
+- `graphviz` --- to visualize `-callgraph` output
+- `gtkwave` or `pulseview` --- to view `-gpio-trace` VCD files
 
 ## 2.2 Building
 
+### Quick Build
+
 ```bash
-cmake -S . -B build
-cmake --build build -j
+./build.sh
 ```
 
-**Build options:**
+The `build.sh` script auto-detects FUSE availability, creates a `build/` directory, runs CMake with Release configuration, and copies the `bramble` binary to the project root.
 
-| Option | Description |
+Build script flags:
+
+| Flag | Description |
+|------|-------------|
+| `--clean` | Remove existing build directory before building |
+| `--no-fuse` | Disable FUSE even if libfuse3 is available |
+| `--release` | Release build with optimizations (default) |
+| `--debug` | Debug build with symbols, no optimization |
+| `--help` | Show usage information |
+
+### Explicit CMake Build
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+CMake options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `CMAKE_BUILD_TYPE` | `Release` | Build type (`Release`, `Debug`, `RelWithDebInfo`) |
+| `CMAKE_C_COMPILER` | system cc | C compiler path (e.g., `clang`) |
+| `ENABLE_FUSE` | auto-detect | Enable FUSE filesystem mount (`ON`, `OFF`) |
+
+### Build Outputs
+
+| Binary | Description |
 |--------|-------------|
-| `-DCMAKE_BUILD_TYPE=Release` | Optimized build |
-| `-DCMAKE_C_COMPILER=clang` | Use Clang instead of GCC |
-| `-DENABLE_FUSE=ON` | Enable FUSE filesystem mount support (requires libfuse3) |
+| `bramble` | Main emulator executable (copied to project root) |
+| `bramble_tests` | Automated test suite |
+| `bramble_bench` | Performance benchmarking tool |
 
 ## 2.3 Running Tests
 
 ```bash
+# Run via CTest (preferred)
 ctest --test-dir build --output-on-failure
+
+# Run directly
+./build/bramble_tests
 ```
 
-The test suite contains 274 tests covering instruction execution, peripheral register behavior, memory access, memory-mapped alias routing, exception delivery/return, loader hardening, wire transport, and firmware boot sequences.
+The test suite contains **300 tests** organized into 57 categories:
+
+| Category Group | Tests | Description |
+|----------------|-------|-------------|
+| ARM instruction tests | ~180 | PRIMASK, SVC, RAM exec, dispatch, ADCS/SBCS/RSBS, shifts, branches, STMIA/LDMIA, MUL, BL, MSR/MRS, CMN, ADR, ADD/SUB SP |
+| Peripheral tests | ~60 | Timer, GPIO, NVIC, SysTick, UART (Tx + Rx FIFO), SPI, I2C, PWM, DMA, PIO (execution + clock division), ADC (FIFO + round-robin), USB, RTC |
+| Memory/loader tests | ~20 | Flash, RAM, SRAM alias, XIP cache, XIP aliases, UF2 loader, ELF loader, memory bus subword access |
+| Exception tests | ~10 | Entry/return, pending IRQ delivery, nesting, HardFault, double-fault lockup |
+| Dual-core tests | ~10 | RAM isolation, shared flash, context bind/unbind, spinlocks, FIFO, core pool, WFI, wire protocol |
+| RISC-V tests | 20 | CPU init/reset, ADDI, LUI, ADD/SUB, BEQ, SW/LW, MUL/DIV, JAL/JALR, C.LI/C.ADDI, CSR mhartid, trap enter/return, CLINT timer/interrupt, membus SRAM, bootrom init, icache, peripherals (BOOTRAM, TIMER1, Hazard3 CSRs) |
+| M33 tests | 4 | CPUID switching, BASEPRI read/write/BASEPRI_MAX, SDIV, MOVW |
 
 ## 2.4 Running Firmware
 
-```bash
-# Basic execution
-./bramble firmware.uf2
+### Basic Usage
 
-# With clock speed and interactive stdin
+```bash
+# RP2040 firmware (architecture auto-detected)
+./bramble hello_world.uf2
+
+# With real-time clock and interactive stdin
 ./bramble firmware.uf2 -clock 125 -stdin
 
+# ELF firmware (auto-detected by .elf extension)
+./bramble firmware.elf
+```
+
+### Architecture Selection
+
+```bash
+# Explicit architecture
+./bramble firmware.uf2 -arch m0+       # RP2040 Cortex-M0+
+./bramble firmware.uf2 -arch m33       # RP2350 Cortex-M33
+./bramble firmware.uf2 -arch rv32      # RP2350 Hazard3 RISC-V
+
+# Auto-detected from UF2 family ID
+./bramble pico2_firmware.uf2           # Detects RP2350
+./bramble micropython_pico2_rv.uf2     # Detects RP2350 RISC-V
+```
+
+### Multi-Core and Persistence
+
+```bash
 # Dual-core threaded with flash persistence
 ./bramble firmware.uf2 -cores 2 -clock 125 -flash storage.bin
 
-# GDB debugging
-./bramble firmware.uf2 -gdb 3333
+# Auto-detect core count from pool
+./bramble firmware.uf2 -cores auto
+
+# FUSE mount flash filesystem
+./bramble firmware.uf2 -flash storage.bin -mount /tmp/pico-fs
 ```
 
+### GDB Debugging
+
+```bash
+# Terminal 1: start emulator with GDB server
+./bramble firmware.uf2 -gdb 3333
+
+# Terminal 2: connect GDB
+arm-none-eabi-gdb firmware.elf -ex "target remote :3333"
+
+# For RISC-V firmware
+riscv32-unknown-elf-gdb firmware.elf -ex "target remote :3333"
+```
+
+### Networking and Multi-Device
+
+```bash
+# Bridge UART0 to TCP (connect with nc or minicom)
+./bramble firmware.uf2 -net-uart0 9999 -stdin
+
+# Wire two instances together
+./bramble fw_sensor.uf2 -wire-uart0 /tmp/uart.sock -stdin  # Terminal 1
+./bramble fw_ctrl.uf2   -wire-uart0 /tmp/uart.sock -stdin  # Terminal 2
+
+# WiFi with TAP bridge
+./bramble firmware.uf2 -wifi -tap tap0
+
+# SD card
+./bramble firmware.uf2 -sdcard sdcard.img -sdcard-size 32
+```
+
+### Developer Tools
+
+```bash
+# Code coverage and hotspot analysis
+./bramble firmware.uf2 -coverage cov.bin -hotspots 20
+
+# Instruction trace with symbols
+./bramble firmware.uf2 -trace trace.bin -symbols firmware.elf
+
+# GPIO VCD trace for waveform viewer
+./bramble firmware.uf2 -gpio-trace pins.vcd
+
+# Expected output matching (CI integration)
+./bramble firmware.uf2 -expect golden.txt -timeout 5
+
+# Fault injection
+./bramble firmware.uf2 -inject-fault flash_bitflip:1000000:0x10000100
+```
+
+---
 
 # Part 3: Command-Line Reference
 
-## 3.1 Usage
+## 3.1 Usage Syntax
 
 ```
 bramble <firmware.uf2|firmware.elf> [options]
 ```
 
-## 3.2 Core Options
+The firmware path **must** be the first argument. All options follow.
+
+## 3.2 Architecture Selection
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
-| `-debug` | | Enable debug output for Core 0 (or single-core mode) |
-| `-debug1` | | Enable debug output for Core 1 (dual-core only) |
-| `-asm` | | Show assembly instruction tracing (reserved) |
-| `-status` | | Print periodic status updates (PC, SP, FIFO state) |
-| `-stdin` | | Route stdin to the active guest console (USB CDC when fully active, otherwise UART0) |
-| `-gdb` | `[port]` | Start GDB RSP server (default port: 3333) |
-| `-clock` | `<MHz>` | Set CPU clock frequency (default: 1, real RP2040: 125) |
-| `-cores` | `<N\|auto>` | Active cores: 1, 2, or auto (queries core pool); enables threading |
-| `-thread-quantum` | `<N>` | Guest instructions per threaded lock hold (default: 64, clamped to 1..4096) |
-| `-no-boot2` | | Skip boot2 execution even if detected in firmware |
-| `-debug-mem` | | Log unmapped peripheral read/write accesses to stderr |
-| `-jit` | | Enable JIT basic block compilation for hot loops |
+| `-arch` | `m0+` or `arm` | RP2040 Cortex-M0+ (default if not auto-detected) |
+| | `m33` | RP2350 Cortex-M33 (ARMv8-M Mainline, full Thumb-2) |
+| | `rv32` or `riscv` | RP2350 Hazard3 RISC-V (RV32IMAC) |
 
-## 3.3 Developer Tools
+**Auto-detection priority:**
+
+1. **UF2 family ID** (if flags bit 13 set): `0xE48BFF56` -> M0+, `0xE48BFF59` -> M33, `0xE48BFF5A` -> RV32.
+2. **ELF machine type**: `EM_ARM` (40) -> M0+, `EM_RISCV` (243) -> RV32.
+3. If neither present, defaults to M0+.
+
+## 3.3 Core Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
-| `-semihosting` | | Enable ARM semihosting via BKPT #0xAB (SYS_WRITE/EXIT/etc.) |
-| `-coverage` | `<file>` | Write code coverage bitmap (flash + RAM PCs) on exit |
-| `-hotspots` | `[N]` | Print top N PCs by execution count on exit (default: 20) |
-| `-trace` | `<file>` | Write instruction trace (PC, opcode, cycles) to binary file |
-| `-exit-code` | `<addr>` | Read uint32 from RAM address on halt as process exit code |
-| `-timeout` | `<seconds>` | Kill emulator after N seconds (exit code 124) |
-| `-symbols` | `<elf>` | Load ELF symbols for readable function names in reports |
-| `-callgraph` | `<file>` | Write call graph in DOT format (Graphviz) |
-| `-stack-check` | | Track per-core SP watermark, warn on near-overflow |
-| `-irq-latency` | | Measure IRQ delivery latency in cycles (min/avg/max) |
-| `-log-uart` | | Log every UART TX/RX byte to stderr |
-| `-log-spi` | | Log every SPI MOSI/MISO byte to stderr |
-| `-log-i2c` | | Log every I2C transaction to stderr |
-| `-gpio-trace` | `<file>` | Record GPIO pin changes as VCD (GTKWave/PulseView) |
-| `-script` | `<file>` | Feed timestamped UART/GPIO input from script file |
-| `-expect` | `<file>` | Compare stdout against golden file (exit 0=match, 1=diff) |
-| `-watch` | `<addr[:len]>` | Log reads/writes to address range (up to 8 regions) |
-| `-inject-fault` | `<spec>` | Schedule faults: `flash_bitflip:cycle:addr`, `brownout:cycle` |
-| `-profile` | `<file>` | Per-PC cycle profiling (CSV with function names if `-symbols`) |
-| `-mem-heatmap` | `<file>` | Memory access heatmap per 256-byte block (CSV) |
+| `-debug` | | Enable verbose CPU debug output for Core 0 / Hart 0 |
+| `-debug1` | | Enable debug output for Core 1 / Hart 1 |
+| `-asm` | | Show assembly instruction tracing |
+| `-status` | | Print periodic status updates (PC, SP, FIFO, core state) |
+| `-stdin` | | Route host stdin to active guest console (USB CDC if enumerated, else UART0). LF translated to CR for serial compatibility. |
+| `-gdb` | `[port]` | Start GDB RSP TCP server (default port: 3333). Disables instruction limit and JIT. |
+| `-clock` | `<MHz>` | CPU clock frequency in MHz. Default: 1 (fast-forward). Real RP2040: 125. Real RP2350: 150. Sets `timing_config.cycles_per_us`. |
+| `-cores` | `<N\|auto>` | Number of active cores: 1, 2, or `auto` (queries core pool). Values > 1 enable host-threaded execution. |
+| `-thread-quantum` | `<N>` | Guest instructions per lock hold in threaded mode. Range: 1--4096. Default: 64. |
+| `-no-boot2` | | Skip boot2 execution even if detected in flash. Core 0 starts at `0x10000100` instead of `0x10000000`. |
+| `-debug-mem` | | Log every unmapped peripheral read/write to stderr. Useful for finding unimplemented peripherals. |
+| `-jit` | | Enable JIT basic block compilation for ARM flash/ROM code. 16384-entry cache, max 64 instructions per block. ~1.5x speedup. |
 
-## 3.4 Storage Options
+## 3.4 Developer Tools
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
-| `-flash` | `<path>` | Persistent flash storage (2 MB file); saves/restores across runs |
-| `-mount` | `<dir>` | Mount flash FAT filesystem as host directory via FUSE (requires `-flash`, may need sudo) |
-| `-mount-offset` | `<hex>` | Flash offset of FAT region (default: `0x100000` for CircuitPython) |
-| `-sdcard` | `<path>` | Attach SD card image file to SPI bus |
-| `-sdcard-spi` | `<0\|1>` | SPI bus for SD card (default: 1) |
-| `-sdcard-size` | `<MB>` | SD card size in MB (default: 64) |
-| `-emmc` | `<path>` | Attach eMMC image file to SPI bus |
-| `-emmc-spi` | `<0\|1>` | SPI bus for eMMC (default: 0) |
-| `-emmc-size` | `<MB>` | eMMC size in MB (default: 128) |
+| `-semihosting` | | ARM: intercept BKPT `#0xAB` for SYS_WRITE0, SYS_EXIT, etc. RISC-V: intercept EBREAK with a0=`0x20026` for SYS_EXIT. |
+| `-coverage` | `<file>` | Write binary code coverage bitmap on exit. Each bit represents a 2-byte-aligned PC in flash+RAM range. |
+| `-hotspots` | `[N]` | Print top N most-executed PCs on exit (default: 20). Combined with `-symbols` shows function names. |
+| `-trace` | `<file>` | Write binary instruction trace: each entry is (PC, opcode, cycles). |
+| `-exit-code` | `<addr>` | On halt, read `uint32_t` from this RAM address and use as process exit code. |
+| `-timeout` | `<seconds>` | Kill emulator after N seconds. Exit code 124 (like `timeout(1)`). |
+| `-symbols` | `<elf>` | Parse ELF `.symtab`/`.strtab` for function name resolution in hotspots, profiles, callgraphs, crash reports, and watch logs. |
+| `-callgraph` | `<file>` | Write DOT-format call graph tracking BL/BLX calls. Open with `dot -Tpng callgraph.dot -o cg.png`. |
+| `-stack-check` | | Track per-core SP high-water mark. Reports peak stack depth on exit. Warns if SP approaches RAM base. |
+| `-irq-latency` | | Measure cycles from `nvic_signal_irq()` to exception handler entry. Reports min/avg/max per IRQ number on exit. |
+| `-log-uart` | | Log every UART TX/RX byte to stderr with hex and printable representation. |
+| `-log-spi` | | Log every SPI MOSI/MISO byte to stderr. |
+| `-log-i2c` | | Log every I2C DATA_CMD transaction to stderr. |
+| `-gpio-trace` | `<file>` | Record all GPIO pin changes with cycle-accurate timestamps in Value Change Dump (VCD) format. Open with GTKWave or PulseView. |
+| `-script` | `<file>` | Feed timestamped input from text file. Syntax: `100ms: uart0 "hello\n"`, `200ms: gpio25 1`. |
+| `-expect` | `<file>` | Capture stdout and compare against golden file on exit. Exit 0 if match, exit 1 with byte-level diff location if mismatch. |
+| `-watch` | `<addr[:len]>` | Log every read/write to address range to stderr with PC and symbol context. Up to 8 simultaneous watch regions. |
+| `-inject-fault` | `<spec>` | Schedule hardware faults at cycle counts. Specs: `flash_bitflip:cycle:addr`, `ram_corrupt:cycle:addr`, `brownout:cycle`. |
+| `-profile` | `<file>` | Per-PC cycle accounting in CSV format. Combined with `-symbols` gives per-function timing breakdown. |
+| `-mem-heatmap` | `<file>` | Track read/write frequency per 256-byte RAM block. CSV output for visualization. |
 
-## 3.5 Networking Options
-
-| Flag | Arguments | Description |
-|------|-----------|-------------|
-| `-net-uart0` | `<port>` | Bridge UART0 TX/RX to TCP server socket on port |
-| `-net-uart1` | `<port>` | Bridge UART1 TX/RX to TCP server socket on port |
-| `-net-uart0-connect` | `<host:port>` | Connect UART0 to remote TCP host:port (client mode) |
-| `-net-uart1-connect` | `<host:port>` | Connect UART1 to remote TCP host:port (client mode) |
-
-## 3.6 Multi-Device Wiring Options
-
-| Flag | Arguments | Description |
-|------|-----------|-------------|
-| `-wire-uart0` | `<path>` | Wire UART0 to peer Bramble instance via Unix domain socket |
-| `-wire-uart1` | `<path>` | Wire UART1 to peer Bramble instance via Unix domain socket |
-| `-wire-gpio` | `<path>` | Wire GPIO pin state to peer via Unix domain socket |
-
-## 3.7 WiFi Options
+## 3.5 Storage Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
-| `-wifi` | | Enable CYW43439 WiFi chip emulation (Pico W) |
-| `-tap` | `<ifname>` | Bridge CYW43 WLAN traffic to a host TAP interface (implies `-wifi`, sudo) |
+| `-flash` | `<path>` | Persistent flash storage file. On startup: firmware sectors preserved, non-firmware 4KB sectors restored from file. Write-through: every `flash_range_erase`/`flash_range_program` immediately syncs via `flash_persist_sync()`. On exit: full image saved. |
+| `-mount` | `<dir>` | Mount flash FAT12/FAT16 filesystem as host directory via libfuse3. Requires build with `ENABLE_FUSE=ON`. Works with or without `-flash`: without, mount is volatile. Thread-safe via `fuse_flash_mutex`. |
+| `-mount-offset` | `<hex>` | Flash byte offset of FAT boot sector. Default: auto-scanned (searches for `0x55AA` signature + valid BPB geometry). |
+| `-sdcard` | `<path>` | Attach file-backed SD card image on SPI bus. SDHC protocol, CSD v2.0, CID (product name "BRMSD"). Commands: CMD0/8/9/10/12/13/16/17/18/24/25/55/58, ACMD41. |
+| `-sdcard-spi` | `<0\|1>` | SPI bus for SD card (default: 1). |
+| `-sdcard-size` | `<MB>` | SD card size in MB (default: 64). |
+| `-emmc` | `<path>` | Attach file-backed eMMC image on SPI bus. CMD1 init, EXT_CSD via CMD8, sector addressing, product name "BRMMC". |
+| `-emmc-spi` | `<0\|1>` | SPI bus for eMMC (default: 0). |
+| `-emmc-size` | `<MB>` | eMMC size in MB (default: 128). |
 
+## 3.6 Networking and Multi-Device Options
 
-# Part 4: Internal Architecture and Core Modules
+| Flag | Arguments | Description |
+|------|-----------|-------------|
+| `-net-uart0` | `<port>` | Bridge UART0 TX/RX to TCP server socket. Connect with `nc localhost <port>` or minicom. Non-blocking I/O with `TCP_NODELAY`. |
+| `-net-uart1` | `<port>` | Bridge UART1 TX/RX to TCP server socket. |
+| `-net-uart0-connect` | `<host:port>` | Connect UART0 to remote TCP host (client mode). |
+| `-net-uart1-connect` | `<host:port>` | Connect UART1 to remote TCP host (client mode). |
+| `-wire-uart0` | `<path>` | Wire UART0 to peer Bramble instance via Unix domain socket. First instance creates socket (listen), second connects (auto-negotiation). UART TX on one arrives as UART RX on other. |
+| `-wire-uart1` | `<path>` | Wire UART1 via Unix domain socket. |
+| `-wire-gpio` | `<path>` | Wire GPIO pin state via Unix domain socket. Pin changes propagated between instances. |
+| `-wifi` | | Enable CYW43439 WiFi chip emulation (Pico W). gSPI protocol via PIO0 SM0 FIFO intercept. |
+| `-tap` | `<ifname>` | Bridge CYW43 WLAN frames to host TAP interface. Implies `-wifi`. Auto-configures 192.168.4.1/24, IP forwarding, NAT masquerade. Requires sudo. |
 
-## 4.1 Module Dependency Graph
+---
 
-```
-main.c
-  ├─ cpu.c / emulator.h        [CPU engine, dual-core context switching, O(1) dispatch]
-  ├─ instructions.c             [65+ Thumb instruction handlers]
-  ├─ membus.c                   [Unified memory bus with pointer-based RAM routing]
-  ├─ gpio.c / gpio.h            [GPIO peripheral + SIO pin control]
-  ├─ timer.c / timer.h          [64-bit microsecond timer + 4 alarms]
-  ├─ nvic.c / nvic.h            [Per-core NVIC + SysTick + SCB]
-  ├─ clocks.c / clocks.h        [Resets, Clocks, XOSC, PLLs, Watchdog, ROSC]
-  ├─ adc.c / adc.h              [5-channel ADC + 4-deep FIFO + round-robin]
-  ├─ uart.c / uart.h            [Dual PL011 UART + 16-deep Rx FIFO]
-  ├─ spi.c / spi.h              [Dual PL022 SPI + 8-deep FIFOs + device callbacks]
-  ├─ i2c.c / i2c.h              [Dual DW_apb_i2c + 16-deep RX FIFO + device callbacks]
-  ├─ pwm.c / pwm.h              [8-slice PWM peripheral]
-  ├─ dma.c / dma.h              [12-channel DMA + chaining + immediate transfers]
-  ├─ pio.c / pio.h              [Dual PIO blocks + full 9-opcode instruction engine]
-  ├─ usb.c / usb.h              [USB controller + host enumeration + CDC data bridge]
-  ├─ rtc.c / rtc.h              [RTC with LOAD strobe + calendar rollover + leap year]
-  ├─ rom.c / rom.h              [16KB ROM + soft-float/double + flash write]
-  ├─ gdb.c / gdb.h              [GDB RSP server + watchpoints + conditional breakpoints]
-  ├─ netbridge.c / netbridge.h  [UART-to-TCP bridge (server/client)]
-  ├─ wire.c / wire.h            [Unix socket IPC for multi-instance wiring]
-  ├─ storage.c / storage.h      [Flash write-through persistence]
-  ├─ sdcard.c / sdcard.h        [SD card SPI-mode emulation]
-  ├─ emmc.c / emmc.h            [eMMC SPI-mode emulation]
-  ├─ cyw43.c / cyw43.h          [CYW43439 WiFi gSPI emulation]
-  ├─ corepool.c / corepool.h    [Host-threaded execution + core pool registry]
-  ├─ uf2.c / uf2.h              [UF2 firmware loader]
-  └─ elf.c / elf.h              [ELF32 ARM binary loader]
-```
+# Part 4: Memory Maps
 
-## 4.2 CPU Engine (cpu.c / emulator.h)
+## 4.1 RP2040 Memory Map
 
-**Responsibility**: Execute ARMv6-M Thumb instructions, manage dual-core state, handle exceptions, and coordinate timing.
+| Start Address | End Address | Size | Region |
+|---------------|-------------|------|--------|
+| `0x00000000` | `0x00003FFF` | 16 KB | ROM (bootrom with function table) |
+| `0x10000000` | `0x103FFFFF` | 4 MB | XIP Flash (2 MB default, 4 MB array) |
+| `0x11000000` | `0x113FFFFF` | 4 MB | XIP NOALLOC alias (uncached read, allocate bypass) |
+| `0x12000000` | `0x123FFFFF` | 4 MB | XIP NOCACHE alias (cache bypass, uncached access) |
+| `0x13000000` | `0x133FFFFF` | 4 MB | XIP NOCACHE_NOALLOC alias |
+| `0x14000000` | `0x1400001F` | 32 B | XIP Cache Control (CTRL, FLUSH, STAT, CTR_HIT, CTR_ACC, STREAM) |
+| `0x15000000` | `0x15003FFF` | 16 KB | XIP SRAM (cache memory usable as general SRAM) |
+| `0x18000000` | `0x18000FFF` | 4 KB | XIP SSI (flash SPI controller) + atomic aliases at +0x1000/+0x2000/+0x3000 |
+| `0x20000000` | `0x20041FFF` | 264 KB | SRAM (6 banks: 4x64KB + 2x4KB) |
+| `0x21000000` | `0x21041FFF` | 264 KB | SRAM alias (simple mirror, NOT atomic) |
+| `0x40000000` | `0x4006FFFF` | | APB Peripherals (see Section 4.3) |
+| `0x50000000` | `0x503FFFFF` | | AHB Peripherals (DMA, USB, PIO0, PIO1) |
+| `0xD0000000` | `0xD00001FF` | | SIO (single-cycle I/O: GPIO, FIFO, divider, interpolators, spinlocks) |
+| `0xE0000000` | `0xE000FFFF` | | PPB (NVIC, SysTick, SCB at 0xE000E000) |
 
-**Core CPU State** (`cpu_state_t`):
+### RP2040 Dual-Core RAM Layout
+
+| Start Address | End Address | Size | Owner |
+|---------------|-------------|------|-------|
+| `0x20000000` | `0x2001FFFF` | 128 KB | Core 0 private SRAM |
+| `0x20020000` | `0x2003FFFF` | 128 KB | Core 1 private SRAM |
+| `0x20040000` | `0x20041FFF` | 8 KB | Shared SRAM |
+
+In single-core mode, the full 264 KB is available as a flat address range via `cpu.ram[]`.
+
+## 4.2 RP2350 Memory Map (Differences from RP2040)
+
+| Start Address | End Address | Size | Region | Note |
+|---------------|-------------|------|--------|------|
+| `0x00000000` | `0x00007FFF` | 32 KB | ROM | Larger than RP2040's 16 KB |
+| `0x20000000` | `0x20081FFF` | 520 KB | SRAM | 10 banks x 64KB + 8KB scratch |
+| `0x400B0000` | `0x400B00FF` | | TIMER0 | **Moved** from `0x40054000` |
+| `0x400B8000` | `0x400B80FF` | | TIMER1 | **New**: second timer instance |
+| `0x400C0000` | `0x400C0FFF` | | HSTX | High-Speed TX (DVI/HDMI) |
+| `0x400D0000` | `0x400D0FFF` | | QMI | QSPI Memory Interface (replaces XIP SSI) |
+| `0x400E0000` | `0x400E00FF` | 256 B | BOOTRAM | Boot scratch RAM |
+| `0x400F0000` | `0x400F0FFF` | | TRNG | True Random Number Generator (xorshift LFSR) |
+| `0x400F8000` | `0x400F8FFF` | | SHA-256 | SHA-256 accelerator (register storage) |
+| `0x40100000` | `0x401000FF` | | POWMAN | Power Manager (VREG, BOD, AON timer) |
+| `0x40108000` | `0x401080FF` | | TICKS | 9 tick generators |
+| `0x40120000` | `0x401200FF` | | OTP controller | OTP programming registers |
+| `0x40130000` | `0x40137FFF` | 32 KB | OTP data | 8192 rows x 16-bit (32-bit aligned readout) |
+| `0x40140000` | `0x4014003F` | | CORESIGHT | CoreSight trace (register storage) |
+| `0x40158000` | `0x4015801F` | | GLITCH | Glitch detector (register storage) |
+| `0x40160000` | `0x401600FF` | | ACCESSCTRL | Peripheral access control (default all-access) |
+| `0x50400000` | `0x50400FFF` | | PIO2 | **New**: third PIO block |
+| `0xD0000100` | `0xD000012F` | 48 B | CLINT | RISC-V only: mtime, mtimecmp, MSIP |
+| `0xD00001C0` | `0xD00001CF` | 16 B | Hart launch | RISC-V only: entry, SP, arg, launch trigger |
+
+## 4.3 Peripheral Base Addresses (Complete Table)
+
+| Base Address | Peripheral | IP Core | Emulation |
+|-------------|-----------|---------|-----------|
+| `0x40000000` | SYSINFO | -- | CHIP_ID (RP2040 or RP2350), PLATFORM=ASIC |
+| `0x40004000` | SYSCFG | -- | Full: NMI mask, proc config, debug force, mem power-down |
+| `0x40008000` | Clocks | -- | Full: 10 generators, FC0_RESULT from PLL config |
+| `0x4000C000` | Resets | -- | Full: RESET/RESET_DONE bitmask tracking |
+| `0x40014000` | IO_BANK0 | -- | Full: 48 GPIO pins (30 on RP2040), edge/level IRQ |
+| `0x40018000` | IO_QSPI | -- | Stub: 6 QSPI pins, STATUS/CTRL + interrupt regs |
+| `0x4001C000` | PADS_BANK0 | -- | Pad electrical control registers |
+| `0x40020000` | PADS_QSPI | -- | Stub: QSPI pad control |
+| `0x40024000` | XOSC | -- | Full: STATUS.STABLE + ENABLED |
+| `0x40028000` | PLL_SYS | -- | Full: CS.LOCK, PWR, FBDIV, PRIM |
+| `0x4002C000` | PLL_USB | -- | Full: CS.LOCK, PWR, FBDIV, PRIM |
+| `0x40030000` | BUSCTRL | -- | Full: BUS_PRIORITY, PERFSEL/PERFCTR (x4) |
+| `0x40034000` | UART0 | PL011 | Full: DR, FR, IBRD/FBRD, LCR_H, CR, IFLS, IMSC, RIS/MIS, ICR, 16-deep RX FIFO, peripheral ID |
+| `0x40038000` | UART1 | PL011 | Full: independent second instance |
+| `0x4003C000` | SPI0 | PL022 | Full: SSPCR0/1, SSPDR, SSPSR, SSPCPSR, SSPIMSC, RIS/MIS, ICR, 8-deep TX/RX FIFOs, device callbacks, peripheral ID |
+| `0x40040000` | SPI1 | PL022 | Full: independent second instance |
+| `0x40044000` | I2C0 | DW_apb_i2c | Full: IC_CON, TAR, SAR, DATA_CMD, SCL timing, ENABLE, STATUS, 16-deep RX FIFO, up to 8 device callbacks, CLR_* regs, COMP_TYPE/VERSION |
+| `0x40048000` | I2C1 | DW_apb_i2c | Full: independent second instance |
+| `0x4004C000` | ADC | -- | Full: CS (AINSEL, START_ONCE, READY, RROBIN), RESULT, FCS (EN, SHIFT, LEVEL, EMPTY, FULL, OVER, UNDER), FIFO read, DIV, INTR/INTE/INTF/INTS. 5 channels (GPIO 26-29 + temp ~27C). 4-deep circular FIFO with 12->8 bit shift. Round-robin. |
+| `0x40050000` | PWM | -- | Full: 8 slices x (CSR, DIV, CTR, CC, TOP), EN, INTR/INTE/INTF/INTS |
+| `0x40054000` | Timer | -- | Full: 64-bit us counter, 4 alarms, ARMED, PAUSE, INTR/INTE/INTF/INTS. Alarm comparison: `(int32_t)(low - target) >= 0`. Atomic 64-bit reads (TIMELR latches high). |
+| `0x40058000` | Watchdog | -- | Full: CTRL (bit 31 TRIGGER = reboot), LOAD, REASON (0=clean boot), TICK (RUNNING), SCRATCH0-7 |
+| `0x4005C000` | RTC | -- | Full: CLKDIV_M1, SETUP_0/1, CTRL (LOAD strobe, ENABLE, ACTIVE), RTC_1/0 (running time), IRQ regs. Calendar rollover. Leap year. |
+| `0x40060000` | ROSC | -- | Full: CTRL (enable 0xFAB), STATUS (STABLE, ENABLED), RANDOMBIT (xorshift LFSR), FREQA/B, DIV, PHASE, COUNT |
+| `0x40064000` | VREG_AND_CHIP_RESET | -- | Full: VREG (EN, VSEL, ROK), BOD (EN, VSEL), CHIP_RESET (had_por, had_run, had_psm, W1C) |
+| `0x4006C000` | TBMAN | -- | Full: PLATFORM = 0x00000002 (ASIC) |
+| `0x50000000` | DMA | -- | Full: 12 channels, 4 alias layouts, CTRL_TRIG (DATA_SIZE, INCR_READ/WRITE, CHAIN_TO, IRQ_QUIET, EN), INTR/INTE0/1/INTF0/1/INTS0/1, MULTI_CHAN_TRIGGER. Synchronous transfers. |
+| `0x50100000` | USB DPRAM | -- | Full: 4KB dual-port RAM, byte/halfword/word access, buf_ctrl (AVAILABLE bit 10, FULL bit 15, LEN bits 9:0) |
+| `0x50110000` | USB Regs | -- | Full: host enumeration simulation, CDC data bridge, SIE_STATUS/CTRL, BUFF_STATUS (W1C), INTR/INTE/INTF/INTS, multi-packet IN accumulation |
+| `0x50200000` | PIO0 | -- | Full: 4 SMs, 32-word instr mem, 4-deep TX/RX FIFOs, all 9 opcodes, clock divider (16.8 fp), autopush/pull, force-exec, FSTAT/FLEVEL, INTR/INTE/INTF/INTS |
+| `0x50300000` | PIO1 | -- | Full: independent second PIO block |
+| `0x50400000` | PIO2 | -- | Full: third PIO block (RP2350 only) |
+| `0xD0000000` | SIO | -- | Full: GPIO (IN/OUT/OE + atomic), CPUID, FIFO (32-deep per direction), hardware divider (per-core signed/unsigned, div-by-zero=0xFFFFFFFF, INT32_MIN/-1 wraps), 2 interpolators per core (ACCUM, BASE, CTRL_LANE, PEEK/POP/FULL), 32 spinlocks |
+| `0xE000E000` | NVIC/SysTick/SCB | -- | Full: per-core NVIC (enable, pending, priority, IABR), per-core SysTick (CSR, RVR, CVR, CALIB=0xC0002710), SCB (CPUID configurable, ICSR, VTOR, AIRCR with SYSRESETREQ, SCR, CCR, SHPR2, SHPR3). 4 priority levels (M0+) or 256 (M33). |
+
+All peripherals in the `0x40000000`--`0x50FFFFFF` range support **atomic register aliases**:
+
+| Alias | Address Offset | Operation |
+|-------|---------------|-----------|
+| Normal | `+0x0000` | Direct read/write |
+| XOR | `+0x1000` | Atomic XOR: `reg ^= value` |
+| SET | `+0x2000` | Atomic set: `reg \|= value` |
+| CLR | `+0x3000` | Atomic clear: `reg &= ~value` |
+
+The SRAM alias at `0x21000000` is a **simple mirror** (not atomic). Atomic aliases are peripheral-only.
+
+---
+
+# Part 5: RP2040 ARM CPU Engine
+
+## 5.1 CPU State Structure (`cpu_state_t`)
+
 ```c
-struct cpu_state_t {
-    uint32_t r[16];          // R0-R12, SP(R13), LR(R14), PC(R15)
-    uint32_t xpsr;           // Combined xPSR (APSR + IPSR + EPSR)
-    uint32_t vtor;           // Vector Table Offset Register
-    uint32_t primask;        // PRIMASK (bit 0 = interrupt disable)
-    uint32_t control;        // CONTROL register (nPRIV, SPSEL)
-    uint8_t  flash[2MB];     // XIP flash (shared, read-only after load)
-    uint8_t  ram[264KB];     // SRAM (single-core mode)
-    uint64_t step_count;     // Instructions executed
-    int      debug_enabled;  // Debug output flag
-    int      current_irq;    // Currently executing exception vector
-};
+typedef struct {
+    uint8_t  flash[FLASH_SIZE_MAX];  // 4MB XIP flash
+    uint8_t  ram[RAM_SIZE];          // 264KB SRAM
+    uint32_t r[16];                  // R0-R12, SP(R13), LR(R14), PC(R15)
+    uint32_t xpsr;                   // Combined xPSR (APSR + IPSR + EPSR)
+    uint32_t vtor;                   // Vector Table Offset Register
+    uint32_t step_count;             // Instructions executed
+    int      debug_enabled;          // -debug flag
+    int      debug_asm;              // -asm flag
+    uint32_t current_irq;            // Active exception vector number
+    uint32_t primask;                // PRIMASK (bit 0 = interrupt disable)
+    uint32_t faultmask;              // FAULTMASK (bit 0 = mask all except NMI)
+    uint32_t control;                // CONTROL register (nPRIV bit 0, SPSEL bit 1)
+} cpu_state_t;
 ```
 
-**Per-Core State** (`cpu_state_dual_t`):
+## 5.2 Per-Core State (`cpu_state_dual_t`)
+
 ```c
-struct cpu_state_dual_t {
-    uint8_t  ram[132KB];     // Per-core RAM partition
-    uint32_t r[16];          // Per-core register file
-    uint32_t xpsr, vtor;     // Per-core status
-    uint32_t primask, control;
-    uint64_t step_count;
-    int      core_id;
-    int      is_halted;      // Core stopped
-    int      is_wfi;         // Core sleeping (WFI/WFE)
-    int      in_handler_mode;
-    // Exception nesting
-    uint32_t exception_stack[8];  // Stack of active exception vectors
-    int      exception_depth;     // Current nesting depth
-};
+typedef struct {
+    uint8_t  ram[CORE_RAM_SIZE];     // 132KB per-core RAM partition
+    uint32_t r[16];                  // Per-core register file
+    uint32_t xpsr, vtor;
+    uint32_t step_count;
+    int      debug_enabled, debug_asm;
+    uint32_t current_irq;
+    uint32_t primask, faultmask, control;
+
+    // Exception nesting (per-core)
+    uint32_t exception_stack[MAX_EXCEPTION_DEPTH]; // 8 deep
+    int      exception_depth;
+
+    // Core state
+    int      core_id;         // 0 or 1
+    int      is_halted;       // Core stopped
+    int      is_wfi;          // Sleeping (WFI/WFE)
+    uint32_t exception_sp;    // Saved SP for exception handling
+    int      in_handler_mode; // True if in ISR
+} cpu_state_dual_t;
 ```
 
-**Instruction Dispatch**:
-- 256-entry lookup table indexed by instruction bits `[15:8]`
-- Each entry is a function pointer to the appropriate handler
-- 64K-entry decoded instruction cache (direct-mapped by PC) stores pre-decoded handler + raw instruction
-- Cache invalidated on RAM writes; flash/ROM entries never invalidated
+## 5.3 Instruction Dispatch
 
-**Exception Handling**:
-- Full ARMv6-M exception entry: pushes 8-word stack frame (R0-R3, R12, LR, PC, xPSR)
-- Exception return via `EXC_RETURN` magic values (`0xFFFFFFF1`, `0xFFFFFFF9`, `0xFFFFFFFD`)
-- Exception nesting stack (depth 8) replaces single `current_irq` tracking
-- Priority-based preemption: pending IRQ delivered only if priority < active exception
-- ARMv6-M double-fault lockup: HardFault during HardFault handler halts core (real M0+ behavior)
-- HardFault (vector 3) triggered by bad PC, undefined instructions, BKPT
+The CPU engine uses a two-level dispatch:
 
-**Timing Model**:
-- Configurable `cycles_per_us` via `-clock <MHz>` (default: 1, real: 125)
-- ARMv6-M instruction timing per Cortex-M0+ TRM (DDI 0484C):
+1. **256-entry dispatch table** indexed by instruction bits `[15:8]`. Each entry is a function pointer to the appropriate Thumb-1 handler. This provides O(1) dispatch for all 16-bit instructions.
 
-| Instruction Class | Cycles |
-|-------------------|--------|
-| ALU (ADD, SUB, MOV, CMP, AND, ORR, etc.) | 1 |
-| LDR, STR (all variants) | 2 |
-| BX, BLX | 3 |
-| BL | 4 |
-| PUSH, POP | 1 + N (N = register count) |
-| Taken branch (B, Bcc) | 2 |
-| Not-taken branch | 1 |
+2. **64K-entry decoded instruction cache** (direct-mapped by PC). Stores the pre-decoded handler function pointer + raw 16-bit instruction for each PC. On a cache hit, both `mem_read16()` and the dispatch table lookup are skipped. Invalidated on RAM writes; flash/ROM entries are never invalidated.
 
-- Cycle accumulator converts CPU cycles to microseconds for timer peripheral
-- SysTick counts in raw CPU cycles (per ARM spec)
+3. **32-bit instruction path**: If bits `[15:11]` of the first halfword match a 32-bit encoding prefix (`0b11101`, `0b11110`, `0b11111`), the second halfword is fetched and `thumb32_step()` is called.
 
-## 4.3 Memory Bus (membus.c)
+4. **JIT basic block cache** (`-jit`): 16384-entry cache of consecutive instruction sequences (max 64 instructions per block). Blocks terminate at branches, 32-bit instructions, WFI/WFE, SVC, BKPT, CPS, or the 64-instruction limit. Block execution batches cycle counting and skips per-instruction PC validation, interrupt checks, and dispatch lookups. ~1.5x speedup over icache alone.
 
-**Responsibility**: Route all memory accesses (read/write, 8/16/32-bit) to the correct backing store or peripheral.
+## 5.4 Instruction Set (Complete)
 
-**Memory Map**:
+### Thumb-1 (16-bit) Instructions
 
-| Address Range | Size | Description |
-|---------------|------|-------------|
-| `0x00000000 - 0x00003FFF` | 16 KB | ROM (bootrom) |
-| `0x10000000 - 0x101FFFFF` | 2 MB | XIP Flash |
-| `0x11000000 - 0x111FFFFF` | 2 MB | XIP NOALLOC alias |
-| `0x12000000 - 0x121FFFFF` | 2 MB | XIP NOCACHE alias |
-| `0x13000000 - 0x131FFFFF` | 2 MB | XIP NOCACHE_NOALLOC alias |
-| `0x14000000` | | XIP Cache Control |
-| `0x15000000 - 0x15003FFF` | 16 KB | XIP SRAM |
-| `0x18000000` | | XIP SSI (flash SPI controller) |
-| `0x20000000 - 0x20041FFF` | 264 KB | SRAM (striped across 6 banks) |
-| `0x21000000 - 0x21041FFF` | 264 KB | SRAM alias (mirror) |
-| `0xD0000000` | | SIO (single-cycle I/O) |
-| `0x40000000 - 0x4FFFFFFF` | | Peripheral registers |
-| `0xE0000000` | | PPB (NVIC, SysTick, SCB) |
+| Category | Instructions | Details |
+|----------|-------------|---------|
+| Data processing | `ADD`, `ADC`, `SUB`, `SBC`, `RSB`, `MOV`, `MVN`, `MUL` | `ADCS`/`SBCS` set all NZCV flags. `RSBS` = negate (0 - Rn). `MUL` sets NZ, preserves CV. |
+| Comparison | `CMP` (imm8, reg), `CMN`, `TST` | Set flags without writing result |
+| Logical | `AND`, `ORR`, `EOR`, `BIC` | Set NZ flags |
+| Shift/Rotate | `LSL` (imm5, reg), `LSR` (imm5, reg), `ASR` (imm5, reg), `ROR` (reg) | Shift by 32: LSL=0, LSR=0 with C=bit31, ASR=sign-fill. Shift by 0: no change. |
+| Load (word) | `LDR` (imm5, SP+imm8, PC+imm8, reg), `LDRH`, `LDRB`, `LDRSH`, `LDRSB` | PC-relative loads word-aligned. `LDRSH`/`LDRSB` sign-extend. |
+| Store | `STR` (imm5, SP+imm8, reg), `STRH`, `STRB` | |
+| Load/Store multiple | `LDMIA` (Rn!, {reglist}), `STMIA` (Rn!, {reglist}) | `LDMIA` writeback NOT applied if base in reglist (loaded value wins per ARMv6-M). |
+| Stack | `PUSH` {reglist, LR}, `POP` {reglist, PC} | `POP PC` with EXC_RETURN: SP updated BEFORE exception return processing. |
+| Branch | `B` (imm11), `Bcc` (imm8, 14 conditions), `BX` (reg), `BLX` (reg), `BL` (32-bit) | Taken branch: 2 cycles. Not taken: 1. BX/BLX: 3. BL: 4. |
+| System | `SVC` (imm8), `BKPT` (imm8), `NOP`, `SEV`, `WFI`, `WFE`, `YIELD`, `CPSIE i`, `CPSID i` | `SVC` triggers SVCall (exception 11). `BKPT` triggers HardFault (not halt). `CPSID`/`CPSIE` set/clear PRIMASK. |
+| Misc | `SXTH`, `SXTB`, `UXTH`, `UXTB`, `REV`, `REV16`, `REVSH`, `ADR` (PC-relative imm) | |
+| 32-bit | `BL` (T1), `MSR`, `MRS`, `DSB`, `DMB`, `ISB` | Barriers are NOPs in emulator (no reordering). |
 
-**Dual-Core RAM Layout**:
+### Thumb-2 (32-bit) Instructions (Available in M33 Mode)
 
-| Address Range | Size | Owner |
-|---------------|------|-------|
-| `0x20000000 - 0x2001FFFF` | 128 KB | Core 0 private RAM |
-| `0x20020000 - 0x2003FFFF` | 128 KB | Core 1 private RAM |
-| `0x20040000 - 0x20041FFF` | 8 KB | Shared RAM |
+| Category | Instructions | Details |
+|----------|-------------|---------|
+| Move immediate | `MOVW` (16-bit imm to Rd), `MOVT` (16-bit imm to top half) | `MOVW` zero-extends. `MOVT` preserves bottom half. |
+| Add/Sub wide | `ADDW` (12-bit imm), `SUBW` (12-bit imm) | |
+| Divide | `SDIV` (signed), `UDIV` (unsigned) | Div-by-zero returns 0. |
+| Multiply | `MUL` (T2), `MLA` (multiply-accumulate), `MLS` (multiply-subtract) | |
+| Long multiply | `SMULL`, `UMULL`, `SMLAL`, `UMLAL` | 64-bit result in RdLo:RdHi |
+| Bit field | `BFI` (insert), `BFC` (clear), `UBFX` (unsigned extract), `SBFX` (signed extract) | |
+| Bit manipulation | `CLZ` (count leading zeros) | |
+| Branch | `B.W` (T4, 24-bit offset), `Bcc.W` (T3, conditional 20-bit offset) | |
+| Table branch | `TBB` (byte offsets), `TBH` (halfword offsets) | |
+| Load/Store | Wide `LDR.W`, `STR.W` (imm12, imm8, register shifted), `LDRB.W`, `STRB.W`, `LDRH.W`, `STRH.W`, `LDRSB.W`, `LDRSH.W` | |
+| Data processing | Shifted register forms of AND, ORR, EOR, BIC, ADD, SUB, ADC, SBC, RSB, CMP, CMN, TST, TEQ | |
+| Load/Store multiple | `LDMIA.W`, `STMIA.W`, `LDMDB`, `STMDB` (decrement before) | |
 
-- `mem_set_ram_ptr()` redirects memory bus to the active core's RAM (zero-copy pointer swap)
-- All peripheral registers support atomic aliases: Normal (`+0x0000`), XOR (`+0x1000`), SET (`+0x2000`), CLR (`+0x3000`)
+## 5.5 Exception Handling
 
-## 4.4 Instruction Set (instructions.c)
+### Exception Entry
 
-**Responsibility**: Implement all 65+ ARMv6-M Thumb-1 instruction handlers plus supported 32-bit instructions.
+1. Push 8-word stack frame: `{R0, R1, R2, R3, R12, LR, return_PC, xPSR}`.
+2. Set LR to EXC_RETURN magic value:
+   - `0xFFFFFFF1`: Return to handler mode, MSP
+   - `0xFFFFFFF9`: Return to thread mode, MSP
+   - `0xFFFFFFFD`: Return to thread mode, PSP
+3. Update xPSR IPSR field with new exception number.
+4. Push vector number onto exception nesting stack (depth 8).
+5. Load PC from vector table: `mem_read32(VTOR + vector_num * 4)`.
 
-**Implemented Instructions**:
+### Exception Return
 
-| Category | Instructions |
-|----------|-------------|
-| **Data Processing** | ADD, ADC, SUB, SBC, RSB, MOV, MVN, MUL, AND, ORR, EOR, BIC, TST, CMP, CMN |
-| **Shift/Rotate** | LSL, LSR, ASR, ROR |
-| **Load/Store** | LDR, LDRH, LDRB, LDRSH, LDRSB, STR, STRH, STRB (immediate, register, SP-relative, PC-relative) |
-| **Load/Store Multiple** | LDM, STM (with writeback) |
-| **Stack** | PUSH, POP (including LR/PC) |
-| **Branch** | B, Bcc (14 conditions), BX, BLX, BL (32-bit) |
-| **System** | SVC, BKPT, NOP, SEV, WFI, WFE, YIELD, CPSIE, CPSID |
-| **Misc** | SXTH, SXTB, UXTH, UXTB, REV, REV16, REVSH, ADR |
-| **32-bit** | BL, MSR, MRS, DSB, DMB, ISB |
+1. Detect EXC_RETURN in BX or POP PC (value `0xFFFFFFF*`).
+2. **Tail-chaining**: Before unstacking, check for pending higher-priority exceptions. If found, skip unstack/restack and switch handler directly.
+3. **Late-arriving**: During stacking (before handler fetch), if a higher-priority IRQ becomes pending, switch to that handler instead.
+4. Pop 8-word stack frame, restore registers.
+5. FAULTMASK auto-cleared on exception return.
 
-**ARMv6-M Note**: The Cortex-M0+ does **not** support Thumb-2 instructions (MOVW, MOVT, LDR.W, STR.W, B.W, IT, TBB/TBH). These are ARMv7-M only.
+### Double-Fault Lockup
 
-**Special Behaviors**:
-- LDM with base register in register list: writeback NOT applied (loaded value wins, per ARMv6-M spec)
-- POP PC with EXC_RETURN: SP updated BEFORE exception return processing
-- BKPT triggers HardFault exception (vector 3) instead of halting emulator
-- Unrecognized 32-bit instructions trigger HardFault
+If HardFault occurs while the HardFault handler is active (exception depth shows HardFault already on stack), the core enters **lockup**: `is_halted = 1`, `PC = 0xFFFFFFFF`. This matches real Cortex-M0+ behavior (DDI 0484C, Section 2.1.3).
 
+### Interrupt Delivery Conditions
 
-# Part 5: Peripheral Emulation
+An interrupt is delivered when ALL of the following are true:
 
-## 5.1 GPIO (gpio.c / gpio.h)
+1. The IRQ is enabled in NVIC_ISER.
+2. The IRQ is pending in NVIC_ISPR.
+3. `PRIMASK == 0` (interrupts not globally disabled).
+4. `FAULTMASK == 0` (exceptions not masked by FAULTMASK).
+5. The IRQ's priority is **less than** (higher priority than) the currently active exception's priority.
+6. For M33 mode: `BASEPRI == 0` OR the IRQ's priority is less than BASEPRI.
 
-**Base Addresses**: IO_BANK0 at `0x40014000`, PADS_BANK0 at `0x4001C000`, SIO GPIO at `0xD0000000`
+### Priority Model
 
-**SIO GPIO Registers** (at SIO base `0xD0000000`):
+| Exception | Vector | Fixed Priority |
+|-----------|--------|---------------|
+| Reset | 1 | -3 (highest) |
+| NMI | 2 | -2 |
+| HardFault | 3 | -1 |
+| SVCall | 11 | Configurable (SHPR2 bits [31:30]) |
+| PendSV | 14 | Configurable (SHPR3 bits [23:22]) |
+| SysTick | 15 | Configurable (SHPR3 bits [31:30]) |
+| IRQ 0--25 | 16--41 | Configurable (IPR0--7, 2 bits per IRQ) |
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0x004` | GPIO_IN | GPIO input values (read-only) |
-| `0x008` | GPIO_HI_IN | QSPI GPIO input (returns 0x3E) |
-| `0x010` | GPIO_OUT | GPIO output values |
-| `0x014` | GPIO_OUT_SET | Atomic set output bits |
-| `0x018` | GPIO_OUT_CLR | Atomic clear output bits |
-| `0x01C` | GPIO_OUT_XOR | Atomic toggle output bits |
-| `0x020` | GPIO_OE | GPIO output enable |
-| `0x024` | GPIO_OE_SET | Atomic set output enable bits |
-| `0x028` | GPIO_OE_CLR | Atomic clear output enable bits |
-| `0x02C` | GPIO_OE_XOR | Atomic toggle output enable bits |
+Cortex-M0+: 4 priority levels (2 bits, in positions [7:6]).
+Cortex-M33: 256 priority levels (8 bits).
 
-**IO_BANK0**: 30 GPIO pins, each with STATUS and CTRL registers (stride 8 bytes). CTRL selects function (SIO, UART, SPI, I2C, PWM, PIO, etc.).
+## 5.6 Timing Model
 
-**Interrupt Detection**:
-- Level interrupts: continuously asserted while pin matches configured level
-- Edge interrupts: latched on rising/falling transitions, cleared by W1C write to INTR
-- GPIO events trigger NVIC IRQ 13 (`IO_IRQ_BANK0`) through INTE/INTF/INTS chain
-- `gpio_set_input_pin(pin, value)` API for external input injection with automatic event detection
+Cycle costs per Cortex-M0+ TRM (DDI 0484C):
 
-## 5.2 Timer (timer.c / timer.h)
+| Instruction Class | Cycles | Notes |
+|-------------------|--------|-------|
+| ALU (ADD, SUB, MOV, CMP, AND, ORR, etc.) | 1 | Single-cycle |
+| LDR, STR (all variants) | 2 | Memory access |
+| LDM, STM | 1 + N | N = register count |
+| PUSH, POP | 1 + N | N = register count |
+| BX, BLX | 3 | Register indirect branch |
+| BL (32-bit) | 4 | Link branch |
+| B taken (conditional or unconditional) | 2 | Pipeline flush |
+| B not taken (Bcc only) | 1 | No flush |
+| MUL | 1 | Single-cycle multiplier on M0+ |
 
-**Base Address**: `0x40054000`
+The cycle accumulator converts CPU cycles to microseconds:
 
-**Registers**:
+```
+timing_tick(cycles):
+    cycle_accumulator += cycles
+    while cycle_accumulator >= cycles_per_us:
+        cycle_accumulator -= cycles_per_us
+        timer_tick(1)   // 1 microsecond elapsed
+        rtc_tick(1)
+```
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0x00` | TIMEHW | Write high word of 64-bit counter |
-| `0x04` | TIMELW | Write low word of 64-bit counter |
-| `0x08` | TIMEHR | Read high word (latched by TIMELR read) |
-| `0x0C` | TIMELR | Read low word (latches TIMEHR for atomic 64-bit reads) |
-| `0x10` | ALARM0 | Alarm 0 compare value (writing arms alarm) |
-| `0x14` | ALARM1 | Alarm 1 compare value |
-| `0x18` | ALARM2 | Alarm 2 compare value |
-| `0x1C` | ALARM3 | Alarm 3 compare value |
-| `0x20` | ARMED | Armed alarm bitmask (write 1 to disarm) |
-| `0x24` | TIMERAWH | Raw high word (no latching) |
-| `0x28` | TIMERAWL | Raw low word (no latching) |
-| `0x30` | DBGPAUSE | Debug pause control (stub) |
-| `0x34` | PAUSE | Pause/resume timer |
-| `0x38` | INTR | Raw interrupt status (W1C) |
-| `0x3C` | INTE | Interrupt enable |
-| `0x40` | INTF | Interrupt force |
-| `0x44` | INTS | Interrupt status: `(INTR | INTF) & INTE` |
+SysTick counts in **raw CPU cycles** (not microseconds), per ARM specification.
 
-**Behavior**:
-- 64-bit microsecond counter (`time_us`) incremented by `timer_tick()` based on CPU cycle accumulator
-- 4 alarm comparators: alarm fires when `(int32_t)(current_low - alarm_target) >= 0` (signed comparison handles 32-bit wrap)
-- Writing an ALARM register automatically arms it
-- Alarm fire: sets INTR bit, signals NVIC IRQ 0-3 (`TIMER_IRQ_0-3`), disarms alarm
-- Atomic 64-bit reads: reading TIMELR latches the high word for subsequent TIMEHR read
+---
 
-## 5.3 NVIC and SysTick (nvic.c / nvic.h)
+# Part 6: RP2350 RISC-V CPU Engine
 
-**Base Address**: `0xE000E000` (Private Peripheral Bus)
+## 6.1 CPU State (`rv_cpu_state_t`)
 
-**NVIC Registers** (offsets from `0xE000E000`):
+```c
+typedef struct {
+    uint32_t x[32];           // x0 hardwired to 0, x1=ra, x2=sp, ...
+    uint32_t pc;              // Program counter
+    uint32_t csr[4096];       // Full 12-bit CSR address space
+    uint64_t cycle_count;     // mcycle (64-bit)
+    uint64_t instret_count;   // minstret (64-bit)
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0x010` | SYST_CSR | SysTick Control and Status |
-| `0x014` | SYST_RVR | SysTick Reload Value |
-| `0x018` | SYST_CVR | SysTick Current Value |
-| `0x01C` | SYST_CALIB | SysTick Calibration (returns `0xC0002710`) |
-| `0x100` | NVIC_ISER | Interrupt Set Enable Register |
-| `0x180` | NVIC_ICER | Interrupt Clear Enable Register |
-| `0x200` | NVIC_ISPR | Interrupt Set Pending Register |
-| `0x280` | NVIC_ICPR | Interrupt Clear Pending Register |
-| `0x300` | NVIC_IABR | Interrupt Active Bit Register |
-| `0x400` | NVIC_IPR0-7 | Interrupt Priority Registers (4 IRQs per word) |
-| `0xD00` | SCB_CPUID | CPUID Base Register (returns `0x410CC601`) |
-| `0xD04` | SCB_ICSR | Interrupt Control and State |
-| `0xD08` | SCB_VTOR | Vector Table Offset Register |
-| `0xD0C` | SCB_AIRCR | Application Interrupt and Reset Control |
-| `0xD10` | SCB_SCR | System Control Register |
-| `0xD14` | SCB_CCR | Configuration and Control Register |
-| `0xD1C` | SCB_SHPR2 | System Handler Priority Register 2 (SVCall) |
-| `0xD20` | SCB_SHPR3 | System Handler Priority Register 3 (PendSV, SysTick) |
+    // Atomic reservation (LR.W / SC.W)
+    uint32_t lr_reservation;  // Reserved address
+    int      lr_valid;        // 1 if reservation active
 
-**Per-Core Architecture**:
-- `nvic_states[2]`: each core has independent enable, pending, priority, IABR, PendSV state
-- `systick_states[2]`: each core has independent SysTick counter, reload, pending flag
-- `nvic_signal_irq(irq)`: sets pending on **both** cores (shared interrupt line); each core's enable mask filters delivery independently
+    // Hazard3 stack protection
+    uint32_t stack_base;      // mstack_base CSR (0xBC0)
+    uint32_t stack_limit;     // mstack_limit CSR (0xBC1)
+    int      stack_guard_enabled;
 
-**SysTick Behavior**:
-- Counts down in raw CPU cycles (not microseconds)
-- COUNTFLAG (bit 16) set when counter reaches zero, cleared on CSR read
-- When TICKINT (bit 1) set, reaching zero pends SysTick exception and wakes sleeping cores
-- Reload occurs from RVR when counter reaches zero
+    int      in_trap;         // Currently handling a trap
+    int      hart_id;         // 0 or 1
+    int      is_halted;
+    int      is_wfi;
+    uint32_t step_count;
+    int      debug_enabled;
+    void    *bus;             // rv_membus_state_t*
+    void    *icache;          // rv_icache_t*
+} rv_cpu_state_t;
+```
 
-**Priority Model**:
-- 4 priority levels via bits `[7:6]` (Cortex-M0+ has 2 priority bits)
-- Fixed priorities: Reset = -3, NMI = -2, HardFault = -1
-- Configurable: SVCall (SHPR2), PendSV and SysTick (SHPR3), external IRQs (IPR0-7)
+## 6.2 Standard CSRs
 
-## 5.4 IRQ Assignment Table
+| Address | Name | Access | Description |
+|---------|------|--------|-------------|
+| `0x300` | `mstatus` | RW | Machine status (MIE bit 3, MPIE bit 7, MPP bits 12:11) |
+| `0x301` | `misa` | RO | ISA description: `0x40100115` (RV32, I+M+A+C) |
+| `0x304` | `mie` | RW | Machine interrupt enable (MSIE bit 3, MTIE bit 7, MEIE bit 11) |
+| `0x305` | `mtvec` | RW | Machine trap vector (bit 0: 0=direct, 1=vectored) |
+| `0x340` | `mscratch` | RW | Machine scratch register |
+| `0x341` | `mepc` | RW | Machine exception PC (saved on trap entry) |
+| `0x342` | `mcause` | RW | Machine cause (bit 31: interrupt. bits 30:0: code) |
+| `0x343` | `mtval` | RW | Machine trap value (faulting address or instruction) |
+| `0x344` | `mip` | RO | Machine interrupt pending (computed from CLINT hardware state) |
+| `0xB00` | `mcycle` | RW | Machine cycle counter (low 32 bits) |
+| `0xB02` | `minstret` | RW | Machine instructions retired (low 32 bits) |
+| `0xB80` | `mcycleh` | RW | mcycle high 32 bits |
+| `0xB82` | `minstreth` | RW | minstret high 32 bits |
+| `0xF11` | `mvendorid` | RO | Vendor ID (0 = non-commercial) |
+| `0xF12` | `marchid` | RO | Architecture ID |
+| `0xF13` | `mimpid` | RO | Implementation ID |
+| `0xF14` | `mhartid` | RO | Hart ID (0 or 1) |
 
-| IRQ | Name | Source Peripheral |
-|-----|------|-------------------|
-| 0-3 | `TIMER_IRQ_0-3` | Timer alarm 0-3 |
-| 4 | `PWM_IRQ_WRAP` | PWM counter wrap |
-| 5 | `USBCTRL_IRQ` | USB controller |
-| 6 | `XIP_IRQ` | XIP cache |
-| 7-8 | `PIO0_IRQ_0/1` | PIO block 0 |
-| 9-10 | `PIO1_IRQ_0/1` | PIO block 1 |
-| 11-12 | `DMA_IRQ_0/1` | DMA controller |
-| 13 | `IO_IRQ_BANK0` | GPIO bank 0 |
-| 14 | `IO_IRQ_QSPI` | QSPI GPIO |
-| 15-16 | `SIO_IRQ_PROC0/1` | Inter-core FIFO |
-| 17 | `CLOCKS_IRQ` | Clock system |
-| 18-19 | `SPI0/1_IRQ` | SPI controllers |
-| 20-21 | `UART0/1_IRQ` | UART controllers |
-| 22 | `ADC_IRQ_FIFO` | ADC FIFO |
-| 23-24 | `I2C0/1_IRQ` | I2C controllers |
-| 25 | `RTC_IRQ` | Real-time clock |
+\newpage
 
-## 5.5 UART (uart.c / uart.h)
+## 6.3 Hazard3-Specific CSRs
 
-**Base Addresses**: UART0 at `0x40034000`, UART1 at `0x40038000`
+| Address | Name | Access | Description |
+|---------|------|--------|-------------|
+| `0xBE0` | `meie0` | RW | External IRQ enable [31:0]. Updates CLINT ext_enable. |
+| `0xBE1` | `meie1` | RW | External IRQ enable bits [51:32] (20 bits). |
+| `0xFE0` | `meip0` | RO | External IRQ pending bits [31:0]. Computed as `clint.ext_pending & csr[MEIE0]`. |
+| `0xFE1` | `meip1` | RO | External IRQ pending bits [51:32]. |
+| `0xFE2` | `mlei` | RO | Lowest enabled pending IRQ number. Returns `0xFFFFFFFF` if none. |
+| `0xBE2` | `meiea` | RW | External IRQ array enable access |
+| `0xFE4` | `meipa` | RO | External IRQ array pending access |
+| `0xBE4` | `meifa` | RW | External IRQ array force |
+| `0xBE6` | `meicontext` | RW | External IRQ context save/restore |
+| `0xBC0` | `mstack_base` | RW | Stack lower bound (hardware stack protection) |
+| `0xBC1` | `mstack_limit` | RW | Stack upper bound |
 
-PL011 UART peripheral with full register state:
+## 6.4 Trap Handling
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0x000` | DR | Data Register (TX write / RX read) |
-| `0x004` | RSR | Receive Status Register |
-| `0x018` | FR | Flag Register (BUSY, RXFE, TXFF, RXFF, TXFE) |
-| `0x024` | IBRD | Integer Baud Rate Divisor |
-| `0x028` | FBRD | Fractional Baud Rate Divisor |
-| `0x02C` | LCR_H | Line Control Register |
-| `0x030` | CR | Control Register (UART enable, TX/RX enable) |
-| `0x034` | IFLS | Interrupt FIFO Level Select |
-| `0x038` | IMSC | Interrupt Mask Set/Clear |
-| `0x03C` | RIS | Raw Interrupt Status |
-| `0x040` | MIS | Masked Interrupt Status |
-| `0x044` | ICR | Interrupt Clear Register (W1C) |
+### Trap Entry (`rv_trap_enter`)
 
-**Features**:
-- 16-deep circular receive FIFO per UART
-- `uart_rx_push(uart_num, byte)` API for external data injection
-- RX interrupt triggers at IFLS-configured FIFO level, auto-clears when drained below threshold
-- TX routing priority: net bridge → wire → stdout
-- UART starts disabled per PL011 spec; TX RIS asserted when UART enabled via CR write
-- Triggers NVIC IRQ 20/21 (`UART0/1_IRQ`)
+1. Save `pc` to `mepc`.
+2. Save cause to `mcause` (bit 31 set for interrupts).
+3. Save trap value to `mtval` (faulting address or instruction word).
+4. Save `mstatus.MIE` to `mstatus.MPIE`.
+5. Clear `mstatus.MIE` (disable interrupts during handler).
+6. Set `mstatus.MPP` to M-mode.
+7. Compute handler address from `mtvec`:
+   - Direct mode (bit 0 = 0): `pc = mtvec_base`
+   - Vectored mode (bit 0 = 1) + interrupt: `pc = mtvec_base + cause * 4`
+   - Vectored mode + exception: `pc = mtvec_base`
 
-## 5.6 SPI (spi.c / spi.h)
+### Trap Return (MRET)
 
-**Base Addresses**: SPI0 at `0x4003C000`, SPI1 at `0x40040000`
+1. Restore `pc` from `mepc`.
+2. Restore `mstatus.MIE` from `mstatus.MPIE`.
+3. Set `mstatus.MPIE = 1`.
 
-PL022 SPI peripheral:
+### Trap Causes
+
+| Code | Name | Trigger |
+|------|------|---------|
+| 0 | Instruction address misaligned | Branch/JAL to odd address |
+| 1 | Instruction access fault | Fetch from unmapped address |
+| 2 | Illegal instruction | Unrecognized opcode |
+| 3 | Breakpoint | EBREAK instruction |
+| 4 | Load address misaligned | LH/LW on unaligned address |
+| 5 | Load access fault | Load from unmapped address |
+| 6 | Store address misaligned | SH/SW on unaligned address |
+| 7 | Store access fault | Store to unmapped address |
+| 11 | Environment call from M-mode | ECALL instruction |
+| `0x80000003` | Machine software interrupt | CLINT MSIP |
+| `0x80000007` | Machine timer interrupt | CLINT mtime >= mtimecmp |
+| `0x8000000B` | Machine external interrupt | CLINT ext_pending & ext_enable |
+
+## 6.5 CLINT Interrupt Controller
+
+Memory-mapped at `0xD0000100` in SIO space:
 
 | Offset | Register | Description |
 |--------|----------|-------------|
-| `0x000` | SSPCR0 | Control Register 0 |
-| `0x004` | SSPCR1 | Control Register 1 |
-| `0x008` | SSPDR | Data Register (TX write / RX read) |
-| `0x00C` | SSPSR | Status Register (TFE, TNF, RNE, RFF, BSY) |
-| `0x010` | SSPCPSR | Clock Prescale Register |
-| `0x014` | SSPIMSC | Interrupt Mask Set/Clear |
-| `0x018` | SSPRIS | Raw Interrupt Status |
-| `0x01C` | SSPMIS | Masked Interrupt Status |
-| `0x020` | SSPICR | Interrupt Clear Register |
+| `0x00` | MTIME_LO | 64-bit free-running timer, low word |
+| `0x04` | MTIME_HI | High word |
+| `0x08` | MTIMECMP0_LO | Hart 0 timer compare, low word |
+| `0x0C` | MTIMECMP0_HI | High word |
+| `0x10` | MTIMECMP1_LO | Hart 1 timer compare, low word |
+| `0x14` | MTIMECMP1_HI | High word |
+| `0x20` | MSIP0 | Hart 0 software interrupt (bit 0 only) |
+| `0x24` | MSIP1 | Hart 1 software interrupt (bit 0 only) |
 
-**Features**:
-- 8-deep TX and RX FIFOs per SPI controller
-- Device callback interface: `spi_attach_device(spi_num, xfer_fn, cs_fn, ctx)`
-- Writing SSPDR triggers full-duplex device callback; response pushed to RX FIFO
-- TX/RX interrupts at half-full thresholds
-- Triggers NVIC IRQ 18/19 (`SPI0/1_IRQ`)
+Timer behavior:
 
-## 5.7 I2C (i2c.c / i2c.h)
+- `rv_clint_tick(cycles)` accumulates cycles. When `cycle_accum >= cycles_per_us`, `mtime` increments by the elapsed microseconds.
+- Timer interrupt: `mtime >= mtimecmp[hart_id]` sets `MIP_MTIP` (bit 7 of `mip`).
+- `mtimecmp` initialized to `UINT64_MAX` (no immediate interrupt on boot).
 
-**Base Addresses**: I2C0 at `0x40044000`, I2C1 at `0x40048000`
+Interrupt delivery priority: **MEIP > MSIP > MTIP**.
 
-DW_apb_i2c peripheral:
+## 6.6 RISC-V Instruction Cache
 
-| Key Register | Description |
-|-------------|-------------|
-| IC_CON | Control (master/slave, speed, restart) |
-| IC_TAR | Target address |
-| IC_SAR | Slave address |
-| IC_DATA_CMD | Data + command bits (bit 8=read, bit 9=stop, bit 10=restart) |
-| IC_INTR_STAT | Interrupt status |
-| IC_INTR_MASK | Interrupt mask |
-| IC_RX_TL | RX FIFO threshold |
-| IC_TX_TL | TX FIFO threshold |
-| IC_ENABLE | Enable/disable |
-| IC_STATUS | Bus status (TFE, TFNF, RFNE, RFF, ACTIVITY) |
+64K-entry direct-mapped cache for flash/ROM instruction fetches:
 
-**Features**:
-- 16-deep RX FIFO
-- Device callback interface: `i2c_attach_device(i2c_num, addr, write_fn, read_fn, start_fn, stop_fn, ctx)`
-- Up to 8 devices per bus, addressed by 7-bit I2C address
-- DATA_CMD read/write/stop/restart bits executed immediately through device callback
-- RX_FULL, TX_EMPTY, STOP_DET interrupts
-- Triggers NVIC IRQ 23/24 (`I2C0/1_IRQ`)
+```c
+typedef struct {
+    uint32_t tag;    // PC address (0 = invalid)
+    uint32_t instr;  // Cached instruction word
+    uint8_t  size;   // 2 = compressed, 4 = 32-bit
+} rv_icache_entry_t;
+```
 
-## 5.8 PWM (pwm.c / pwm.h)
+- Indexed by `(pc >> 1) & 0xFFFF`.
+- Only caches addresses in ROM (`< 0x8000`) and flash (`0x10000000`--`0x10FFFFFF`).
+- SRAM instruction fetches bypass the cache.
+- Observed hit rates: 99.97%+ on real firmware boot code.
 
-**Base Address**: `0x40050000`
+## 6.7 ROM Function Table
 
-8 independent PWM slices, each with:
+The RISC-V bootrom provides an SDK-compatible ROM function table:
 
-| Offset (per slice, stride `0x14`) | Register | Description |
-|-----------------------------------|----------|-------------|
-| `0x00` | CSR | Control and Status |
-| `0x04` | DIV | Clock divider (8.4 fixed-point) |
-| `0x08` | CTR | Counter value |
-| `0x0C` | CC | Compare values (A in low 16, B in high 16) |
-| `0x10` | TOP | Wrap value |
+| Address | Function | Table Code | Native Implementation |
+|---------|----------|-----------|----------------------|
+| `0x0300` | `rom_table_lookup` | -- | RISC-V code: iterates `[code, addr]` entries |
+| `0x0400` | `memcpy` | `'CP'` (0x4350) | Byte-by-byte copy via rv_membus |
+| `0x0404` | `memset` | `'ST'` (0x5453) | Byte fill via rv_membus |
+| `0x0408` | `memcpy4` | -- | Word-aligned copy |
+| `0x040C` | `memset4` | -- | Word-aligned fill |
+| `0x0410` | `popcount32` | `'PC'` (0x5043) | `__builtin_popcount` |
+| `0x0414` | `clz32` | `'ZL'` (0x5A4C) | `__builtin_clz` (32 if zero) |
+| `0x0418` | `ctz32` | `'ZT'` (0x5A54) | `__builtin_ctz` (32 if zero) |
+| `0x041C` | `reverse32` | `'RV'` (0x5652) | Bit reversal |
+| `0x0420` | `flash_enter_xip` | -- | No-op |
+| `0x0424` | `flash_exit_xip` | -- | No-op |
+| `0x0428` | `flash_range_erase` | `'RE'` (0x4552) | `memset(flash+offset, 0xFF, count)` |
+| `0x042C` | `flash_range_program` | `'RP'` (0x5052) | Byte copy from SRAM to flash |
+| `0x0430` | `reboot` | `'RB'` (0x4252) | Sets `is_halted = 1` |
+| `0x0434` | `set_stack` | -- | Sets SP (x2) |
 
-**Global Registers**:
+All stubs are RET instructions (`JALR x0, x1, 0`). `rv_rom_intercept()` checks the PC before each `rv_cpu_step()` call; if it matches a stub address, the operation is performed natively in C and the PC is set to `x1` (return address).
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0xA0` | EN | Global enable bitmask |
-| `0xA4` | INTR | Raw interrupt status (W1C) |
-| `0xA8` | INTE | Interrupt enable |
-| `0xAC` | INTF | Interrupt force |
-| `0xB0` | INTS | Interrupt status |
+## 6.8 Picobin IMAGE_DEF Parser
 
-- Triggers NVIC IRQ 4 (`PWM_IRQ_WRAP`)
+The RP2350 bootrom uses **picobin blocks** (IMAGE_DEF) in the first 4 KB of flash to configure boot:
 
-## 5.9 DMA (dma.c / dma.h)
+### Block Structure
 
-**Base Address**: `0x50000000`
+```
+0xFFFFDED3              Block start marker
+[item 0]                Typed item (packed 32-bit words)
+[item 1]
+...
+[LAST item]             Type 0xFF, terminates item list
+block_loop_offset       Offset to next block (0 = single block loop)
+0xAB123579              Block end marker
+```
 
-12 independent channels, each with 4 alias register layouts:
+### Item Encoding
 
-| Alias | Registers (stride `0x10`) | Trigger Register |
-|-------|---------------------------|------------------|
-| AL0 | READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG | CTRL_TRIG |
-| AL1 | CTRL, READ_ADDR, WRITE_ADDR, TRANS_COUNT_TRIG | TRANS_COUNT_TRIG |
-| AL2 | CTRL, TRANS_COUNT, READ_ADDR, WRITE_ADDR_TRIG | WRITE_ADDR_TRIG |
-| AL3 | CTRL, WRITE_ADDR, TRANS_COUNT, READ_ADDR_TRIG | READ_ADDR_TRIG |
+Each item is one or more 32-bit words. The first word encodes:
 
-**CTRL_TRIG Fields**:
-- `DATA_SIZE`: Transfer width (0=byte, 1=halfword, 2=word)
-- `INCR_READ`, `INCR_WRITE`: Auto-increment source/destination
-- `CHAIN_TO`: Channel to trigger after completion (self = no chaining)
-- `IRQ_QUIET`: Suppress IRQ on completion
-- `EN`: Channel enable
+| Bits | Field | Description |
+|------|-------|-------------|
+| [7:0] | type | Item type identifier |
+| [15:8] | size | Total size in 32-bit words (including this header word) |
+| [31:16] | flags | Type-specific flags |
 
-**Global Registers**:
+### Item Types
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0x400` | INTR | Raw interrupt status (W1C) |
-| `0x404` | INTE0 | Interrupt enable for DMA_IRQ_0 |
-| `0x414` | INTE1 | Interrupt enable for DMA_IRQ_1 |
-| `0x430` | MULTI_CHAN_TRIGGER | Trigger multiple channels simultaneously |
+| Type | Name | Size | Description |
+|------|------|------|-------------|
+| `0x42` | IMAGE_TYPE | 1 | Image type flags: bits[3:0]=type (1=EXE, 2=DATA), bits[10:8]=CPU (0=ARM, 1=RISC-V), bits[14:12]=chip (0=RP2040, 1=RP2350) |
+| `0x44` | ENTRY_POINT | 3 | Word 1: initial PC. Word 2: initial SP. |
+| `0x03` | VECTOR_TABLE | 2 | Word 1: vector table address (ARM only). |
+| `0xFF` | LAST | variable | End sentinel. Low byte of size field = total block word count. |
 
-**Behavior**:
-- Transfers execute **synchronously** (immediate) when triggered — not cycle-by-cycle
-- Writing the trigger register in each alias initiates the transfer
-- Completion signals NVIC IRQ 11/12 (`DMA_IRQ_0/1`) when INTE0/1 enabled
+### Example: RISC-V IMAGE_DEF
 
-## 5.10 PIO (pio.c / pio.h)
+As found in MicroPython Pico 2 RISC-V firmware at flash offset 0x0014:
 
-**Base Addresses**: PIO0 at `0x50200000`, PIO1 at `0x50300000`
+```
+0xFFFFDED3              Start marker
+0x11010142              IMAGE_TYPE: type=0x42, size=1, flags=0x1101
+                        (EXE | CPU_RISCV | CHIP_RP2350)
+0x00000344              ENTRY_POINT: type=0x44, size=3, pad=0
+0x10000036              Entry PC
+0x20082000              Entry SP (top of 520KB SRAM)
+0x000004FF              LAST item
+0x00000000              Block loop offset (single block)
+0xAB123579              End marker
+```
 
-Each PIO block contains 4 state machines, 32-word instruction memory, and independent FIFOs.
+---
 
-**Block Registers**:
+# Part 7: RP2350 Peripherals
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0x000` | CTRL | SM enable, restart, clock divider restart |
-| `0x004` | FSTAT | FIFO status (TX full/empty, RX full/empty per SM) |
-| `0x008` | FDEBUG | FIFO debug (stall, overflow, underflow flags) |
-| `0x00C` | FLEVEL | FIFO levels (4 bits per TX/RX per SM) |
-| `0x010-0x01C` | TXF0-3 | TX FIFO write ports |
-| `0x020-0x02C` | RXF0-3 | RX FIFO read ports |
-| `0x030` | IRQ | IRQ flags (8 bits) |
-| `0x034` | IRQ_FORCE | Force IRQ flags |
-| `0x048-0x0C4` | INSTR_MEM0-31 | 32-word instruction memory |
+## 7.1 TICKS (`0x40108000`)
 
-**Per-SM Registers** (stride `0x18`, starting at `0x0C8`):
+9 tick generators, each with CTRL and CYCLES registers (stride 8 bytes):
 
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `+0x00` | CLKDIV | Clock divider (16.8 fixed-point) |
-| `+0x04` | EXECCTRL | Execution control (wrap, side-set, status) |
-| `+0x08` | SHIFTCTRL | Shift control (autopush/pull thresholds, direction) |
-| `+0x0C` | ADDR | Current PC |
-| `+0x10` | INSTR | Current/force-exec instruction |
-| `+0x14` | PINCTRL | Pin mapping (IN/OUT/SET/SIDESET base + count) |
+| Index | Generator | Default |
+|-------|-----------|---------|
+| 0 | PROC0 | Enabled |
+| 1 | PROC1 | Enabled |
+| 2 | TIMER0 | Enabled |
+| 3 | TIMER1 | Enabled |
+| 4 | WATCHDOG | Enabled |
+| 5 | RISCV | Disabled |
+| 6 | REFTICK | Disabled |
+| 7 | ADC | Disabled |
+| 8 | Reserved | Disabled |
 
-**PIO Instruction Set** (9 opcodes):
+## 7.2 POWMAN (`0x40100000`)
 
-| Opcode | Bits [15:13] | Description |
-|--------|-------------|-------------|
-| JMP | `000` | Conditional jump (always, !X, X--, !Y, Y--, X!=Y, PIN, !OSRE) |
-| WAIT | `001` | Wait for GPIO/PIN/IRQ condition |
-| IN | `010` | Shift data into ISR from source |
-| OUT | `011` | Shift data out of OSR to destination |
-| PUSH | `100` | Push ISR to RX FIFO (blocking/non-blocking) |
-| PULL | `100` | Pull TX FIFO to OSR (blocking/non-blocking) |
-| MOV | `101` | Move/copy between registers |
-| IRQ | `110` | Set/clear/wait IRQ flags |
-| SET | `111` | Set pins/pindirs/X/Y to immediate value |
+Power manager with VREG/BOD control:
 
-**Features**:
-- 4-deep circular FIFO per TX/RX per SM
-- Autopush/autopull based on shift count thresholds
-- Fractional clock divider (16.8 fixed-point accumulator per SM)
-- Force-exec: writing SM_INSTR executes instruction on next `pio_step()`
-- FSTAT/FLEVEL reflect actual FIFO state
-- GPIO pin integration via PINCTRL (IN/OUT/SET/SIDESET base and count)
-- INTR dynamically computed: IRQ flags [11:8], TX not full [7:4], RX not empty [3:0]
-- INTS = (INTR | INTF) & INTE; triggers NVIC IRQ 7-10 (`PIO0/1_IRQ_0/1`)
+| Offset | Register | Default | Description |
+|--------|----------|---------|-------------|
+| `0x00` | VREG_CTRL | `0xB1` | Voltage regulator (EN, VSEL=1.1V) |
+| `0x04` | VREG_STATUS | -- | Returns VREG_CTRL | ROK bit |
+| `0x08` | BOD_CTRL | `0x91` | Brown-out detector |
+| `0x0C` | BOD_STATUS | -- | Returns BOD_CTRL | OK bit |
+| `0x10` | STATE | `0x0F` | Power domain state (all domains on) |
+| `0x50` | TIMER_LO | 0 | AON timer low word |
+| `0x54` | TIMER_HI | 0 | AON timer high word |
+| `0x60` | INTE | 0 | Interrupt enable |
+| `0x64` | INTF | 0 | Interrupt force |
+| `0x68` | INTS | 0 | Interrupt status |
 
-## 5.11 ADC (adc.c / adc.h)
+## 7.3 QMI (`0x400D0000`)
 
-**Base Address**: `0x4004C000`
+QSPI Memory Interface (replaces XIP SSI on RP2350):
 
 | Offset | Register | Description |
 |--------|----------|-------------|
-| `0x00` | CS | Control and Status (AINSEL, START_ONCE, READY, RROBIN) |
-| `0x04` | RESULT | Most recent conversion result |
-| `0x08` | FCS | FIFO Control and Status (EN, SHIFT, LEVEL, EMPTY, FULL, OVER, UNDER) |
-| `0x0C` | FIFO | FIFO read port |
-| `0x10` | DIV | Clock divider |
-| `0x14-0x20` | INTR/INTE/INTF/INTS | Interrupt registers |
+| `0x00` | DIRECT_CSR | Direct mode control (BUSY=0, EN=1) |
+| `0x04` | DIRECT_TX | Direct TX data |
+| `0x08` | DIRECT_RX | Direct RX data |
+| `0x0C` | M0_TIMING | Memory 0 timing configuration |
+| `0x10` | M0_RFMT | Memory 0 read format |
+| `0x14` | M0_RCMD | Memory 0 read command (default: 0x03 = standard SPI read) |
+| `0x18` | M0_WFMT | Memory 0 write format |
+| `0x1C` | M0_WCMD | Memory 0 write command |
+| `0x20`--`0x30` | M1_* | Memory 1 configuration (same layout) |
+| `0x34`--`0x53` | ATRANS[0--7] | Address translation registers |
 
-**Features**:
-- 5 channels: GPIO 26-29 (channels 0-3) + temperature sensor (channel 4, ~27°C default)
-- 4-deep circular FIFO with optional 12→8 bit shift
-- Round-robin mode: RROBIN mask in CS advances AINSEL after each conversion
-- `adc_set_channel_value(channel, value)` for test injection
-- Overflow/underflow flags (W1C) in FCS
-- Triggers NVIC IRQ 22 (`ADC_IRQ_FIFO`)
+## 7.4 OTP (`0x40120000` / `0x40130000`)
 
-## 5.12 USB (usb.c / usb.h)
+- **Controller** (`0x40120000`): 32 general-purpose registers for OTP programming control.
+- **Data readout** (`0x40130000`): 8192 rows of 16-bit data, each at a 32-bit aligned address. Default: all `0xFFFF` (unprogrammed).
+- Read: `otp_data[row] = mem_read32(0x40130000 + row * 4) & 0xFFFF`
+- Writes to data region are ignored (one-time programmable).
 
-**Base Addresses**: USBCTRL_DPRAM at `0x50100000` (4 KB), USBCTRL_REGS at `0x50110000`
+## 7.5 BOOTRAM (`0x400E0000`)
 
-**Key Registers** (offsets from `0x50110000`):
+256-byte boot scratch RAM shared between bootrom and firmware. Supports byte, halfword, and word access. Initialized to zero.
+
+## 7.6 TIMER1 (`0x400B8000`)
+
+Second hardware timer instance with identical register layout to the RP2040 timer:
+
+- 64-bit microsecond counter with 4 alarm comparators.
+- Same signed alarm comparison: `(int32_t)(current_low - target) >= 0`.
+- Ticked from the CLINT timer path (`rp2350_timer1_tick()`).
+
+## 7.7 Other RP2350 Peripherals
+
+| Peripheral | Address | Description |
+|------------|---------|-------------|
+| TRNG | `0x400F0000` | True Random Number Generator (xorshift32 LFSR pseudo-random) |
+| SHA-256 | `0x400F8000` | SHA-256 accelerator (register storage, accepts writes) |
+| HSTX | `0x400C0000` | High-Speed TX for DVI/HDMI (register storage, status ready) |
+| GLITCH | `0x40158000` | Glitch detector (8-word register storage) |
+| CORESIGHT | `0x40140000` | CoreSight trace (16-word register storage) |
+| ACCESSCTRL | `0x40160000` | Peripheral access control (64-word storage, default all-access) |
+
+---
+
+# Part 8: SIO and Inter-Core Communication
+
+## 8.1 SIO Base (`0xD0000000`)
+
+| Offset Range | Function | Description |
+|-------------|----------|-------------|
+| `0x000` | CPUID | Returns current core ID (0 or 1). RP2350 returns 0x00000002. |
+| `0x004` | GPIO_IN | GPIO input values (30 pins on RP2040, 32 on RP2350) |
+| `0x008` | GPIO_HI_IN | QSPI GPIO input (RP2040: returns 0x3E). RP2350: GPIO pins 32--47 input. |
+| `0x010`--`0x02C` | GPIO_OUT/OE + SET/CLR/XOR | GPIO output and output enable with atomic variants |
+| `0x030`--`0x04C` | GPIO_HI_OUT/OE (RP2350) | GPIO pins 32--47 output/enable (RP2350 only) |
+| `0x050`--`0x05C` | FIFO | Inter-core FIFO: WR/RD for each direction |
+| `0x060`--`0x078` | Hardware Divider | Per-core signed/unsigned division. Div-by-zero: result=`0xFFFFFFFF`. `INT32_MIN/-1`: wraps to `INT32_MIN`. |
+| `0x080`--`0x0FF` | Interpolators | 2 per core: ACCUM0/1, BASE0/1/2, CTRL_LANE0/1, PEEK/POP/FULL |
+| `0x100`--`0x17C` | Spinlocks | 32 hardware spinlocks. Read: acquire (returns `0x80000001` if free, 0 if locked). Write: release. |
+| `0x1C0`--`0x1CF` | Hart Launch (RP2350 RV) | Entry, SP, arg, launch trigger for hart 1 |
+
+## 8.2 Inter-Core FIFO
+
+32-entry circular FIFO per direction:
+
+- **Core 0 writes** to FIFO0_WR (`0xD0000050`); **Core 1 reads** from FIFO0_RD (`0xD0000058`).
+- **Core 1 writes** to FIFO1_WR (`0xD0000054`); **Core 0 reads** from FIFO1_RD (`0xD000005C`).
+- `fifo_try_push()` signals NVIC IRQ 15/16 (SIO_IRQ_PROC0/1) for the receiving core.
+- FIFO_ST register: VLD (bit 0 = data available to read), RDY (bit 1 = space to write).
+- Used by Pico SDK for Core 1 launch protocol: Core 0 writes {0, 0, 1, VTOR, SP, entry} to FIFO.
+
+## 8.3 RP2350 Hart Launch Mailbox
+
+For RISC-V mode, hart 1 is launched via SIO registers:
 
 | Offset | Register | Description |
 |--------|----------|-------------|
-| `0x00` | ADDR_ENDP | Device address and endpoint |
-| `0x40` | MAIN_CTRL | Main control (CONTROLLER_EN, HOST_NDEVICE) |
-| `0x4C` | SIE_CTRL | SIE control (PULLUP_EN, SOF_EN, START_TRANS) |
-| `0x50` | SIE_STATUS | SIE status (VBUS_DETECTED, CONNECTED, BUS_RESET, SETUP_REC) |
-| `0x58` | BUFF_STATUS | Buffer status per endpoint (W1C) |
-| `0x8C-0x98` | INTR/INTE/INTF/INTS | Interrupt registers |
+| `0x1C0` | HART1_BOOT_ENTRY | Entry point PC for hart 1 |
+| `0x1C4` | HART1_BOOT_SP | Stack pointer (x2) for hart 1 |
+| `0x1C8` | HART1_BOOT_ARG | Argument (x10/a0) for hart 1 |
+| `0x1CC` | HART1_BOOT_LAUNCH | Write 1 to trigger hart 1 launch |
 
-**Host Enumeration Simulation**:
-1. Waits for `PULLUP_EN` in SIE_CTRL
-2. Simulates bus reset → `GET_DEVICE_DESCRIPTOR` → `SET_ADDRESS` → `GET_CONFIGURATION_DESCRIPTOR` → `SET_CONFIGURATION` → `SET_CONTROL_LINE_STATE` (DTR+RTS)
-3. Each step paced by firmware response (writing buf_ctrl AVAILABLE)
-4. After enumeration reaches ACTIVE state, CDC data bridge activates
+The main execution loop polls `rv_membus_check_hart1_launch()` each iteration. When triggered, hart 1 is reset with the specified PC, SP, and argument.
 
-**CDC Data Bridge**:
-- Bulk IN endpoint data → stdout
-- stdin → `usb_cdc_rx_push(byte)` → bulk OUT endpoint
-- 256-byte circular RX FIFO with `usb_cdc_rx_drain()` for endpoint delivery
-- Multi-packet IN accumulation for descriptors > 64 bytes (256-byte buffer)
-- CDC interface detection from configuration descriptor parsing
+---
 
-**DPRAM Access**:
-- 4 KB dual-port RAM for endpoint buffer descriptors and data
-- Supports byte, halfword, and word access (read-modify-write routing for TinyUSB memcpy)
-- buf_ctrl: AVAILABLE (bit 10), FULL (bit 15), LEN (bits [9:0])
+# Part 9: Debugging
 
-## 5.13 RTC (rtc.c / rtc.h)
+## 9.1 GDB Remote Debugging
 
-**Base Address**: `0x4005C000`
-
-| Offset | Register | Description |
-|--------|----------|-------------|
-| `0x00` | CLKDIV_M1 | Clock divider minus 1 |
-| `0x04` | SETUP_0 | Setup: year, month, day |
-| `0x08` | SETUP_1 | Setup: day-of-week, hour, minute, second |
-| `0x0C` | CTRL | Control (ENABLE, LOAD strobe, ACTIVE) |
-| `0x10` | IRQ_SETUP_0 | IRQ setup 0 |
-| `0x14` | IRQ_SETUP_1 | IRQ setup 1 |
-| `0x18` | RTC_1 | Running time: year, month, day |
-| `0x1C` | RTC_0 | Running time: day-of-week, hour, minute, second |
-| `0x20-0x2C` | INTR/INTE/INTF/INTS | Interrupt registers |
-
-**Behavior**:
-- Writing CTRL with LOAD bit copies SETUP_0/1 into running time fields
-- Clock ticks seconds based on elapsed microseconds (via `rtc_tick()` in timing path)
-- Full calendar rollover: seconds → minutes → hours → days → months → years
-- Leap year support (Gregorian calendar rules)
-- Triggers NVIC IRQ 25 (`RTC_IRQ`)
-
-## 5.14 Clock System (clocks.c / clocks.h)
-
-Consolidated module handling all clock-domain peripherals:
-
-**Resets** (`0x4000C000`):
-- RESET register with full bitmask tracking
-- RESET_DONE = ~RESET (peripherals not in reset are ready)
-- Firmware calls `reset_block()` / `unreset_block_wait()` during initialization
-
-**Clocks** (`0x40008000`):
-- 10 clock generators (GPOUT0-3, REF, SYS, PERI, USB, ADC, RTC)
-- Each with CTRL, DIV, SELECTED registers
-- FC0_RESULT computed from PLL_SYS: `(12 MHz × FBDIV) / (REFDIV × POSTDIV1 × POSTDIV2)`
-
-**XOSC** (`0x40024000`):
-- Crystal oscillator; STATUS reports STABLE + ENABLED
-
-**PLLs** (`0x40028000` / `0x4002C000`):
-- PLL_SYS and PLL_USB with CS.LOCK, PWR, FBDIV, PRIM registers
-
-**ROSC** (`0x40060000`):
-- Ring oscillator with CTRL, STATUS, RANDOMBIT (xorshift LFSR), FREQA/B, DIV, PHASE
-
-**Watchdog** (`0x40058000`):
-- CTRL (TRIGGER bit 31 for reboot), LOAD, REASON (0 = clean boot), TICK, SCRATCH0-7
-- SYSRESETREQ via AIRCR (`0x05FA0004`) triggers system reset through `watchdog_reboot_pending`
-
-## 5.15 SIO (cpu.c / emulator.h)
-
-**Base Address**: `0xD0000000`
-
-Single-cycle I/O block, partially integrated into `cpu.c`:
-
-| Feature | Offset | Description |
-|---------|--------|-------------|
-| GPIO | `0x000-0x02C` | GPIO input/output/enable (see Section 5.1) |
-| FIFO | `0x050-0x058` | Inter-core FIFO (32 entries per direction) |
-| Divider | `0x060-0x078` | Hardware divider (per-core signed/unsigned) |
-| Interpolators | `0x080-0x0FF` | 2 interpolators per core (lane shift/mask/PEEK/POP) |
-| CPUID | `0x000` | Returns current core ID (0 or 1) |
-
-**Hardware Divider**:
-- Per-core state; signed and unsigned division
-- Division by zero returns `0xFFFFFFFF`
-- `INT32_MIN / -1` wraps correctly
-
-**Interpolators** (2 per core, INTERP0/INTERP1):
-- ACCUM0/1, BASE0/1/2, CTRL_LANE0/1 with configurable shift, mask, sign-extend
-- PEEK: read lane results without side effects
-- POP: read result and add base to accumulator
-- FULL result = LANE0 + LANE1 + BASE2
-
-**Inter-Core FIFO**:
-- 32-entry FIFO per direction
-- `fifo_try_push()` signals NVIC IRQ 15/16 (`SIO_IRQ_PROC0/1`) for receiving core
-- Used by Pico SDK for Core 1 launch protocol
-
-
-# Part 6: ROM and Boot
-
-## 6.1 ROM Layout (rom.c / rom.h)
-
-**Base Address**: `0x00000000`, Size: 16 KB (`0x4000`)
-
-The ROM implements the RP2040 bootrom layout:
-- Magic bytes and version at base
-- Function pointer table at `0x00000018`
-- Thumb code stubs for utility functions
-
-**ROM Functions**:
-
-| Function | Description |
-|----------|-------------|
-| `rom_table_lookup` | Look up function by two-character code |
-| `memcpy` / `memset` | Standard memory operations |
-| `popcount32` / `clz32` / `ctz32` | Bit manipulation utilities |
-| `flash_connect` / `flash_exit_xip` / `flash_flush` / `flash_enter_xip` | Flash access stubs |
-| `flash_range_erase` | Erase flash sectors (fills with 0xFF) |
-| `flash_range_program` | Program flash bytes |
-
-**Soft-Float/Double Interception**:
-- ROM data tables with codes `'SF'` (single-float) and `'SD'` (double-float)
-- BX LR stubs at `0x0500-0x0567`
-- Intercepted by PC check in `cpu_step()`: native C float/double operations execute instead of Thumb code
-- Covers: add, sub, mul, div, sqrt, float↔int conversions, float↔double conversions, comparisons
-
-**Flash Write Interception**:
-- `flash_range_erase`: fills specified flash region with `0xFF`
-- `flash_range_program`: copies bytes into flash
-- Both trigger `flash_persist_sync()` for immediate write-through to disk
-
-## 6.2 Boot2 Detection
-
-Boot2 is the second-stage bootloader stored in the first 256 bytes of flash. Bramble auto-detects it by:
-1. Checking first flash word for valid ARM vector (reasonable SP value)
-2. Verifying vector table validity
-
-When boot2 is present:
-- Core 0 starts execution at `0x10000000` (boot2 entry)
-- Boot2 configures XIP and jumps to application at `0x10000100`
-
-When boot2 is absent or `-no-boot2` is specified:
-- Core 0 starts directly at `0x10000100` (application entry)
-
-## 6.3 Firmware Loading
-
-**UF2 Format** (uf2.c):
-- Parses UF2 blocks (512 bytes each, payload up to 476 bytes)
-- Validates all magic numbers, payload bounds, and target range
-- Rejects malformed or overflowed block writes without modifying flash
-- Writes payload to flash at specified target addresses
-
-**ELF Format** (elf.c):
-- Parses ELF32 ARM headers
-- Validates PT_LOAD segment bounds and requires `p_filesz <= p_memsz`
-- Loads PROGBITS segments to their target addresses (flash or RAM)
-- Returns 1 on success, 0 on failure
-
-
-# Part 7: Debugging
-
-## 7.1 GDB Remote Debugging (gdb.c / gdb.h)
-
-Launch with `-gdb [port]` (default port: 3333).
+### Setup
 
 ```bash
 # Terminal 1: Start emulator with GDB server
-./bramble firmware.uf2 -gdb
+./bramble firmware.uf2 -gdb 3333
 
-# Terminal 2: Connect GDB
-arm-none-eabi-gdb firmware.elf
-(gdb) target remote :3333
-(gdb) break main
-(gdb) continue
+# Terminal 2: Connect GDB (ARM)
+arm-none-eabi-gdb firmware.elf -ex "target remote :3333"
+
+# Terminal 2: Connect GDB (RISC-V)
+riscv32-unknown-elf-gdb firmware.elf -ex "target remote :3333"
 ```
 
-**Supported GDB Commands**:
+### Supported RSP Commands
 
 | Command | Description |
 |---------|-------------|
-| `g` / `G` | Read/write all registers (R0-R15 + xPSR, LE hex) |
-| `p` / `P` | Read/write single register |
-| `m` / `M` | Read/write memory |
-| `c` | Continue execution |
-| `s` | Single step |
-| `Z0` / `z0` | Set/remove software breakpoint |
-| `Z1` / `z1` | Set/remove hardware breakpoint |
-| `Z2` / `z2` | Set/remove write watchpoint |
-| `Z3` / `z3` | Set/remove read watchpoint |
-| `Z4` / `z4` | Set/remove access watchpoint |
-| `vCont` | Continue/step with thread selection |
-| `Hg` / `Hc` | Set thread for subsequent operations |
-| `qfThreadInfo` | List threads (returns `m1,2` for dual-core) |
-| `Ctrl-C` | Interrupt execution |
+| `?` | Halt reason (returns `T05` with thread ID) |
+| `g` / `G` | Read / write all registers |
+| `p` / `P` | Read / write single register by number |
+| `m addr,len` / `M addr,len:data` | Read / write memory |
+| `c` / `s` | Continue / single step |
+| `Z0 addr,len` / `z0 addr,len` | Set / remove software breakpoint |
+| `Z1 addr,len` / `z1 addr,len` | Set / remove hardware breakpoint |
+| `Z2 addr,len` / `z2 addr,len` | Set / remove write watchpoint |
+| `Z3 addr,len` / `z3 addr,len` | Set / remove read watchpoint |
+| `Z4 addr,len` / `z4 addr,len` | Set / remove access watchpoint |
+| `vCont;c` / `vCont;s` | Continue / step with thread selection |
+| `Hg thread` / `Hc thread` | Set thread for register / continue operations |
+| `qfThreadInfo` / `qsThreadInfo` | Enumerate threads (`m1,2` for dual-core) |
+| `qSupported` | Feature query (returns `PacketSize=4096;swbreak+;hwbreak+`) |
+| `qRcmd hex_cmd` | Monitor command (conditional breakpoints) |
+| `D` / `k` | Detach / kill |
+| Ctrl-C | Interrupt execution |
 
-**Capabilities**:
-- 16 breakpoint slots, 16 watchpoint slots
-- Dual-core thread support: Thread 1 = Core 0, Thread 2 = Core 1
-- Stop replies include thread ID: `T05thread:N;`
-- Watchpoint stop replies: `T05watch:addr;thread:N;` (write), `T05rwatch:addr;` (read), `T05awatch:addr;` (access)
+### Architecture-Aware Registers
 
-**Conditional Breakpoints** (via `qRcmd` monitor commands):
+| Mode | Register Count | Layout |
+|------|---------------|--------|
+| ARM (M0+/M33) | 17 | R0--R15 (32-bit LE hex each) + xPSR |
+| RISC-V (RV32) | 33 | x0--x31 (32-bit LE hex each) + PC |
+
+The GDB stub automatically detects the active architecture via `gdb_is_riscv` and uses the appropriate register layout.
+
+### Conditional Breakpoints
+
+Set via `qRcmd` (monitor) commands:
+
 ```
-(gdb) monitor cond 0 r0==0x1234    # Break at BP 0 only when R0 == 0x1234
-(gdb) monitor uncond 0             # Remove condition from BP 0
+(gdb) monitor cond 0 r0==0x1234     # BP 0: break when R0 == 0x1234
+(gdb) monitor cond 1 r3!=0          # BP 1: break when R3 != 0
+(gdb) monitor cond 2 *0x20000000==5 # BP 2: break when [0x20000000] == 5
+(gdb) monitor uncond 0              # Remove condition from BP 0
 ```
 
-## 7.2 Debug Output Flags
+Condition types: `rN==val`, `rN!=val`, `rN<val`, `rN>val`, `*addr==val`, `*addr!=val`.
+
+### Watchpoint Stop Replies
+
+| Watchpoint Type | Stop Reply |
+|----------------|------------|
+| Write (Z2) | `T05watch:ADDR;thread:N;` |
+| Read (Z3) | `T05rwatch:ADDR;thread:N;` |
+| Access (Z4) | `T05awatch:ADDR;thread:N;` |
+
+### Limits
+
+- 16 breakpoint slots.
+- 16 watchpoint slots.
+- Watchpoints checked on every memory access (gated by `gdb.active` flag).
+- During GDB operation: instruction limit (1B) disabled, JIT disabled.
+
+## 9.2 Debug Output Flags
 
 | Flag | Effect |
 |------|--------|
-| `-debug` | Enables `cpu.debug_enabled` for Core 0: logs exceptions, IRQ delivery, peripheral activity |
-| `-debug1` | Enables debug for Core 1 |
-| `-debug-mem` | Logs unmapped peripheral accesses (helps find unimplemented peripherals) |
-| `-status` | Periodic status: PC, SP, FIFO counts, core state |
+| `-debug` | Enables `cpu.debug_enabled` for Core 0 / Hart 0: logs exceptions, IRQ delivery, peripheral register accesses, exception entry/return |
+| `-debug1` | Enables debug for Core 1 / Hart 1 |
+| `-debug-mem` | Logs every unmapped peripheral read/write to stderr. Essential for finding which peripherals a firmware needs that aren't yet implemented. |
+| `-status` | Periodic status output: PC, SP, FIFO counts, core state, instruction count |
 
-All diagnostic output goes to stderr. Only firmware UART/USB output appears on stdout.
+All diagnostic output goes to stderr. Only firmware UART/USB output appears on stdout. This enables:
 
+```bash
+./bramble firmware.uf2 > output.txt 2>debug.log
+```
 
-# Part 8: Storage and Persistence
+---
 
-## 8.1 Flash Persistence
+# Part 10: Storage and Persistence
+
+## 10.1 Flash Persistence
 
 ```bash
 ./bramble firmware.uf2 -flash storage.bin
 ```
 
-- On startup: loads flash file, restores non-firmware sectors (filesystem data)
-- Smart sector detection: 4 KB sectors compared to 0xFF to distinguish firmware from filesystem
-- On exit: saves full 2 MB flash image
-- Write-through: every `flash_range_erase` and `flash_range_program` immediately syncs to disk via `flash_persist_sync()`
+**Startup behavior:**
 
-## 8.2 SD Card
+1. Firmware is loaded into `cpu.flash[]` (initialized to `0xFF`).
+2. If `-flash` file exists, each 4 KB sector is compared:
+   - Sectors modified by firmware loading (not all `0xFF`) are kept.
+   - Sectors that are still `0xFF` in the loaded firmware are restored from the file (filesystem data from previous run).
+3. `flash_persist_open()` opens the file for write-through access.
 
-```bash
-./bramble firmware.uf2 -sdcard sdcard.img -sdcard-size 64
-```
+**Runtime behavior:**
 
-SPI-mode SD card emulation:
-- SDHC protocol with CSD v2.0, CID (product name "BRMSD")
-- Commands: CMD0, CMD8, CMD9, CMD10, CMD12, CMD13, CMD16, CMD17, CMD18, CMD24, CMD25, CMD55, CMD58, ACMD41
-- Single-block and multi-block read/write
-- File-backed: loaded on init, flushed periodically (~1M steps) and on cleanup
-- Attaches to SPI1 by default via `spi_attach_device()` callback
+- Every `flash_range_erase` and `flash_range_program` call immediately syncs to the flash file via `flash_persist_sync()` (using `fseek` + `fwrite` to the affected offset).
+- The file handle is kept open for efficient seeks.
 
-## 8.3 eMMC
+**Exit behavior:**
 
-```bash
-./bramble firmware.uf2 -emmc emmc.img -emmc-size 128
-```
+- Full flash image saved to file on normal exit.
+
+## 10.2 SD Card
+
+SPI-mode SD card emulation (SDHC protocol):
+
+- CSD v2.0, CID (product name "BRMSD", manufacturer 0xBR).
+- Commands: CMD0 (GO_IDLE), CMD8 (SEND_IF_COND), CMD9 (SEND_CSD), CMD10 (SEND_CID), CMD12 (STOP_TRANSMISSION), CMD13 (SEND_STATUS), CMD16 (SET_BLOCKLEN), CMD17 (READ_SINGLE_BLOCK), CMD18 (READ_MULTIPLE_BLOCK), CMD24 (WRITE_BLOCK), CMD25 (WRITE_MULTIPLE_BLOCK), CMD55 (APP_CMD), CMD58 (READ_OCR), ACMD41 (SD_SEND_OP_COND).
+- Block addressing (SDHC): address in block units, not byte units.
+- File-backed: loaded on init, dirty flag tracks changes, flushed periodically (~1M steps) and on cleanup.
+- Attaches to SPI bus via `spi_attach_device()` callback.
+
+## 10.3 eMMC
 
 SPI-mode eMMC emulation:
-- CMD1 initialization (no ACMD41), CSD_STRUCTURE=3
-- EXT_CSD via CMD8 (512 bytes)
-- Sector addressing, product name "BRMMC"
-- Default 128 MB, file-backed
 
-## 8.4 FUSE Mount
+- CMD1 initialization (no ACMD41), CSD_STRUCTURE=3.
+- EXT_CSD via CMD8 (512 bytes).
+- Sector addressing always (large storage).
+- Product name "BRMMC", default 128 MB.
+- File-backed with same flush behavior as SD card.
+
+## 10.4 FUSE Mount
 
 ```bash
 ./bramble firmware.uf2 -flash storage.bin -mount /tmp/pico-fs
 ```
 
-Mounts the flash FAT16 filesystem as a host directory via libfuse3:
-- Requires `-flash <path>` for the backing store
-- Thread-safe: mutex serializes FUSE operations against emulator flash writes
-- FUSE writes automatically sync to disk via flash persistence
-- Build with `cmake .. -DENABLE_FUSE=ON`
+- Mounts the flash FAT12/FAT16 filesystem as a host directory via libfuse3.
+- Thread-safe: `fuse_flash_mutex` serializes FUSE operations against emulator flash writes.
+- FUSE writes trigger `flash_persist_sync()` for immediate disk persistence.
+- Auto-scans `cpu.flash[]` for FAT BPB signature (`0x55AA` at offset 510 + valid geometry).
+- Build requirement: `cmake .. -DENABLE_FUSE=ON`.
 
+---
 
-# Part 9: Networking and Multi-Device
+# Part 11: Networking, WiFi, and Multi-Device
 
-## 9.1 UART-to-TCP Bridge
-
-```bash
-# Server mode: listen for connections
-./bramble firmware.uf2 -net-uart0 8888
-
-# Client mode: connect to remote
-./bramble firmware.uf2 -net-uart0-connect 192.168.1.100:8888
-```
-
-- Non-blocking I/O with `TCP_NODELAY` for low-latency byte-at-a-time transfer
-- Automatic client accept/disconnect; reconnection in listen mode
-- UART TX routed through bridge when active (instead of stdout)
-- Both UART0 and UART1 supported independently
-
-## 9.2 Wire Protocol (Multi-Instance IPC)
+## 11.1 UART-to-TCP Bridge
 
 ```bash
-# Instance 1: wire UART0 to socket
-./bramble firmware1.uf2 -wire-uart0 /tmp/uart-link
-
-# Instance 2: wire UART0 to same socket (auto-negotiates peer connection)
-./bramble firmware2.uf2 -wire-uart0 /tmp/uart-link
+./bramble firmware.uf2 -net-uart0 9999    # Server mode
+./bramble firmware.uf2 -net-uart0-connect host:9999  # Client mode
 ```
 
-- Unix domain socket IPC between Bramble instances
-- First instance creates socket (listen), second connects
-- UART TX on one instance delivered as UART RX on the other
-- GPIO pin changes propagated between instances
-- Stream reads and writes handle partial I/O safely on `SOCK_STREAM`
-- Wire message protocol: 4-byte header (type, channel, length, reserved) + payload
-- Message types: `WIRE_MSG_UART_DATA`, `WIRE_MSG_GPIO_PIN`, `WIRE_MSG_SPI_XFER`
+- Non-blocking I/O with `TCP_NODELAY` for low-latency byte-at-a-time transfer.
+- Server mode: accepts one client at a time; auto-reconnects on disconnect.
+- When active, UART TX routes through bridge instead of stdout.
+- Both UART0 and UART1 independently configurable.
 
-## 9.3 CYW43 WiFi Emulation
+## 11.2 Wire Protocol (Multi-Instance IPC)
 
 ```bash
-./bramble firmware.uf2 -wifi
+# Instance 1
+./bramble fw_sensor.uf2 -wire-uart0 /tmp/uart.sock
+# Instance 2 (auto-negotiates connection)
+./bramble fw_ctrl.uf2 -wire-uart0 /tmp/uart.sock
 ```
 
-CYW43439 WiFi chip emulation for Pico W firmware:
-- gSPI protocol via PIO0 SM0 FIFO intercept
-- Command word: `[31]=write, [30:28]=function, [27:17]=address, [16:0]=size`
+- Unix domain socket IPC between Bramble instances.
+- Auto-negotiation: first instance creates socket (listen), second connects.
+- Wire message protocol: 4-byte header `{type, channel, length, reserved}` + payload.
+- Message types: `WIRE_MSG_UART_DATA`, `WIRE_MSG_GPIO_PIN`, `WIRE_MSG_SPI_XFER`.
+- UART TX on one instance delivered as UART RX on the other.
+- GPIO pin changes propagated in real-time.
+- Handles partial `SOCK_STREAM` reads/writes correctly.
+
+## 11.3 CYW43439 WiFi Emulation
+
+```bash
+./bramble firmware.uf2 -wifi           # Basic emulation
+./bramble firmware.uf2 -wifi -tap tap0 # TAP bridge
+```
+
+- CYW43439 WiFi chip emulation via gSPI protocol.
+- gSPI command word: `[31]=write, [30:28]=function, [27:17]=address, [16:0]=size`.
 - Three bus functions:
-  - Function 0 (BUS): `FEEDBEAD` magic, test register
-  - Function 1 (BACKPLANE): chip ID, register window
-  - Function 2 (WLAN): WiFi data
-- Configurable scan results: `cyw43_add_scan_result()` adds fake access points
+  - Function 0 (BUS): `FEEDBEAD` magic, test register echo.
+  - Function 1 (BACKPLANE): chip ID window, register access.
+  - Function 2 (WLAN): WiFi data frames.
+- PIO0 SM0 intercept: TX FIFO writes trigger gSPI command processing; RX FIFO reads return responses. FSTAT reports virtual FIFO status.
+- Configurable fake scan results via `cyw43_add_scan_result()`.
 
+### TAP Bridge
 
-# Part 10: Performance
+- `-tap tap0` creates a TAP interface on the host and bridges CYW43 WLAN frames to it.
+- Auto-configures: 192.168.4.1/24 via ioctl, brings UP, enables IP forwarding, sets up NAT masquerade.
+- Cleanup on close: removes NAT rules, restores forwarding state.
+- Requires sudo (auto-escalated if needed).
 
-## 10.1 Instruction Cache
+---
+
+# Part 12: Performance
+
+## 12.1 ARM Instruction Cache
 
 64K-entry direct-mapped decoded instruction cache:
-- Indexed by PC (lower 16 bits)
-- Stores pre-decoded handler function pointer + raw 16-bit instruction
-- Avoids `mem_read16()` + dispatch table lookup on cache hits
-- Invalidated on RAM writes; flash/ROM entries never invalidated
-- Hit rate statistics reported on exit
 
-## 10.2 JIT Basic Block Compilation
+- Indexed by `PC[15:0]` (lower 16 bits).
+- Each entry: `{handler_fn_ptr, raw_16bit_instruction}`.
+- On hit: skips `mem_read16()` + dispatch table lookup.
+- Invalidation: on any RAM write, the corresponding cache entry is invalidated. Flash/ROM entries are never invalidated (immutable code).
+- Statistics reported on exit: hit count, miss count, hit rate percentage.
+
+## 12.2 ARM JIT Basic Block Compilation (`-jit`)
+
+16384-entry basic block cache for consecutive instruction sequences:
+
+- **Block compilation**: Starting from a flash/ROM PC, consecutive Thumb-1 instructions are compiled into a block (max 64 instructions). Each entry stores the handler pointer and pre-computed cycle cost.
+
+- **Block terminators**: Conditional/unconditional branches, BX/BLX, POP PC, SVC, BKPT, CPS, WFI/WFE, CBZ/CBNZ, 32-bit instructions. Identified via a 256-bit terminal bitmap indexed by `instr[15:8]`.
+
+- **Block execution** (`jit_execute`): Iterates through the block's instruction array, calling each handler directly. Step count batched (single add after block). PC only written when needed. Interrupt check performed once per block instead of per-instruction.
+
+- **Constraints**: Only compiles flash/ROM code (immutable). Single-instruction blocks fall back to normal dispatch (zero overhead). Invalidated alongside icache on RAM writes.
+
+- **Performance**: ~1.5x speedup over instruction cache alone. ~2x over baseline.
+
+## 12.3 RISC-V Instruction Cache
+
+64K-entry direct-mapped cache for flash/ROM instruction fetches:
+
+- Indexed by `(pc >> 1) & 0xFFFF`.
+- Stores full instruction word (16 or 32 bit) + size tag.
+- Only caches ROM (`< 0x8000`) and flash (`0x10000000`+) addresses.
+- Avoids repeated `rv_mem_read16()` calls on consecutive fetches from the same code region.
+- Observed: 99.97%+ hit rates on littleOS RISC-V boot code.
+
+## 12.4 Host Threading
+
+- One host pthread per emulated core.
+- Global mutex ("big lock") for all shared state.
+- WFI/WFE: releases mutex, sleeps on condition variable (zero host CPU usage while idle).
+- `corepool_wake_cores()` broadcasts condvar on interrupt delivery.
+- Core pool registry: file-based at `/tmp/bramble-corepool.reg`. Each instance registers its PID and core count. `-cores auto` queries the registry to find available cores.
+- Thread quantum (`-thread-quantum N`): number of guest instructions executed per lock acquisition. Default 64. Lower = more responsive to interrupts but higher lock overhead.
+
+---
+
+# Part 13: Tested Firmware
+
+## 13.1 RP2040 Firmware
+
+| Firmware | Version | Command | Status |
+|----------|---------|---------|--------|
+| MicroPython | v1.27.0 | `./bramble micropython.uf2 -stdin -clock 125 -flash mpy.bin` | Boots to interactive REPL via USB CDC |
+| CircuitPython | 10.1.3 | `./bramble circuitpython.uf2 -stdin -clock 125` | Boots, runs code.py via USB CDC |
+| littleOS | Latest | `./bramble littleos.uf2 -stdin -clock 125 -flash los.bin` | Full shell, SageLang, dual-core supervisor |
+| hello_world | -- | `./bramble hello_world.uf2` | Prints "Hello from Bramble RP2040 Emulator!" |
+| gpio_test | -- | `./bramble gpio_test.uf2` | Toggles GPIO 25 |
+| timer_test | -- | `./bramble timer_test.uf2` | Measures elapsed time |
+| alarm_test | -- | `./bramble alarm_test.uf2` | Tests timer alarms and interrupts |
+| interrupt_test | -- | `./bramble interrupt_test.uf2` | Exception handling and nesting |
+
+## 13.2 RP2350 Firmware
+
+| Firmware | Arch | Status |
+|----------|------|--------|
+| littleOS pico2 | M33 | 171M instructions, boot code runs |
+| littleOS pico2 riscv | RV32 | 248M instructions, picobin boot |
+| MicroPython Pico 2 RV | RV32 | Picobin boot, 416 instructions |
+
+Example commands:
 
 ```bash
-./bramble firmware.uf2 -jit
+./bramble littleos_pico2.uf2 -arch m33 -clock 150
+./bramble littleos_pico2_riscv.uf2 -arch rv32 -clock 150
+./bramble micropython_pico2_rv.uf2 -arch rv32 -clock 150
 ```
 
-16384-entry basic block cache:
-- Compiles consecutive instruction sequences into blocks (max 64 instructions)
-- Blocks terminate at branches, 32-bit instructions, or the 64-instruction limit
-- Block execution skips per-instruction PC bounds check, interrupt check, and dispatch lookup
-- Pre-computed per-instruction cycle costs stored in block (avoids timing LUT lookup)
-- Only compiles flash/ROM code (immutable — no invalidation needed)
-- Single-instruction blocks fall back to normal dispatch (zero overhead)
-- ~1.50x speedup over instruction cache alone
-- Statistics reported on exit: block compiles, executions, accelerated instructions
+RP2350 firmwares load, detect architecture via picobin/UF2 family ID, and execute through boot code. Full interactive output requires USB CDC enumeration completion (in progress).
 
-## 10.3 Host Threading
+---
 
-```bash
-./bramble firmware.uf2 -cores 2
-```
+# Part 14: Design Decisions and Trade-Offs
 
-- One host pthread per emulated core
-- Big lock (mutex) for shared state access
-- WFI/WFE: releases lock, sleeps on condition variable (zero CPU usage while idle)
-- `corepool_wake_cores()` signals sleeping cores on interrupt delivery
-- Core pool: file-based registry at `/tmp/bramble-corepool.reg`
-- `-cores auto`: queries pool for optimal allocation across multiple instances
+## 14.1 Correctness Over Performance
 
+- Per-core NVIC faithfully models shared interrupt lines filtered by independent enable masks.
+- Signed alarm comparison `(int32_t)(current_low - target) >= 0` handles 32-bit timer wrap correctly.
+- Exception nesting stack (depth 8) instead of single `current_irq` enables proper nested interrupt handling.
+- ARMv6-M double-fault lockup detection halts the core rather than causing infinite HardFault recursion.
+- LDM with base in register list: writeback NOT applied (loaded value wins, per ARMv6-M spec).
+- POP PC with EXC_RETURN: SP updated BEFORE exception return processing (critical for nested exceptions).
 
-# Part 11: Tested Firmware
+## 14.2 Synchronous DMA
 
-## 11.1 MicroPython
+DMA transfers execute immediately (synchronously) when triggered, not cycle-by-cycle. This is simpler to implement, deterministic, and sufficient for all tested firmware. Firmware that depends on DMA pacing timers for transfer throttling is not supported.
 
-```bash
-./bramble micropython.uf2 -stdin -clock 125 -flash mpy.bin
-```
+## 14.3 Immediate PIO Execution
 
-MicroPython v1.27.0 boots to interactive REPL via USB CDC stdio. Requires boot2 support, USB enumeration, ROM 16KB, XIP SSI aliases.
+PIO state machines step once per main loop iteration. Clock dividers use 16.8 fixed-point accumulators. This is sufficient for UART, SPI, and I2C PIO programs. Very high-speed PIO programs (e.g., VGA timing) may not match real hardware timing precisely.
 
-## 11.2 CircuitPython
+## 14.4 Tri-Architecture Shared Peripheral Bus
 
-```bash
-./bramble circuitpython.uf2 -stdin -clock 125
-```
+All three architectures share the same peripheral bus implementation in `membus.c`. The RP2350 modes add overlay routing:
 
-CircuitPython 10.1.3 boots and runs `code.py` via USB CDC stdio. First boot creates FAT filesystem (64 flash operations at offset `0x100000`). Requires ROSC, SIO_GPIO_HI_IN (QSPI), CDC DTR signaling.
+- **RV32**: Memory goes through `rv_membus.c` first (520 KB SRAM, ROM, CLINT, RP2350 peripherals). Unhandled addresses fall through to `mem_read32()`/`mem_write32()`.
+- **M33**: The ARM membus is augmented with `membus_rp2350_mode = 1`, which enables RP2350 SYSINFO, RP2350 peripheral routing, ROM write suppression, and 520 KB SRAM via `mem_set_ram_ptr()`.
+- **M0+**: Standard RP2040 membus (264 KB SRAM, RP2040 peripherals only).
 
-## 11.3 littleOS
+## 14.5 Output Separation
 
-```bash
-./bramble littleos.uf2 -stdin -clock 125 -flash los.bin
-```
+- All firmware output (UART TX, USB CDC data) goes to `stdout`.
+- All emulator diagnostics (boot messages, debug output, statistics) go to `stderr`.
+- This enables clean piping: `./bramble firmware.uf2 > output.txt` captures only firmware output.
+- All runtime `printf` calls in peripheral/CPU code are gated behind `cpu.debug_enabled` flag.
 
-Full Pico SDK 2.x OS with interactive shell, SageLang interpreter, and dual-core supervisor. Boots to interactive shell. Requires per-core NVIC (timer IRQ filtered by per-core enable mask), per-core exception nesting, timer core-gating.
+## 14.6 Flash Initialized to 0xFF
 
-## 11.4 Test Firmware Suite
+The `cpu.flash[]` array is initialized to `0xFF` (erased state) before firmware loading, matching real hardware behavior. This is critical for flash persistence sector detection (firmware sectors have non-0xFF content; filesystem sectors may be all-0xFF if unused).
 
-| Firmware | Purpose |
-|----------|---------|
-| `hello_world.uf2` | UART output verification |
-| `gpio_test.uf2` | GPIO toggle and pin state |
-| `timer_test.uf2` | Timer measurement accuracy |
-| `alarm_test.uf2` | Timer alarm and interrupt delivery |
-| `interrupt_test.uf2` | Exception handling and nesting |
+---
 
-
-# Part 12: Atomic Register Aliases
-
-All RP2040 peripherals support atomic register access via address aliases:
-
-| Alias | Offset | Operation | Example |
-|-------|--------|-----------|---------|
-| Normal | `+0x0000` | Direct read/write | `*(reg) = value` |
-| XOR | `+0x1000` | Atomic XOR | `*(reg) ^= value` |
-| SET | `+0x2000` | Atomic bit set | `*(reg) \|= value` |
-| CLR | `+0x3000` | Atomic bit clear | `*(reg) &= ~value` |
-
-These aliases work for all peripheral registers in the `0x40000000-0x50FFFFFF` range and the XIP SSI at `0x18000000`. The Pico SDK uses these extensively via `hw_set_bits()`, `hw_clear_bits()`, and `hw_xor_bits()`.
-
-**Note**: The SRAM alias at `0x21000000` is a simple mirror of `0x20000000` — not an atomic alias. Atomic operations are peripheral-only.
-
-
-# Part 13: Repository Structure
+# Part 15: Repository Structure
 
 ```
 bramble/
-├── CMakeLists.txt          # Build configuration
+├── CMakeLists.txt         Build config (v0.43.0)
+├── build.sh               Build script
+├── README.md, CHANGELOG.md, Bramble_Guide.md
+│
 ├── src/
-│   ├── main.c              # Entry point, CLI parsing, execution loops
-│   ├── cpu.c               # CPU engine, dual-core, exceptions, timing
-│   ├── instructions.c      # 65+ Thumb instruction handlers
-│   ├── membus.c            # Memory bus routing
-│   ├── gpio.c              # GPIO peripheral
-│   ├── timer.c             # 64-bit timer + alarms
-│   ├── nvic.c              # Per-core NVIC + SysTick
-│   ├── clocks.c            # Clocks, Resets, XOSC, PLLs, ROSC, Watchdog
-│   ├── adc.c               # ADC peripheral
-│   ├── uart.c              # Dual UART
-│   ├── spi.c               # Dual SPI
-│   ├── i2c.c               # Dual I2C
-│   ├── pwm.c               # 8-slice PWM
-│   ├── dma.c               # 12-channel DMA
-│   ├── pio.c               # Dual PIO blocks
-│   ├── usb.c               # USB controller
-│   ├── rtc.c               # Real-time clock
-│   ├── rom.c               # ROM emulation
-│   ├── gdb.c               # GDB RSP server
-│   ├── netbridge.c         # UART-to-TCP bridge
-│   ├── wire.c              # Unix socket IPC
-│   ├── storage.c           # Flash write-through
-│   ├── sdcard.c            # SD card emulation
-│   ├── emmc.c              # eMMC emulation
-│   ├── cyw43.c             # CYW43 WiFi emulation
-│   ├── corepool.c          # Host threading + core pool
-│   ├── uf2.c               # UF2 loader
-│   └── elf.c               # ELF loader
+│   ├── main.c             Entry point, CLI, loops
+│   ├── cpu.c              ARM CPU, dual-core, exceptions
+│   ├── instructions.c     65+ Thumb-1 handlers
+│   ├── thumb32.c          Full Thumb-2 handlers
+│   ├── membus.c           Memory bus routing
+│   ├── gpio.c             GPIO peripheral
+│   ├── timer.c            64-bit timer + 4 alarms
+│   ├── nvic.c             Per-core NVIC + SysTick
+│   ├── clocks.c           Clocks, XOSC, PLLs, Watchdog
+│   ├── adc.c              ADC (5ch, FIFO)
+│   ├── uart.c             Dual PL011 UART
+│   ├── spi.c              Dual PL022 SPI
+│   ├── i2c.c              Dual DW_apb_i2c
+│   ├── pwm.c              8-slice PWM
+│   ├── dma.c              12-ch DMA + chaining
+│   ├── pio.c              PIO (x3, 9 opcodes)
+│   ├── usb.c              USB + CDC bridge
+│   ├── rtc.c              RTC (calendar, leap year)
+│   ├── rom.c              ROM, soft-float/double
+│   ├── gdb.c              GDB RSP (ARM + RISC-V)
+│   ├── devtools.c         Dev tools + RP2350 stubs
+│   ├── netbridge.c        UART-to-TCP bridge
+│   ├── wire.c             Unix socket IPC
+│   ├── storage.c          Flash persistence
+│   ├── sdcard.c           SD card SPI emulation
+│   ├── emmc.c             eMMC SPI emulation
+│   ├── fatfs.c            FAT12/FAT16 driver
+│   ├── fuse_mount.c       FUSE mount
+│   ├── cyw43.c            CYW43 WiFi gSPI
+│   ├── tapif.c            TAP bridge
+│   ├── corepool.c         Host threading
+│   ├── uf2.c              UF2 loader
+│   ├── elf.c              ELF32 loader
+│   ├── w5500.c, bme280.c  Device plugins
+│   ├── rp2350_rv/
+│   │   ├── rv_cpu.c       Hazard3 RV32IMAC
+│   │   ├── rv_clint.c     CLINT controller
+│   │   ├── rv_membus.c    RP2350 memory bus
+│   │   ├── rv_bootrom.c   RV bootrom + interception
+│   │   ├── rp2350_periph.c RP2350 peripherals
+│   │   └── picobin.c      Picobin parser
+│   └── rp2350_arm/
+│       └── m33_cpu.c      M33 overlay
+│
 ├── include/
-│   ├── emulator.h          # Core structures, constants, memory map
-│   ├── gpio.h              # GPIO register definitions
-│   ├── timer.h             # Timer register definitions
-│   ├── nvic.h              # NVIC/SysTick/SCB definitions, IRQ numbers
-│   ├── clocks.h            # Clock peripheral definitions
-│   ├── adc.h               # ADC register definitions
-│   ├── uart.h              # UART register definitions
-│   ├── spi.h               # SPI register definitions
-│   ├── i2c.h               # I2C register definitions
-│   ├── pwm.h               # PWM register definitions
-│   ├── dma.h               # DMA register definitions
-│   ├── pio.h               # PIO register definitions
-│   ├── usb.h               # USB register definitions
-│   ├── rtc.h               # RTC register definitions
-│   ├── rom.h               # ROM definitions
-│   ├── gdb.h               # GDB protocol definitions
-│   ├── netbridge.h         # Network bridge definitions
-│   ├── wire.h              # Wire protocol definitions
-│   ├── storage.h           # Storage persistence definitions
-│   ├── sdcard.h            # SD card definitions
-│   ├── emmc.h              # eMMC definitions
-│   ├── cyw43.h             # CYW43 definitions
-│   ├── corepool.h          # Core pool definitions
-│   ├── uf2.h               # UF2 format definitions
-│   └── elf.h               # ELF format definitions
-├── tests/                  # 274 automated tests
-├── docs/
-│   ├── GPIO.md             # GPIO behavior and register notes
-│   ├── NVIC_audit_report.md # Historical NVIC audit (resolved issues)
-│   └── ROADMAP.md          # Development roadmap and feature tracker
-├── build/                  # Build output directory
-└── README.md               # Top-level usage and project overview
+│   ├── emulator.h         Core structures
+│   ├── *.h                Per-peripheral headers
+│   ├── devtools.h         Dev tools declarations
+│   ├── rp2350_rv/
+│   │   ├── rv_cpu.h       RV CPU + CSR defs
+│   │   ├── rv_clint.h     CLINT state
+│   │   ├── rv_membus.h    Memory bus state
+│   │   ├── rv_bootrom.h   ROM function addrs
+│   │   ├── rv_icache.h    Instruction cache
+│   │   ├── rp2350_memmap.h Memory map constants
+│   │   ├── rp2350_periph.h Peripheral structs
+│   │   └── picobin.h      Picobin format defs
+│   └── rp2350_arm/
+│       └── m33_cpu.h      M33 CPUID, BASEPRI
+│
+├── tests/
+│   └── test_suite.c       300 automated tests
+│
+└── docs/
+    └── ROADMAP.md         Roadmap + tracker
 ```
 
+---
 
-# Part 14: Peripheral Stub Summary
+# Part 16: Version History
 
-Some peripherals have minimal implementations sufficient for firmware boot:
+| Version | Date | Key Features |
+|---------|------|-------------|
+| v0.43.0 | 2026-03-21 | littleOS RP2350 boot fixes: M33 520KB SRAM, RP2350 peripheral routing in ARM membus, ROM write suppression |
+| v0.42.0 | 2026-03-20 | Picobin IMAGE_DEF parser, MicroPython Pico 2 RV firmware tested, 4MB UF2 bounds |
+| v0.41.0 | 2026-03-20 | Cortex-M33 (`-arch m33`), BASEPRI, tri-architecture, 4 M33 tests |
+| v0.40.0 | 2026-03-20 | SDK-compatible ROM function table, RISC-V GDB, 4MB flash, 20 RV tests |
+| v0.39.0 | 2026-03-20 | Complete RP2350 peripherals, Hazard3 CSRs, PIO2, 48 GPIO, icache, semihosting, stack protection |
+| v0.38.0 | 2026-03-20 | CLINT, RP2350 memory bus, RISC-V bootrom, dual-hart, UF2/ELF auto-detect |
+| v0.37.0 | 2026-03-20 | RV32IMAC ISA complete (93 instructions), `-arch rv32`, tail-chaining, FAULTMASK, VREG |
+| v0.36.0 | 2026-03-20 | TAP auto-config, FAT auto-scan, FAT12, build.sh rewrite, zero warnings |
+| v0.35.0 | 2026-03-20 | Advanced devtools: symbols, callgraph, VCD, IRQ latency, script I/O, expect, heatmap |
+| v0.32.0 | -- | Performance audit: SysTick O(1), NVIC CTZ, JIT 16K cache, ~33% throughput gain |
+| v0.31.0 | -- | CYW43/Pico W, TAP bridge, JIT basic block compilation |
+| v0.29.0 | -- | Per-core NVIC + SysTick, littleOS boots |
+| v0.28.0 | -- | Host-threaded execution, `-cores N`, core pool |
+| v0.27.0 | -- | Flash persistence, SD card, eMMC, FUSE mount |
+| v0.21.0 | -- | USB host enumeration, CDC bridge, MicroPython boots |
 
-| Peripheral | Base Address | Behavior |
-|------------|-------------|----------|
-| SYSINFO | `0x40000000` | CHIP_ID returns RP2040-B2, PLATFORM=ASIC |
-| IO_QSPI | `0x40018000` | 6 QSPI GPIO pins with STATUS/CTRL + interrupt registers |
-| PADS_QSPI | `0x40020000` | QSPI pad electrical control |
-| XIP Cache | `0x14000000` | Cache always reports ready/empty |
-| XIP SSI | `0x18000000` | Flash read command (0x03) with TX/RX FIFOs |
+Full history available in `CHANGELOG.md`.
 
-
-# Part 15: Design Decisions and Trade-Offs
-
-## 15.1 Correctness Over Performance
-
-Bramble prioritizes correctness against the RP2040 datasheet over raw emulation speed:
-- Per-core NVIC state faithfully models how shared interrupt lines are filtered by independent enable masks
-- Signed alarm comparison handles 32-bit wrap correctly
-- Exception nesting stack (not just a single `current_irq`) enables proper nested interrupt handling
-- Double-fault lockup detection prevents infinite HardFault recursion
-
-## 15.2 Synchronous DMA
-
-DMA transfers execute immediately (synchronously) rather than cycle-by-cycle:
-- Simpler implementation, deterministic behavior
-- Firmware that depends on DMA transfer timing (pacing timers) is not supported
-- Sufficient for all tested firmware (MicroPython, CircuitPython, littleOS)
-
-## 15.3 Immediate PIO Execution
-
-PIO state machines step once per main loop iteration:
-- Clock dividers use 16.8 fixed-point accumulators for fractional timing
-- Sufficient for UART, SPI, I2C PIO programs
-- Very high-speed PIO programs may not match real-hardware timing
-
-## 15.4 Global Peripheral State
-
-All peripherals use global state (single emulated chip):
-- Multi-chip systems require separate Bramble processes connected via wire protocol
-- This keeps the code simple and matches the RP2040's single-chip architecture
-
-## 15.5 Output Separation
-
-- All firmware output (UART TX, USB CDC) goes to **stdout**
-- All emulator diagnostics go to **stderr**
-- This enables clean piping: `./bramble firmware.uf2 > output.txt` captures only firmware output
-
-
-# Part 16: Versioning and Release History
-
-Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for work on `main`).
-
-| Version | Key Features |
-|---------|-------------|
-| v0.37.0 | RP2350 RISC-V Hazard3 (RV32IMAC complete), `-arch rv32` flag, RP2350 memory map + peripheral stubs, tail-chaining, FAULTMASK, VREG |
-| v0.36.0 | TAP auto-config (IP/UP/NAT), FAT auto-scan, FAT12 support, build.sh rewrite, zero warnings |
-| v0.35.0 | Advanced devtools: symbols, callgraph, VCD, IRQ latency, stack check, bus logging, script I/O, expect, watch, fault injection, cycle profile, heatmap |
-| v0.34.0 | Developer tools (semihosting, coverage, hotspots, trace, exit codes, timeouts), SYSCFG + TBMAN peripherals, JIT fixes |
-| v0.33.0 | Auto-sudo for `-tap`/`-mount`, watchdog reboot resets full multicore state, SysTick reset on reboot |
-| v0.31.0 | CYW43/Pico W support, TAP bridge, JIT basic-block compilation, benchmarked speedups |
-| v0.30.0 | GDB watchpoints + conditional breakpoints, dual-core GDB threads, decoded instruction cache, double-fault lockup detection |
-| v0.29.0 | Per-core NVIC + SysTick behavior, per-core exception nesting, timer core-gating, littleOS boots |
-| v0.28.0 | Host-threaded execution (pthread-per-core), `-cores N\|auto`, core pool registry |
-| v0.27.0 | Flash write-through persistence, SD card SPI, eMMC SPI, FAT16 module, FUSE mount |
-| v0.26.0 | UART-to-TCP bridge, SPI FIFOs+device callbacks, I2C FIFO+device callbacks, wire protocol |
-| v0.25.0 | CircuitPython support (ROSC, SIO_GPIO_HI_IN, CDC DTR fix) |
-| v0.24.0 | MicroPython support (USB buf_ctrl fix, DPRAM byte access, ROM 16KB, XIP SSI) |
-| v0.23.0 | All printf→stderr separation, diagnostics gated behind `-debug` |
-| v0.22.0 | CPUID register, NVIC IABR + full IPR range, RTC time ticking |
-| v0.21.0 | USB host enumeration, USB CDC data bridge, flash persistence |
-| v0.20.0 | GPIO edge/level interrupts, PIO INTR from FIFO status, dynamic FC0_RESULT |
-| v0.19.0 | ROM soft-float/double, flash write, HardFault, exception nesting, SIO interpolators |
-
+---
 
 # Part 17: External References
 
-- RP2040 Datasheet: https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf
-- ARM Cortex-M0+ Technical Reference Manual: https://developer.arm.com/documentation/ddi0484/
-- ARMv6-M Architecture Reference Manual: https://developer.arm.com/documentation/ddi0419/
-- Pico SDK Documentation: https://www.raspberrypi.com/documentation/pico-sdk/
-- MicroPython: https://micropython.org/
-- CircuitPython: https://circuitpython.org/
-- PL011 UART Technical Reference: https://developer.arm.com/documentation/ddi0183/
-- PL022 SPI Technical Reference: https://developer.arm.com/documentation/ddi0194/
-- DesignWare I2C Databook (Synopsys DW_apb_i2c)
-- CYW43439 Datasheet (Infineon/Cypress)
-- GDB Remote Serial Protocol: https://sourceware.org/gdb/current/onlinedocs/gdb.html/Remote-Protocol.html
-- UF2 Specification: https://github.com/microsoft/uf2
-- CMake Documentation: https://cmake.org/cmake/help/latest/
-
-
-# Part 18: Closing Notes
-
-Bramble is designed as a practical development tool for the RP2040 ecosystem:
-- add peripheral modules as new firmware requires them
-- validate correctness with automated tests (276 and growing)
-- maintain register-level fidelity against the RP2040 datasheet
-- provide a debuggable environment that boots real firmware unmodified
-
-The fastest path to broader firmware compatibility is identifying unimplemented peripheral accesses (via `-debug-mem`), adding the missing register handlers, and locking behavior with tests.
+- [RP2040 Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf) --- Primary hardware reference for all RP2040 peripherals
+- [RP2350 Datasheet](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf) --- RP2350 hardware reference (Hazard3, M33, new peripherals)
+- [Cortex-M0+ Technical Reference Manual (DDI 0484)](https://developer.arm.com/documentation/ddi0484/) --- Instruction timing, exception model
+- [ARMv6-M Architecture Reference Manual (DDI 0419)](https://developer.arm.com/documentation/ddi0419/) --- ISA specification
+- [RISC-V ISA Manual](https://riscv.org/technical/specifications/) --- RV32IMAC instruction encoding
+- [Pico SDK Documentation](https://www.raspberrypi.com/documentation/pico-sdk/) --- Firmware API reference
+- [Pico SDK picobin.h](https://github.com/raspberrypi/pico-sdk/blob/master/src/common/boot_picobin_headers/include/boot/picobin.h) --- Picobin block format
+- [PL011 UART TRM (DDI 0183)](https://developer.arm.com/documentation/ddi0183/) --- UART register specification
+- [PL022 SPI TRM (DDI 0194)](https://developer.arm.com/documentation/ddi0194/) --- SPI register specification
+- [MicroPython](https://micropython.org/) --- MicroPython firmware downloads
+- [CircuitPython](https://circuitpython.org/) --- CircuitPython firmware downloads
+- [GDB Remote Serial Protocol](https://sourceware.org/gdb/current/onlinedocs/gdb.html/Remote-Protocol.html) --- RSP command reference
+- [UF2 Specification](https://github.com/microsoft/uf2) --- UF2 format and family IDs

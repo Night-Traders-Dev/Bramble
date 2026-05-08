@@ -1,0 +1,83 @@
+\documentclass[11pt,oneside,titlepage,numbers=noenddot,chapterprefix=true]{scrreprt}
+
+% --- Essential Pandoc Table & Layout Packages ---
+\usepackage{array}     % Required for table column alignment
+\usepackage{calc}      % Required for table width calculations (\real)
+\usepackage{longtable} % Required for multi-page tables
+\usepackage{booktabs}  % Required for professional table lines
+\usepackage{graphicx}  % Required for images
+\usepackage{xcolor}
+\usepackage{geometry}
+\geometry{letterpaper, margin=1in, bindingoffset=0.25in}
+
+% --- Force tables to respect text width ---
+\usepackage{tabularx}
+\renewcommand{\arraystretch}{1.3}  % More vertical space in table rows
+
+% --- Core Typography ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setmonofont[Scale=0.85]{DejaVu Sans Mono}
+
+% --- Allow line breaks in code within tables ---
+\usepackage{upquote}
+
+% --- Missing Pandoc Macros ---
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+
+% --- Colors ---
+\definecolor{primary}{HTML}{2E4053}
+\definecolor{secondary}{HTML}{1A5276}
+
+% --- KOMA-Script Styling ---
+\setkomafont{chapter}{\color{primary}\sffamily\bfseries\Huge}
+\setkomafont{chapterprefix}{\color{primary}\sffamily\bfseries\Large}
+\setkomafont{section}{\color{secondary}\sffamily\bfseries\LARGE}
+\setkomafont{subsection}{\color{secondary}\sffamily\bfseries\Large}
+
+\RedeclareSectionCommand[
+  beforeskip=-1sp,
+  afterskip=2\baselineskip
+]{chapter}
+
+% --- Header/Footer ---
+\usepackage{scrlayer-scrpage}
+\pagestyle{scrheadings}
+\clearpairofpagestyles
+\ohead{\headmark}
+\ofoot{\pagemark}
+\setkomafont{pageheadfoot}{\small\sffamily\color{gray}}
+
+% --- Syntax Highlighting ---
+$if(highlighting-macros)$
+$highlighting-macros$
+$endif$
+
+% --- Hyperlinks ---
+\usepackage[colorlinks=true, linkcolor=secondary, urlcolor=secondary]{hyperref}
+
+\title{$title$}
+\author{$author$}
+\date{$date$}
+
+\begin{document}
+
+$if(title)$
+\maketitle
+$endif$
+
+$if(toc)$
+{
+  \hypersetup{linkcolor=black}
+  \tableofcontents
+  \newpage
+}
+$endif$
+
+$body$
+
+\end{document}

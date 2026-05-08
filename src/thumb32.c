@@ -858,6 +858,14 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
     /* Group 11110: F0xx-F7xx                                              */
     /* ------------------------------------------------------------------ */
     if (top5 == 0x1E) {
+        /* Check for VFP/NEON instructions (M33 FPU) */
+        if ((upper & 0xEF00) == 0xEE00 || (upper & 0xEF00) == 0xED00) {
+            /* VFP/NEON stubs: skip and return 1 to avoid HardFault */
+            if (cpu.debug_enabled)
+                fprintf(stderr, "[T32] FPU instruction stub PC=0x%08X upper=0x%04X lower=0x%04X\n", pc, upper, lower);
+            return 1;
+        }
+
         /* Check MSR/MRS/barriers first: they have lower bit[15]=1 and would
          * otherwise be misidentified as branches (e.g. MSR F380 8808). */
         if (t32_misc(pc, upper, lower)) return 1;

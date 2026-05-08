@@ -2,24 +2,24 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.42.0
+## Current Status: v0.44.0
 
-300 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with picobin boot — MicroPython Pico 2 RISC-V loads and begins execution (416 instructions through boot code). **RP2350 ARM**: Complete Cortex-M33 mode (`-arch m33`). **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks.
+300 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, and Zcmp extensions. Boots MicroPython Pico 2 RISC-V and custom test firmware with UART output. **RP2350 ARM**: Complete Cortex-M33 mode (`-arch m33`). **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks.
 
 ### Coverage
 
 | Area | Status | Details |
 |------|--------|---------|
 | RP2040 CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
-| RP2350 RV | Complete | Hazard3: 93 RV32IMAC, Hazard3 CSRs, CLINT, SDK bootrom, icache, GDB, semihosting, stack protection |
+| RP2350 RV | Complete | Hazard3: 130+ instructions (RV32IMAC + Zba/Zbb/Zbs/Zcb/Zcmp), Hazard3 CSRs, CLINT, SDK bootrom, icache, GDB, semihosting |
 | RP2350 ARM | Complete | Cortex-M33 (`-arch m33`): full Thumb-2 via existing engine, BASEPRI, M33 CPUID, UF2 auto-detect |
 | RP2350 Peripherals | Complete | TICKS, POWMAN, QMI, OTP+data, BOOTRAM, TIMER1, PIO2, GLITCH, CORESIGHT, ACCESSCTRL, 48 GPIO, SIO |
 | Dual-Core | Complete | RP2040: host-threaded, WFI, FIFO, spinlocks, auto-launch. RP2350: cooperative dual-hart with CLINT + SIO mailbox launch |
 | Memory Map | 100% | RP2040: Flash + XIP + SRAM + ROM (16KB) + all peripherals. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals |
-| Boot | Complete | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash jump) |
+| Boot | Complete | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash jump), picobin IMAGE_DEF parser |
 | Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec direct/vectored, MRET, MIE/MPIE, Hazard3 ext IRQ routing |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`/`-clock 150`), ARMv6-M instruction costs, CLINT mtime, TIMER1 |
-| Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
+| Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`), architecture-aware registers |
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
 | WiFi | CYW43 (Pico W) | gSPI-over-PIO, TAP bridge with auto IP/NAT (`-wifi`, `-tap`) |

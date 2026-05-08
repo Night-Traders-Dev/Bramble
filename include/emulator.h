@@ -31,7 +31,7 @@
 #define FLASH_SIZE_2MB  (2 * 1024 * 1024)    /* RP2040: 2 MB XIP flash */
 #define FLASH_SIZE_4MB  (4 * 1024 * 1024)    /* RP2350: 4 MB XIP flash (Pico 2 default) */
 #define FLASH_SIZE_16MB (16 * 1024 * 1024)   /* RP2350: 16 MB max */
-#define FLASH_SIZE_MAX  FLASH_SIZE_4MB       /* Max static allocation */
+#define FLASH_SIZE_MAX  FLASH_SIZE_16MB      /* Max static allocation */
 #define FLASH_SIZE      FLASH_SIZE_2MB       /* Default (RP2040 compat) */
 #define RAM_BASE        0x20000000
 #define RAM_SIZE        (264 * 1024)         /* 264 KB on-chip SRAM */
@@ -113,6 +113,11 @@ typedef struct {
 } cpu_state_t;
 
 extern cpu_state_t cpu;
+
+/* RP2350 mode flags and peripheral state */
+extern int membus_rp2350_mode;
+extern void *membus_rp2350_periph;
+extern uint8_t *rp2350_sram_ptr;
 
 /* ========================================================================
  * Dual-Core Configuration
@@ -366,6 +371,7 @@ int fifo_try_push(int core_id, uint32_t val);     /* Non-blocking write */
 #define UF2_FAMILY_RP2040       0xE48BFF56
 #define UF2_FAMILY_RP2350_ARM   0xE48BFF59
 #define UF2_FAMILY_RP2350_RV    0xE48BFF5A
+#define UF2_FAMILY_RP2350_ABS   0xE48BFF57
 #define UF2_FLAG_FAMILY_PRESENT 0x00002000
 
 /* Detected firmware architecture (set by loaders) */

@@ -53,6 +53,7 @@ static const char *family_id_name(uint32_t id) {
     case UF2_FAMILY_RP2040:     return "RP2040 (Cortex-M0+)";
     case UF2_FAMILY_RP2350_ARM: return "RP2350 (Cortex-M33)";
     case UF2_FAMILY_RP2350_RV:  return "RP2350 (Hazard3 RISC-V)";
+    case UF2_FAMILY_RP2350_ABS: return "RP2350 (Absolute)";
     default:                    return "Unknown";
     }
 }
@@ -76,18 +77,10 @@ int load_uf2(const char *filename) {
         blocks_total++;
 
         /* DEBUG: Print block info */
-        fprintf(stderr, "[LOADER] Block %d: magic0=0x%08X magic1=0x%08X target=0x%08X size=%u\n",
-               blocks_total, block.magic_start0, block.magic_start1,
-               block.target_addr, block.payload_size);
-
-        if (block.payload_size > 0) {
-            uint32_t w0, w1, w2, w3;
-            memcpy(&w0, &block.data[0], 4);
-            memcpy(&w1, &block.data[4], 4);
-            memcpy(&w2, &block.data[8], 4);
-            memcpy(&w3, &block.data[12], 4);
-            fprintf(stderr, "[LOADER] First 16 bytes of payload: %08X %08X %08X %08X\n",
-                   w0, w1, w2, w3);
+        if (blocks_total == 1) {
+            fprintf(stderr, "[LOADER] Block %d: magic0=0x%08X magic1=0x%08X target=0x%08X size=%u\n",
+                   blocks_total, block.magic_start0, block.magic_start1,
+                   block.target_addr, block.payload_size);
         }
 
         /* Validate ALL UF2 magic numbers */
@@ -95,25 +88,33 @@ int load_uf2(const char *filename) {
             block.magic_start1 != UF2_MAGIC_START1 ||
             block.magic_end != UF2_MAGIC_END) {
             fprintf(stderr, "[LOADER] WARNING: Block %d has invalid magic numbers\n", blocks_total);
-            fprintf(stderr, "[LOADER] Expected: 0x%08X 0x%08X 0x%08X\n",
-                   UF2_MAGIC_START0, UF2_MAGIC_START1, UF2_MAGIC_END);
-            fprintf(stderr, "[LOADER] Got:      0x%08X 0x%08X 0x%08X\n",
-                   block.magic_start0, block.magic_start1, block.magic_end);
             continue;
         }
 
-        /* Detect family ID from first valid block */
-        if (!family_detected && (block.flags & UF2_FLAG_FAMILY_PRESENT)) {
-            family_id = block.file_size;
-            family_detected = 1;
-            fprintf(stderr, "[LOADER] UF2 family ID: 0x%08X (%s)\n",
-                    family_id, family_id_name(family_id));
+        /* Detect family ID from first valid block that has it */
+        if ((block.flags & UF2_FLAG_FAMILY_PRESENT)) {
+            uint32_t current_family = block.file_size;
+            
+            /* If we haven't detected an architecture yet, or if we previously 
+             * only saw an ABSOLUTE block but now see a specific arch block, update. */
+            if (!family_detected || (family_id == UF2_FAMILY_RP2350_ABS && current_family != UF2_FAMILY_RP2350_ABS)) {
+                family_id = current_family;
+                family_detected = 1;
+                fprintf(stderr, "[LOADER] UF2 family ID: 0x%08X (%s)\n",
+                        family_id, family_id_name(family_id));
 
-            switch (family_id) {
-            case UF2_FAMILY_RP2040:     detected_arch = FW_ARCH_ARM_M0P; break;
-            case UF2_FAMILY_RP2350_ARM: detected_arch = FW_ARCH_ARM_M33; break;
-            case UF2_FAMILY_RP2350_RV:  detected_arch = FW_ARCH_RV32;    break;
-            default:                    detected_arch = FW_ARCH_UNKNOWN;  break;
+                switch (family_id) {
+                case UF2_FAMILY_RP2040:     detected_arch = FW_ARCH_ARM_M0P; break;
+                case UF2_FAMILY_RP2350_ARM: detected_arch = FW_ARCH_ARM_M33; break;
+                case UF2_FAMILY_RP2350_RV:  detected_arch = FW_ARCH_RV32;    break;
+                case UF2_FAMILY_RP2350_ABS: 
+                    /* Absolute blocks don't imply an architecture on their own,
+                     * but if it's the only one we see, we might need a fallback.
+                     * However, most RP2350 UF2s start with an Absolute block
+                     * and then follow with the actual code blocks. */
+                     break;
+                default:                    detected_arch = FW_ARCH_UNKNOWN;  break;
+                }
             }
         }
 

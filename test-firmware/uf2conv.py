@@ -57,8 +57,8 @@ class UF2File:
                 uf2_block[0:4] = uint32_to_bytes_le(UF2_MAGIC_START0)
                 uf2_block[4:8] = uint32_to_bytes_le(UF2_MAGIC_START1)
                 
-                # Flags
-                uf2_block[8:12] = uint32_to_bytes_le(0x00000000)
+                # Flags (Family ID present = 0x2000)
+                uf2_block[8:12] = uint32_to_bytes_le(0x00002000)
                 
                 # Target address
                 uf2_block[12:16] = uint32_to_bytes_le(block['target_addr'])

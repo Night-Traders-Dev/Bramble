@@ -1,18 +1,18 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.41.0
+## Current State: v0.44.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | RP2040 CPU | 65+ Thumb-1 | Full ARMv6-M instruction set + O(1) dispatch + JIT |
-| RP2350 RV | Complete | Hazard3: 93 RV32IMAC, Hazard3 CSRs, CLINT, SDK bootrom, icache, GDB, semihosting, stack protection |
+| RP2350 RV | Complete | Hazard3: 130+ instructions (RV32IMAC + Zba/Zbb/Zbs/Zcb/Zcmp), Hazard3 CSRs, CLINT, SDK bootrom, icache, GDB, semihosting |
 | RP2350 ARM | Complete | Cortex-M33 (`-arch m33`): full Thumb-2 engine reuse, BASEPRI, M33 CPUID (0x410FD210), UF2 auto-detect |
 | RP2350 Peripherals | Complete | TICKS, POWMAN, QMI, OTP+data, BOOTRAM, TIMER1, PIO2, 48 GPIO, GLITCH, CORESIGHT, ACCESSCTRL |
 | Memory Map | 100% | RP2040: all regions. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals + SIO with hart launch |
 | Peripherals | 100% | All 30 RP2040 peripherals + 11 RP2350-specific peripherals |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
 | Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec, MRET, CLINT, Hazard3 ext IRQ |
-| Boot | 100% | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash entry) |
+| Boot | 100% | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash entry), picobin parser |
 | Firmware | MicroPython + CircuitPython + littleOS | RP2040 firmware + RP2350 RV32 UF2/ELF auto-detection |
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
@@ -21,7 +21,14 @@
 | Dev Tools | 18 tools | Semihosting (ARM+RV), coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Validation | 300 tests | 276 RP2040 + 20 RISC-V + 4 M33 tests |
 
-### Recent Changes (v0.41.0)
+### Recent Changes (v0.44.0)
+
+- **Hazard3 ISA Extensions**: Implemented Zba, Zbb, Zbs, Zcb, and Zcmp extensions. MicroPython Pico 2 RISC-V now executes through boot and initializes peripherals.
+- **Dynamic Dual-Core SRAM**: Fixed `mem_read32_dual` and `mem_write32_dual` to dynamically respect RP2350's 520KB SRAM size.
+- **RP2350 ARM Boot Fixes**: Enabled ROM area access and TIMER1 ticking for Cortex-M33 firmware.
+- **UF2 Loader Improvements**: Added support for RP2350 "Absolute" family ID (`0xE48BFF57`) and increased flash bounds to 16MB.
+
+### Previous (v0.41.0)
 
 - **Cortex-M33 mode** (`-arch m33`): Full Thumb-2 engine reuse with M33 overlay (BASEPRI, CPUID). UF2 family ID auto-detection.
 - **BASEPRI register**: MSR/MRS support for SYSm 0x11 (BASEPRI) and 0x12 (BASEPRI_MAX, write-if-greater).

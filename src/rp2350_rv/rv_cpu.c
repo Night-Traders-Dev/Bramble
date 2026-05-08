@@ -241,6 +241,10 @@ void rv_trap_enter(rv_cpu_state_t *cpu, uint32_t cause, uint32_t tval) {
     cpu->csr[CSR_MCAUSE] = cause;
     cpu->csr[CSR_MTVAL] = tval;
 
+    /* Always log traps to stderr for debugging */
+    fprintf(stderr, "[RV-CORE%d] TRAP: cause=0x%08X mepc=0x%08X tval=0x%08X -> handler=0x%08X\n",
+            cpu->hart_id, cause, cpu->csr[CSR_MEPC], tval, cpu->csr[CSR_MTVEC] & ~3u);
+
     /* Save and clear MIE */
     uint32_t mstatus = cpu->csr[CSR_MSTATUS];
     if (mstatus & MSTATUS_MIE)
@@ -366,11 +370,24 @@ decode:
         switch (quad) {
         case 0: /* Quadrant 0 */
             switch (funct3c) {
-            case 0: { /* C.ADDI4SPN: addi rd', x2, nzuimm */
+            case 0: { /* C.ADDI4SPN: addi rd', x2, nzuimm / Zcb: C.LBU, C.LHU, C.SB, C.SH, C.LH */
                 uint32_t nzuimm = ((ci >> 1) & 0x3C0) | ((ci >> 7) & 0x30)
                                 | ((ci >> 2) & 0x8) | ((ci >> 4) & 0x4);
-                if (nzuimm == 0) goto c_illegal;
-                rv_write_rd(cpu, CRD_P(ci), cpu->x[2] + nzuimm);
+                if (nzuimm != 0) {
+                    rv_write_rd(cpu, CRD_P(ci), cpu->x[2] + nzuimm);
+                } else {
+                    /* Zcb: C.LBU, C.LHU, C.SB, C.SH, C.LH (rd=0 space) */
+                    uint32_t rs1_p = (ci >> 7) & 0x7;
+                    uint32_t rs2_p = (ci >> 2) & 0x7;
+                    uint32_t op = (ci >> 5) & 0x3;
+                    uint32_t addr = cpu->x[8 + rs1_p];
+                    switch (op) {
+                    case 0: cpu->x[8 + rs2_p] = rv_read8(cpu, addr); break; /* C.LBU */
+                    case 1: cpu->x[8 + rs2_p] = rv_read16(cpu, addr); break; /* C.LHU */
+                    case 2: cpu->x[8 + rs2_p] = (uint32_t)(int32_t)(int16_t)rv_read16(cpu, addr); break; /* C.LH */
+                    default: goto c_illegal;
+                    }
+                }
                 break;
             }
             case 2: { /* C.LW: lw rd', offset(rs1') */
@@ -384,10 +401,24 @@ decode:
                 uint32_t off = ((ci >> 7) & 0x38) | ((ci >> 4) & 0x4) | ((ci << 1) & 0x40);
                 uint32_t addr = cpu->x[CRS1_P(ci)] + off;
                 if (addr & 3) { rv_trap_enter(cpu, MCAUSE_STORE_MISALIGNED, addr); return 0; }
-                rv_write32(cpu, addr, cpu->x[CRD_P(ci)]);
+                rv_write32(cpu, addr, cpu->x[CRS2_P(ci)]);
                 break;
             }
-            default: goto c_illegal;
+            default: {
+                /* Zcb: C.SB, C.SH */
+                if (funct3c == 1) { /* C.SB */
+                    uint32_t rs1_p = (ci >> 7) & 0x7;
+                    uint32_t rs2_p = (ci >> 2) & 0x7;
+                    rv_write8(cpu, cpu->x[8 + rs1_p], (uint8_t)cpu->x[8 + rs2_p]);
+                    break;
+                } else if (funct3c == 3) { /* C.SH */
+                    uint32_t rs1_p = (ci >> 7) & 0x7;
+                    uint32_t rs2_p = (ci >> 2) & 0x7;
+                    rv_write16(cpu, cpu->x[8 + rs1_p], (uint16_t)cpu->x[8 + rs2_p]);
+                    break;
+                }
+                goto c_illegal;
+            }
             }
             break;
 
@@ -468,7 +499,18 @@ decode:
                         case 3: cpu->x[rd] = cpu->x[rd] & cpu->x[rs2]; break; /* C.AND */
                         }
                     } else {
-                        goto c_illegal;
+                        /* Zcb: C.NOT, C.MUL, C.SEXT.B, C.SEXT.H, C.ZEXT.B, C.ZEXT.H */
+                        uint32_t op = (ci >> 2) & 0x7;
+                        uint32_t val = cpu->x[rd];
+                        switch (op) {
+                        case 0: cpu->x[rd] = ~val; break; /* C.NOT */
+                        case 1: cpu->x[rd] = (uint32_t)(int32_t)(int8_t)val; break; /* C.SEXT.B */
+                        case 2: cpu->x[rd] = (uint32_t)(int32_t)(int16_t)val; break; /* C.SEXT.H */
+                        case 3: cpu->x[rd] = val & 0xFF; break; /* C.ZEXT.B */
+                        case 4: cpu->x[rd] = val & 0xFFFF; break; /* C.ZEXT.H */
+                        case 5: cpu->x[rd] = cpu->x[rd] * cpu->x[rs2]; break; /* C.MUL */
+                        default: goto c_illegal;
+                        }
                     }
                     break;
                 }
@@ -564,9 +606,51 @@ decode:
                         cpu->x[0] = 0;
                         cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
                         return 0;
+                    } else if (rd == 0) {
+                        /* Zcmp: cm.push, cm.pop, cm.popret, cm.popretz */
+                        uint32_t op = (ci >> 8) & 0x7;
+                        if (op == 6) { /* cm.push */
+                            uint32_t rlist = (ci >> 4) & 0xF;
+                            uint32_t sp_adj = (ci >> 2) & 0x3;
+                            if (rlist >= 4) {
+                                uint32_t regs[] = {1, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27};
+                                uint32_t num_to_push = rlist - 3;
+                                for (uint32_t i = 0; i < num_to_push && i < 13; i++) {
+                                    cpu->x[2] -= 4;
+                                    rv_write32(cpu, cpu->x[2], cpu->x[regs[i]]);
+                                }
+                            }
+                            cpu->x[2] -= (sp_adj * 16);
+                        } else if (op == 7) { /* cm.pop / cm.popret */
+                            uint32_t rlist = (ci >> 4) & 0xF;
+                            uint32_t sp_adj = (ci >> 2) & 0x3;
+                            uint32_t ret = (ci & 0x3); /* 0: pop, 1: popret, 2: popretz */
+                            if (rlist >= 4) {
+                                uint32_t regs[] = {1, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27};
+                                uint32_t num_to_pop = rlist - 3;
+                                uint32_t current_sp = cpu->x[2] + (sp_adj * 16);
+                                uint32_t total_sp = current_sp + (num_to_pop * 4);
+                                for (uint32_t i = 0; i < num_to_pop && i < 13; i++) {
+                                    cpu->x[regs[i]] = rv_read32(cpu, current_sp);
+                                    current_sp += 4;
+                                }
+                                cpu->x[2] = total_sp;
+                            } else {
+                                cpu->x[2] += (sp_adj * 16);
+                            }
+                            if (ret == 1 || ret == 2) {
+                                if (ret == 2) cpu->x[10] = 0; /* a0 = 0 */
+                                cpu->pc = cpu->x[1];
+                                cpu->x[0] = 0;
+                                cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                                return 0;
+                            }
+                        } else {
+                            goto c_illegal;
+                        }
                     } else {
                         /* C.ADD: add rd, rd, rs2 */
-                        if (rd != 0) cpu->x[rd] = cpu->x[rd] + cpu->x[rs2];
+                        cpu->x[rd] = cpu->x[rd] + cpu->x[rs2];
                     }
                 }
                 break;
@@ -584,9 +668,14 @@ decode:
 
         default:
         c_illegal:
-            if (cpu->debug_enabled)
+            if (cpu->debug_enabled) {
                 fprintf(stderr, "[RV-CORE%d] ILLEGAL C-INSTRUCTION at PC=0x%08X: 0x%04X\n",
                         cpu->hart_id, pc, ci);
+                fprintf(stderr, "  x0=%08x ra=%08x sp=%08x gp=%08x tp=%08x t0=%08x t1=%08x t2=%08x\n",
+                        cpu->x[0], cpu->x[1], cpu->x[2], cpu->x[3], cpu->x[4], cpu->x[5], cpu->x[6], cpu->x[7]);
+                fprintf(stderr, "  s0=%08x s1=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x\n",
+                        cpu->x[8], cpu->x[9], cpu->x[10], cpu->x[11], cpu->x[12], cpu->x[13], cpu->x[14], cpu->x[15]);
+            }
             rv_trap_enter(cpu, MCAUSE_ILLEGAL_INSTR, ci);
             return 0;
         }
@@ -766,16 +855,56 @@ decode:
         case 4: result = src ^ (uint32_t)imm; break;                    /* XORI */
         case 6: result = src | (uint32_t)imm; break;                    /* ORI */
         case 7: result = src & (uint32_t)imm; break;                    /* ANDI */
-        case 1: /* SLLI */
-            if (funct7 != 0) goto illegal;
-            result = src << (rs2 & 0x1F);
+        case 1: /* SLLI / Zbs: BSETI, BCLRI, BINVI */
+            if (funct7 == 0x00) {
+                result = src << (rs2 & 0x1F);               /* SLLI */
+            } else if (funct7 == 0x14) {
+                result = src | (1u << (rs2 & 0x1F));        /* BSETI */
+            } else if (funct7 == 0x24) {
+                result = src & ~(1u << (rs2 & 0x1F));       /* BCLRI */
+            } else if (funct7 == 0x34) {
+                result = src ^ (1u << (rs2 & 0x1F));        /* BINVI */
+            } else if (funct7 == 0x30) {
+                /* Zbb: CLZ, CTZ, CPOP, SEXT.B, SEXT.H */
+                switch (rs2) {
+                case 0x00: /* CLZ */
+                    if (src == 0) result = 32;
+                    else result = (uint32_t)__builtin_clz(src);
+                    break;
+                case 0x01: /* CTZ */
+                    if (src == 0) result = 32;
+                    else result = (uint32_t)__builtin_ctz(src);
+                    break;
+                case 0x02: /* CPOP */
+                    result = (uint32_t)__builtin_popcount(src);
+                    break;
+                case 0x04: /* SEXT.B */
+                    result = (uint32_t)(int32_t)(int8_t)src;
+                    break;
+                case 0x05: /* SEXT.H */
+                    result = (uint32_t)(int32_t)(int16_t)src;
+                    break;
+                default:
+                    if (cpu->debug_enabled) fprintf(stderr, "[RV-CORE%d] Illegal Zbb rs2=0x%x\n", cpu->hart_id, rs2);
+                    goto illegal;
+                }
+            } else {
+                if (cpu->debug_enabled) fprintf(stderr, "[RV-CORE%d] Illegal f3=1 f7=0x%x\n", cpu->hart_id, funct7);
+                goto illegal;
+            }
             break;
-        case 5: /* SRLI / SRAI */
+        case 5: /* SRLI / SRAI / Zbs: BEXTI / Zbb: RORI */
             if (funct7 == 0x00)
                 result = src >> (rs2 & 0x1F);               /* SRLI */
             else if (funct7 == 0x20)
                 result = (uint32_t)((int32_t)src >> (rs2 & 0x1F));  /* SRAI */
-            else goto illegal;
+            else if (funct7 == 0x24)
+                result = (src >> (rs2 & 0x1F)) & 1;         /* BEXTI */
+            else if (funct7 == 0x30) {
+                /* Zbb: RORI */
+                uint32_t sh = rs2 & 0x1F;
+                result = (src >> sh) | (src << (32 - sh));
+            } else goto illegal;
             break;
         default: goto illegal;
         }
@@ -793,8 +922,34 @@ decode:
         uint32_t b = cpu->x[rs2];
         uint32_t result;
 
-        if (funct7 == 0x01) {
-            /* M extension (Phase 2) */
+        if (funct7 == 0x10) { /* Zba: sh1add, sh2add, sh3add */
+            switch (funct3) {
+            case 2: result = cpu->x[rs2] + (a << 1); break; /* SH1ADD */
+            case 4: result = cpu->x[rs2] + (a << 2); break; /* SH2ADD */
+            case 6: result = cpu->x[rs2] + (a << 3); break; /* SH3ADD */
+            default: goto illegal;
+            }
+        } else if (funct7 == 0x05) { /* Zbb: min, max, minu, maxu */
+            if (funct3 == 4) result = (uint32_t)((int32_t)a < (int32_t)b ? a : b); /* MIN */
+            else if (funct3 == 5) result = a < b ? a : b; /* MINU */
+            else if (funct3 == 6) result = (uint32_t)((int32_t)a > (int32_t)b ? a : b); /* MAX */
+            else if (funct3 == 7) result = a > b ? a : b; /* MAXU */
+            else goto illegal;
+        } else if (funct7 == 0x24) { /* Zbs: BCLR, BEXT */
+            uint32_t sh = b & 0x1F;
+            if (funct3 == 1) result = a & ~(1u << sh);      /* BCLR */
+            else if (funct3 == 5) result = (a >> sh) & 1;   /* BEXT */
+            else goto illegal;
+        } else if (funct7 == 0x14) { /* Zbs: BSET */
+            uint32_t sh = b & 0x1F;
+            if (funct3 == 1) result = a | (1u << sh);       /* BSET */
+            else goto illegal;
+        } else if (funct7 == 0x34) { /* Zbs: BINV */
+            uint32_t sh = b & 0x1F;
+            if (funct3 == 1) result = a ^ (1u << sh);       /* BINV */
+            else goto illegal;
+        } else if (funct7 == 0x01) {
+            /* M extension */
             switch (funct3) {
             case 0: result = a * b; break;                              /* MUL */
             case 1: result = (uint32_t)((int64_t)(int32_t)a * (int64_t)(int32_t)b >> 32); break; /* MULH */
@@ -833,9 +988,33 @@ decode:
         } else if (funct7 == 0x20) {
             switch (funct3) {
             case 0: result = a - b; break;                              /* SUB */
-            case 5: result = (uint32_t)((int32_t)a >> (b & 0x1F)); break; /* SRA */
+            case 1: { /* Zbb: ROL */
+                uint32_t sh = b & 0x1F;
+                result = (a << sh) | (a >> (32 - sh));
+                break;
+            }
+            case 4: result = a & ~b; break;                             /* ANDN */
+            case 5: {
+                if (rs2 == 0x07 && rs1 == 0x00 && funct3 == 5) { /* Zbb: ORC.B */
+                    result = 0;
+                    if (a & 0x000000FF) result |= 0x000000FF;
+                    if (a & 0x0000FF00) result |= 0x0000FF00;
+                    if (a & 0x00FF0000) result |= 0x00FF0000;
+                    if (a & 0xFF000000) result |= 0xFF000000;
+                } else {
+                    result = (uint32_t)((int32_t)a >> (b & 0x1F));      /* SRA */
+                }
+                break;
+            }
+            case 6: result = a | ~b; break;                             /* ORN */
+            case 7: result = a ^ ~b; break;                             /* XNOR */
             default: goto illegal;
             }
+        } else if (funct7 == 0x30 && funct3 == 1) { /* Zbb: ROR */
+            uint32_t sh = b & 0x1F;
+            result = (a >> sh) | (a << (32 - sh));
+        } else if (funct7 == 0x20 && funct3 == 5 && rs2 == 0x18) { /* Zbb: REV8 */
+            result = __builtin_bswap32(a);
         } else {
             goto illegal;
         }
@@ -1018,9 +1197,14 @@ decode:
     return 0;
 
 illegal:
-    if (cpu->debug_enabled)
+    if (cpu->debug_enabled) {
         fprintf(stderr, "[RV-CORE%d] ILLEGAL INSTRUCTION at PC=0x%08X: 0x%08X\n",
                 cpu->hart_id, pc, instr);
+        fprintf(stderr, "  x0=%08x ra=%08x sp=%08x gp=%08x tp=%08x t0=%08x t1=%08x t2=%08x\n",
+                cpu->x[0], cpu->x[1], cpu->x[2], cpu->x[3], cpu->x[4], cpu->x[5], cpu->x[6], cpu->x[7]);
+        fprintf(stderr, "  s0=%08x s1=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x\n",
+                cpu->x[8], cpu->x[9], cpu->x[10], cpu->x[11], cpu->x[12], cpu->x[13], cpu->x[14], cpu->x[15]);
+    }
     rv_trap_enter(cpu, MCAUSE_ILLEGAL_INSTR, instr);
     return 0;
 }

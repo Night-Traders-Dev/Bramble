@@ -1679,21 +1679,18 @@ uint32_t mem_read32(uint32_t addr) {
         return tbman_read(addr & 0xFFF);
     }
 
-    /* RP2350-specific peripherals */
-    if (trng_match(addr)) return trng_read(addr & 0xFFF);
-    if (sha256_match(addr)) return sha256_read(addr & 0xFFF);
-    if (otp_match(addr)) return otp_read(addr & 0xFFF);
-    if (hstx_match(addr)) return hstx_read(addr & 0xFFF);
-    if (ticks_match(addr)) return ticks_read(addr & 0xFFF);
-
-    /* RP2350 M33 mode: route RP2350-specific peripherals */
+    /* RP2350 M33 mode: route RP2350-specific peripherals FIRST */
     if (membus_rp2350_mode && get_rp2350_periph()) {
         if (rp2350_periph_match(addr))
             return rp2350_periph_read32(get_rp2350_periph(), addr);
     }
 
-    /* ROM area reads in RP2350 mode */
-    if (addr < 0x00008000 && membus_rp2350_mode) return 0;
+    /* Shared stubs */
+    if (trng_match(addr)) return trng_read(addr & 0xFFF);
+    if (sha256_match(addr)) return sha256_read(addr & 0xFFF);
+    if (otp_match(addr)) return otp_read(addr & 0xFFF);
+    if (hstx_match(addr)) return hstx_read(addr & 0xFFF);
+    if (ticks_match(addr)) return ticks_read(addr & 0xFFF);
 
     /* Stub peripheral reads: return 0 for now. */
     if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
@@ -1829,9 +1826,9 @@ void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
         return;  /* Flash writes ignored */
     }
 
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        uint32_t offset = addr - RAM_BASE;
-        memcpy(&cpu.ram[offset], &val, 4);
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
+        memcpy(&get_ram()[offset], &val, 4);
         return;
     }
 
@@ -1887,10 +1884,10 @@ uint32_t mem_read32_dual(int core_id, uint32_t addr) {
         return val;
     }
 
-    if (addr >= RAM_BASE && addr < RAM_BASE + RAM_SIZE) {
-        uint32_t offset = addr - RAM_BASE;
+    if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
+        uint32_t offset = addr - active_ram_base;
         uint32_t val = 0;
-        memcpy(&val, &cpu.ram[offset], 4);
+        memcpy(&val, &get_ram()[offset], 4);
         return val;
     }
 

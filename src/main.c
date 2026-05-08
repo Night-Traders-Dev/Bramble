@@ -1087,6 +1087,12 @@ skip_fuse:
         rv_cores[0].icache = &rv_icache;
         rv_cores[1].icache = &rv_icache;
 
+        /* Enable debug if requested */
+        if (debug_mode) {
+            rv_cores[0].debug_enabled = 1;
+            rv_cores[1].debug_enabled = 1;
+        }
+
         /* Scan for picobin IMAGE_DEF block to get entry point */
         picobin_info_t pbi = picobin_scan(cpu.flash, 4096);
         if (pbi.found && pbi.entry_pc != 0) {

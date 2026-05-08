@@ -31,7 +31,7 @@ typedef struct {
 
 static inline void rv_icache_init(rv_icache_t *cache) {
     for (uint32_t i = 0; i < RV_ICACHE_SIZE; i++) {
-        cache->entries[i].tag = 0;
+        cache->entries[i].tag = 0xFFFFFFFF;
         cache->entries[i].instr = 0;
         cache->entries[i].size = 0;
     }
