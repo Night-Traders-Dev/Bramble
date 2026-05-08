@@ -20,12 +20,12 @@ subsystem, networking stack, and developer tools.
 
 | Metric | Value |
 |--------|-------|
-| Source lines | 22,663 (42 `.c` files) |
-| Header files | 40 `.h` files |
-| Test suite | 300 tests across 57 categories |
+| Source lines | 34,841 (45 `.c` files) |
+| Header files | 42 `.h` files |
+| Test suite | 319 tests across 60+ categories |
 | Compiler warnings | Zero (`-Wall -Wextra -pedantic`) |
 | Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350) |
-| Version | 0.43.0 |
+| Version | 0.45.0 |
 
 ## 1.2 Design Goals
 
@@ -37,7 +37,7 @@ subsystem, networking stack, and developer tools.
 
 4. **Interactive debugging.** The integrated GDB stub supports breakpoints, watchpoints, conditional breakpoints, dual-core thread selection, and architecture-aware register layouts (17 registers for ARM, 33 for RISC-V).
 
-5. **Multi-device and network support.** UART-to-TCP bridging, Unix socket IPC between Bramble instances, SPI-attached SD card and eMMC, and CYW43 WiFi emulation with TAP bridging enable complex system-level testing.
+5. **Multi-device and network support.** UART-to-TCP bridging, virtual network bus with TAP bridge and multi-instance Ethernet mesh, W5500 live host sockets, Unix socket IPC between Bramble instances, SPI-attached SD card and eMMC, CYW43 WiFi emulation with TAP bridging, and a software-defined device framework enable complex system-level testing.
 
 6. **Developer tooling.** 18 built-in tools: semihosting, code coverage, hotspot analysis, instruction trace, call graph, VCD waveform export, IRQ latency measurement, stack checking, bus logging, scripted I/O, expected output matching, memory watch, fault injection, cycle profiling, and memory heatmap.
 
@@ -60,7 +60,8 @@ subsystem, networking stack, and developer tools.
 | **ARM performance** | 64K icache + optional 16384-entry JIT (`-jit`, ~1.5x speedup) |
 | **RISC-V performance** | 64K icache for flash/ROM; 99.97%+ hit rates observed |
 | **Storage** | Flash persistence, FUSE mount, SPI SD card (SDHC), SPI eMMC, FAT12/FAT16 |
-| **Networking** | UART-to-TCP, Unix socket wire protocol, CYW43 WiFi gSPI + TAP bridge |
+| **Networking** | UART-to-TCP, Unix socket wire protocol, CYW43 WiFi gSPI + TAP bridge, VNet Ethernet bus, W5500 live sockets, multi-instance mesh |
+| **Software-Defined Devices** | Pluggable virtual I2C/SPI peripherals (TMP102 thermometer built-in) |
 | **Output model** | Firmware output (UART TX, USB CDC) on `stdout`; all diagnostics on `stderr` |
 
 ## 1.4 Execution Modes
@@ -298,7 +299,7 @@ ctest --test-dir build --output-on-failure
 ./build/bramble_tests
 ```
 
-The test suite contains **300 tests** organized into 57 categories:
+The test suite contains **319 tests** organized into 60+ categories:
 
 | Category Group | Tests | Description |
 |----------------|-------|-------------|
@@ -309,6 +310,7 @@ The test suite contains **300 tests** organized into 57 categories:
 | Dual-core tests | ~10 | RAM isolation, shared flash, context bind/unbind, spinlocks, FIFO, core pool, WFI, wire protocol |
 | RISC-V tests | 20 | CPU init/reset, ADDI, LUI, ADD/SUB, BEQ, SW/LW, MUL/DIV, JAL/JALR, C.LI/C.ADDI, CSR mhartid, trap enter/return, CLINT timer/interrupt, membus SRAM, bootrom init, icache, peripherals (BOOTRAM, TIMER1, Hazard3 CSRs) |
 | M33 tests | 4 | CPUID switching, BASEPRI read/write/BASEPRI_MAX, SDIV, MOVW |
+| Networking tests | 19 | VNet bus (init, ports, broadcast/unicast delivery, MAC gen, peer mesh), SDD (thermometer create/read/config, arg parse, unknown type), W5500 live (init, set-live, TCP/UDP open, close), wire ETH (frame relay, active check) |
 
 ## 2.4 Running Firmware
 
@@ -379,6 +381,16 @@ riscv32-unknown-elf-gdb firmware.elf -ex "target remote :3333"
 
 # SD card
 ./bramble firmware.uf2 -sdcard sdcard.img -sdcard-size 32
+
+# Virtual network: single-command internet bridge
+sudo ./bramble firmware.uf2 -net -stdin
+
+# Mesh two instances with virtual Ethernet
+./bramble fw1.uf2 -net-peer /tmp/vnet.sock   # Terminal 1
+./bramble fw2.uf2 -net-peer /tmp/vnet.sock   # Terminal 2
+
+# Attach software-defined thermometer
+./bramble firmware.uf2 -sdd thermometer:temp=37.5,addr=0x49
 ```
 
 ### Developer Tools
@@ -493,8 +505,13 @@ The firmware path **must** be the first argument. All options follow.
 | `-wire-uart0` | `<path>` | Wire UART0 to peer Bramble instance via Unix domain socket. First instance creates socket (listen), second connects (auto-negotiation). UART TX on one arrives as UART RX on other. |
 | `-wire-uart1` | `<path>` | Wire UART1 via Unix domain socket. |
 | `-wire-gpio` | `<path>` | Wire GPIO pin state via Unix domain socket. Pin changes propagated between instances. |
+| `-wire-eth` | `<path>` | Wire Ethernet frames via Unix domain socket. Uses extended framing (2-byte LE length prefix). |
 | `-wifi` | | Enable CYW43439 WiFi chip emulation (Pico W). gSPI protocol via PIO0 SM0 FIFO intercept. |
 | `-tap` | `<ifname>` | Bridge CYW43 WLAN frames to host TAP interface. Implies `-wifi`. Auto-configures 192.168.4.1/24, IP forwarding, NAT masquerade. Requires sudo. |
+| `-net` | | Create TAP interface `bramble0` + NAT for internet bridge. Auto-sudo. Works independently of `-wifi`. |
+| `-net-peer` | `<path>` | Mesh with another Bramble instance via Unix socket at the Ethernet level. |
+| `-net-live` | | Enable W5500 live host sockets (TCP/UDP). Implies `-net`. |
+| `-sdd` | `<type[:opts]>` | Attach a software-defined device. Types: `thermometer[:temp=25,i2c=0,addr=0x48]`. |
 
 ---
 

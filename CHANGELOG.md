@@ -1,5 +1,48 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.45.0] - 2026-05-08
+
+### Added - Virtual Networking, Software-Defined Devices, W5500 Live Sockets
+
+- **Virtual Network Bus (vnet)**: Central Ethernet frame routing layer (`src/vnet.c`, `include/vnet.h`). Device models (CYW43, W5500, SDDs) register as ports via `vnet_register_port()`. Frames routed between registered ports, TAP interface, and peer Bramble instances.
+- **Single-Command Internet Bridge** (`-net`): Creates TAP interface `bramble0`, assigns 192.168.7.1/24, enables IP forwarding and NAT masquerade in one step. Auto-sudo when needed.
+- **Multi-Instance Mesh** (`-net-peer <path>`): Unix socket peer connections with length-prefixed Ethernet frame relay. Multiple Bramble instances share the same virtual LAN.
+- **Wire Ethernet Relay** (`-wire-eth <path>`): `WIRE_MSG_ETH_FRAME` (0x04) message type extends the wire protocol with large-frame support (up to 1522 bytes). Uses extended framing: 4-byte header + 2-byte LE length + frame data.
+- **W5500 Live Networking** (`-net-live`): Socket commands (OPEN, CONNECT, LISTEN, SEND, RECV, CLOSE) create real host `AF_INET` TCP/UDP sockets. `w5500_poll()` accepts incoming connections, reads data into RX buffers, and detects disconnections with interrupt flag updates (CON, RECV, DISCON, SEND_OK).
+- **Software-Defined Device Framework** (`-sdd <type[:opts]>`): Pluggable virtual peripheral system (`src/sdd.c`, `include/sdd.h`). Devices define I2C/SPI/network callbacks and are auto-attached to configured buses upon registration.
+- **TMP102 Thermometer Device Model** (`src/sdd_thermo.c`): Reference SDD implementation. TMP102-compatible I2C temperature sensor with register-level emulation: temperature (12-bit, 0.0625°C resolution), config (0x60A0 default), T_LOW, T_HIGH. Configurable initial temperature.
+- **CLI argument parsing for SDDs**: `sdd_create_from_arg()` parses `type[:key=val,...]` syntax. Example: `-sdd thermometer:temp=37.5,i2c=1,addr=0x49`.
+- **MAC address generation**: `vnet_generate_mac()` produces deterministic locally-administered MAC addresses (02:BB:00:xx:xx:xx) indexed per device.
+
+### Changed
+
+- `include/wire.h` / `src/wire.c`: Added `WIRE_ETH_MAX_FRAME` (1522), `WIRE_MSG_ETH_FRAME` (0x04), `wire_send_eth_frame()`, `wire_eth_active()`. Extended `wire_process_rx()` with large-frame decode path.
+- `include/w5500.h` / `src/w5500.c`: Added `host_fd`, `host_listen_fd` per socket, `live` and `vnet_port` fields, `w5500_poll()`, `w5500_set_live()`. Socket commands create real host sockets when in live mode.
+- `src/main.c`: Added `-net`, `-net-peer`, `-net-live`, `-wire-eth`, `-sdd` CLI flags. Integrated `vnet_poll()`, `w5500_poll()`, `sdd_init()`/`sdd_cleanup()` into all three main loop variants and cleanup phase. Privilege escalation extended for vnet.
+- `CMakeLists.txt`: Added `vnet.c`, `sdd.c`, `sdd_thermo.c` to EMU_SOURCES. Version bumped 0.43.0 → 0.45.0.
+- `docs/ROADMAP.md`: Updated to v0.45.0 with 319 tests, new networking sections (6.5-6.8).
+
+### Tests
+
+- 319 tests passing (19 new). New categories: Virtual Network Bus (6), Software-Defined Devices (6), W5500 Live Networking (5), Wire Protocol ETH (2).
+
+---
+
+## [0.44.0] - 2026-04-15
+
+### Added - Hazard3 ISA Extensions, RP2350 Memory Fixes
+
+- **Hazard3 ISA Extensions**: Implemented Zba, Zbb, Zbs, Zcb, and Zcmp extensions. MicroPython Pico 2 RISC-V now executes through boot and initializes peripherals.
+- **Dynamic Dual-Core SRAM**: Fixed `mem_read32_dual` and `mem_write32_dual` to dynamically respect RP2350's 520KB SRAM size.
+- **RP2350 ARM Boot Fixes**: Enabled ROM area access and TIMER1 ticking for Cortex-M33 firmware.
+- **UF2 Loader Improvements**: Added support for RP2350 "Absolute" family ID (`0xE48BFF57`) and increased flash bounds to 16MB.
+
+### Tests
+
+- 300 tests passing, zero warnings.
+
+---
+
 ## [0.43.0] - 2026-03-21
 
 ### Added - littleOS RP2350 Boot Fixes (M33 520KB SRAM, RP2350 Peripheral Routing)

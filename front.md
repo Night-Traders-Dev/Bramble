@@ -16,7 +16,7 @@ The emulator supports **tri-architecture** execution:
 
 - **RP2040 Cortex-M0+** (ARMv6-M Thumb-1, 65+ instructions)
 - **RP2350 Cortex-M33** (ARMv8-M Mainline, full Thumb-2 ISA)
-- **RP2350 Hazard3 RISC-V** (RV32IMAC, 93 instructions)
+- **RP2350 Hazard3 RISC-V** (RV32IMAC + Zba/Zbb/Zbs/Zcb/Zcmp, 140+ instructions)
 
 Architecture is auto-detected from UF2 family ID, ELF machine type, or RP2350
 picobin IMAGE\_DEF blocks. All three architectures share a unified peripheral
@@ -26,4 +26,4 @@ This manual serves as the primary technical reference for the emulator's
 architecture, instruction set coverage, peripheral implementation, boot
 sequences, debugging facilities, and developer tooling.
 
-**Version 0.43.0** --- 300 tests, 22,663 source lines, zero compiler warnings.
+**Version 0.45.0** --- 319 tests, 34,841 source lines, zero compiler warnings.

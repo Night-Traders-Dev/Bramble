@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bramble includes comprehensive GPIO emulation for the RP2040's 30 GPIO pins, including SIO fast-path access, IO_BANK0/PADS_BANK0 register state, and NVIC-backed edge/level interrupt generation for processor 0.
+Bramble includes comprehensive GPIO emulation for the RP2040's 30 GPIO pins (expanded to 48 pins on RP2350), including SIO fast-path access, IO_BANK0/PADS_BANK0 register state, and NVIC-backed edge/level interrupt generation for processor 0.
 
 ## Implementation Details
 
@@ -10,7 +10,7 @@ Bramble includes comprehensive GPIO emulation for the RP2040's 30 GPIO pins, inc
 
 #### ✅ Fully Implemented
 
-- **30 GPIO pins** (GPIO 0-29)
+- **30 GPIO pins** on RP2040 (GPIO 0-29), **48 GPIO pins** on RP2350 (GPIO 0-47)
 - **SIO Fast GPIO Access**
   - Direct read/write via `SIO_GPIO_IN`, `SIO_GPIO_OUT`, `SIO_GPIO_OE`
   - Atomic set/clear/toggle operations (SET, CLR, XOR registers)
@@ -201,14 +201,14 @@ typedef struct {
     struct {
         uint32_t status;     /* Per-pin status */
         uint32_t ctrl;       /* Per-pin control */
-    } pins[30];
+    } pins[48];              /* 30 on RP2040, 48 on RP2350 */
     
-    uint32_t intr[4];        /* Interrupt status */
-    uint32_t proc0_inte[4];  /* Interrupt enable */
-    uint32_t proc0_intf[4];  /* Interrupt force */
-    uint32_t proc0_ints[4];  /* Interrupt status (computed) */
+    uint32_t intr[6];        /* Interrupt status (4 on RP2040, 6 on RP2350) */
+    uint32_t proc0_inte[6];  /* Interrupt enable */
+    uint32_t proc0_intf[6];  /* Interrupt force */
+    uint32_t proc0_ints[6];  /* Interrupt status (computed) */
     
-    uint32_t pads[30];       /* Pad configurations */
+    uint32_t pads[48];       /* Pad configurations */
 } gpio_state_t;
 ```
 
@@ -237,11 +237,11 @@ typedef struct {
 
 ## Future Enhancements
 
-- [ ] **Virtual Peripherals**: Attach simulated LEDs, buttons, sensors to GPIO pins
-- [ ] **Richer Input Sources**: Add more virtual devices and scripted stimuli that drive GPIO interrupts
-- [ ] **Waveform Logging**: Record GPIO state changes for debugging
+- [x] **Waveform Logging**: `-gpio-trace <file>` records GPIO state changes in VCD format for GTKWave/PulseView
+- [x] **Input Injection**: `-script <file>` loads timestamped pin state changes for testing (e.g., `200ms: gpio25 1`)
+- [x] **Virtual Peripherals**: Software-Defined Devices (`-sdd`) can drive GPIO pins via I2C/SPI bus callbacks
+- [x] **RP2350 48-pin support**: GPIO expanded to 48 pins with SIO GPIO_HI registers (pins 32-47)
 - [ ] **Pin Visualization**: GUI showing pin states in real-time
-- [ ] **Input Injection**: Load pin state changes from file for testing
 
 ## API Functions
 

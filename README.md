@@ -2,9 +2,9 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.44.0
+## Current Status: v0.45.0
 
-300 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, and Zcmp extensions. Boots MicroPython Pico 2 RISC-V and custom test firmware with UART output. **RP2350 ARM**: Complete Cortex-M33 mode (`-arch m33`). **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks.
+319 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, and Zcmp extensions. Boots MicroPython Pico 2 RISC-V and custom test firmware with UART output. **RP2350 ARM**: Complete Cortex-M33 mode (`-arch m33`). **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
 
 ### Coverage
 
@@ -23,13 +23,15 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
 | WiFi | CYW43 (Pico W) | gSPI-over-PIO, TAP bridge with auto IP/NAT (`-wifi`, `-tap`) |
+| Virtual Network | VNet bus | Central Ethernet frame router, TAP/NAT bridge (`-net`), peer mesh (`-net-peer`), W5500 live sockets (`-net-live`) |
+| Multi-Device | Wire + SDD | Wire UART/GPIO/Ethernet between instances, pluggable software-defined devices (`-sdd`) |
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
-| Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
+| Privilege | Auto-sudo | `-tap`, `-net`, `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus logging, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Firmware Auto-Detect | UF2 + ELF | Auto-detects RP2040/RP2350-ARM/RP2350-RV from UF2 family ID or ELF machine type |
 | RV Performance | ICache | 64K-entry decoded instruction cache for flash/ROM fetches |
 | RV Semihosting | EBREAK | EBREAK with a0=0x20026 triggers SYS_EXIT |
-| Tests | 300 | CTest integrated, 57+ categories (20 RV + 4 M33 tests) |
+| Tests | 319 | CTest integrated, 57+ categories (20 RV + 4 M33 + 19 networking tests) |
 
 ### Peripherals
 
@@ -265,6 +267,37 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -wifi -tap tap0
 ```
 
+**Virtual Network (Internet Bridge + Mesh):**
+
+```bash
+# Single-command internet bridge (auto-creates TAP, NAT, sudo)
+./bramble firmware.uf2 -net -stdin
+
+# Mesh two Bramble instances via Ethernet-level peer link
+./bramble fw1.uf2 -net-peer /tmp/vnet.sock -stdin   # Terminal 1
+./bramble fw2.uf2 -net-peer /tmp/vnet.sock -stdin   # Terminal 2
+
+# W5500 live networking (real host TCP/UDP sockets)
+./bramble w5500_firmware.uf2 -net -net-live -stdin
+
+# Wire Ethernet frames between instances
+./bramble fw_sensor.uf2 -wire-eth /tmp/mesh.sock -stdin
+./bramble fw_ctrl.uf2 -wire-eth /tmp/mesh.sock -stdin
+```
+
+**Software-Defined Devices (SDD):**
+
+```bash
+# Attach a TMP102 thermometer on I2C0 at 0x48
+./bramble firmware.uf2 -sdd thermometer
+
+# Custom temperature, bus, and address
+./bramble firmware.uf2 -sdd thermometer:temp=37.5,i2c=1,addr=0x49
+
+# Combine with mesh networking
+./bramble fw_sensor.uf2 -wire-eth /tmp/mesh.sock -sdd thermometer:temp=42
+```
+
 **Storage Devices (SD Card / eMMC):**
 
 ```bash
@@ -353,6 +386,9 @@ Bramble/
 │   ├── gdb.c           # GDB remote serial protocol stub
 │   ├── netbridge.c     # UART-to-TCP bridge
 │   ├── wire.c          # Multi-instance Unix socket wiring
+│   ├── vnet.c          # Virtual network bus (TAP/peer/port routing)
+│   ├── sdd.c           # Software-defined device framework
+│   ├── sdd_thermo.c    # TMP102 I2C thermometer device model
 │   ├── storage.c       # Flash write-through persistence
 │   ├── sdcard.c        # SD card SPI emulation (SDHC, file-backed)
 │   ├── emmc.c          # eMMC SPI emulation (file-backed)
@@ -389,6 +425,8 @@ Bramble/
 │   ├── gdb.h           # GDB RSP stub definitions
 │   ├── netbridge.h     # UART network bridge definitions
 │   ├── wire.h          # Multi-instance wire protocol definitions
+│   ├── vnet.h          # Virtual network bus definitions
+│   ├── sdd.h           # Software-defined device definitions
 │   ├── storage.h       # Flash write-through definitions
 │   ├── sdcard.h        # SD card SPI definitions
 │   ├── emmc.h          # eMMC SPI definitions
@@ -409,7 +447,7 @@ Bramble/
 │   └── rp2350_arm/
 │       └── m33_cpu.h       # Cortex-M33 placeholder
 ├── tests/
-│   └── test_suite.c    # Unit test suite (274 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (319 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -690,8 +728,9 @@ For benchmarking details, see `tests/benchmark.c`.
 ## Future Work
 
 1. **Timing fidelity**: DMA pacing, high-speed PIO timing, and more USB edge cases.
-2. **Device breadth**: More SPI/I2C device models and broader Pico W/WLAN coverage.
+2. **Device breadth**: More SPI/I2C SDD models (accelerometers, displays, EEPROMs).
 3. **Tooling**: More firmware examples, benchmarks, and workflow automation around regression testing.
+4. **Networking depth**: DHCP server in vnet, mDNS relay, packet capture/replay tooling.
 
 ## Contributing
 
