@@ -1,6 +1,6 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.44.0
+## Current State: v0.45.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -14,19 +14,24 @@
 | Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec, MRET, CLINT, Hazard3 ext IRQ |
 | Boot | 100% | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash entry), picobin parser |
 | Firmware | MicroPython + CircuitPython + littleOS | RP2040 firmware + RP2350 RV32 UF2/ELF auto-detection |
-| Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
-| Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
+| Networking | UART-to-TCP + VNet | Bridge UART to TCP, virtual network bus with TAP/peer mesh, W5500 live sockets |
+| Multi-Device | Wire protocol + SDD | Unix socket IPC for UART/GPIO/Ethernet between instances + software-defined devices |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
-| Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
+| Privilege | Auto-sudo | `-tap`, `-net`, `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting (ARM+RV), coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
-| Validation | 300 tests | 276 RP2040 + 20 RISC-V + 4 M33 tests |
+| Validation | 319 tests | 276 RP2040 + 20 RISC-V + 4 M33 + 19 networking tests |
 
-### Recent Changes (v0.44.0)
+### Recent Changes (v0.45.0)
 
-- **Hazard3 ISA Extensions**: Implemented Zba, Zbb, Zbs, Zcb, and Zcmp extensions. MicroPython Pico 2 RISC-V now executes through boot and initializes peripherals.
-- **Dynamic Dual-Core SRAM**: Fixed `mem_read32_dual` and `mem_write32_dual` to dynamically respect RP2350's 520KB SRAM size.
-- **RP2350 ARM Boot Fixes**: Enabled ROM area access and TIMER1 ticking for Cortex-M33 firmware.
-- **UF2 Loader Improvements**: Added support for RP2350 "Absolute" family ID (`0xE48BFF57`) and increased flash bounds to 16MB.
+- **Virtual Network Bus (vnet)**: Central Ethernet frame routing layer. Device models (CYW43, W5500, SDDs) register as ports; frames routed between ports, TAP interface, and peer Bramble instances.
+- **Single-Command Internet Bridge**: `-net` flag creates TAP + NAT in one step with auto-sudo. Works for both WiFi (CYW43) and Ethernet (W5500) firmware.
+- **W5500 Live Networking**: `-net-live` connects W5500 socket commands to real host TCP/UDP sockets. OPEN/CONNECT/LISTEN/SEND/RECV/CLOSE all operate on real `AF_INET` sockets.
+- **Software-Defined Devices (SDD)**: `-sdd type[:opts]` framework for pluggable virtual peripherals with auto-attach to I2C/SPI/vnet. Reference implementation: TMP102-compatible thermometer.
+- **Wire Ethernet Relay**: `WIRE_MSG_ETH_FRAME` (0x04) extends the wire protocol with length-prefixed Ethernet frame relay between Bramble instances. CLI: `-wire-eth <path>`.
+- **Multi-Instance Mesh**: `-net-peer <path>` creates vnet peer connections over Unix sockets for Ethernet-level bridging between instances.
+- **19 new tests**: vnet (6), SDD (6), W5500 live (5), wire ETH (2).
+
+### Previous (v0.44.0)
 
 ### Previous (v0.41.0)
 
@@ -450,7 +455,38 @@ on M0+. The original roadmap incorrectly listed these.
 - Partial `SOCK_STREAM` reads and writes are buffered correctly
 - Wire message protocol: 4-byte header + payload (UART_DATA, GPIO_PIN, SPI_XFER)
 
-### 6.5 Future: Device Plugins
+### 6.5 Virtual Network Bus [COMPLETE]
+
+- Central frame routing layer connecting all emulated network devices
+- Device ports (CYW43, W5500, SDD) register with `vnet_register_port()`
+- TAP bridge: `vnet_attach_tap()` opens TAP + configures IP + NAT
+- Peer mesh: Unix socket connections with length-prefixed framing
+- CLI: `-net` (auto-TAP), `-net-peer <path>` (mesh), `-net-live` (W5500 host sockets)
+- Module: `vnet.c` / `vnet.h`
+
+### 6.6 W5500 Live Networking [COMPLETE]
+
+- Socket commands (OPEN/CONNECT/LISTEN/SEND/RECV/CLOSE) create real host sockets
+- TCP and UDP modes with non-blocking I/O
+- RX polling deposits incoming data into W5500 RX buffers
+- Interrupt flags (CON, RECV, DISCON, SEND_OK) set on appropriate events
+- CLI: `-net-live` enables live mode
+
+### 6.7 Software-Defined Devices [COMPLETE]
+
+- Pluggable virtual peripherals with I2C/SPI/network callbacks
+- Auto-attach to appropriate bus on registration
+- Built-in: TMP102-compatible I2C thermometer (configurable temperature)
+- CLI: `-sdd thermometer[:temp=25,i2c=0,addr=0x48]`
+- Module: `sdd.c` / `sdd.h` + `sdd_thermo.c`
+
+### 6.8 Wire Ethernet Relay [COMPLETE]
+
+- `WIRE_MSG_ETH_FRAME` (0x04) message type for Ethernet frame relay
+- Extended framing: 4-byte header + 2-byte LE length + frame data
+- CLI: `-wire-eth <path>` creates ETH wire link between instances
+
+### 6.9 Future: Device Plugins
 
 - Community-contributed device models (sensors, displays, flash, Ethernet)
 - SPI devices: W5500 (Ethernet), SD card, SPI flash, OLED displays
