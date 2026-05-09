@@ -136,6 +136,11 @@ void coverage_init(void) {
     coverage_ram_bitmap = calloc(1, (RAM_SIZE / 2 + 7) / 8);
     if (coverage_bitmap && coverage_ram_bitmap) {
         coverage_enabled = 1;
+    } else {
+        free(coverage_bitmap);
+        free(coverage_ram_bitmap);
+        coverage_bitmap = NULL;
+        coverage_ram_bitmap = NULL;
     }
 }
 

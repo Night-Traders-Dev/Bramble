@@ -113,7 +113,7 @@ static void build_ext_csd(uint8_t *ext_csd, size_t card_size) {
 int emmc_init(emmc_t *em, const char *path, size_t size) {
     memset(em, 0, sizeof(*em));
     em->state = EMMC_STATE_IDLE;
-    strncpy(em->path, path, sizeof(em->path) - 1);
+    snprintf(em->path, sizeof(em->path), "%s", path);
     em->size = size;
 
     em->data = calloc(1, size);
