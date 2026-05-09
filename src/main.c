@@ -95,6 +95,12 @@ static size_t stdin_pending_count = 0;
 static int stdin_pending_overflow_reported = 0;
 static int stdin_saw_cr = 0;
 
+/* RISC-V runtime state lives at file scope so execution and final status
+ * reporting can reference the same harts and bus. */
+static rv_cpu_state_t rv_cores[2];
+static rv_membus_state_t rv_bus;
+static rv_icache_t rv_icache;
+
 static int stdin_pending_push(uint8_t byte) {
     if (stdin_pending_count >= STDIN_PENDING_SIZE) {
         if (!stdin_pending_overflow_reported) {
@@ -1118,9 +1124,6 @@ skip_fuse:
 
     if (arch == ARCH_RV32) {
         /* ====== RISC-V Hazard3 execution ====== */
-        static rv_cpu_state_t rv_cores[2];
-        static rv_membus_state_t rv_bus;
-
         /* Initialize RP2350 memory bus with 520KB SRAM */
         rv_membus_init(&rv_bus, cpu.flash, FLASH_SIZE,
                        timing_config.cycles_per_us);
@@ -1130,7 +1133,6 @@ skip_fuse:
                         RP2350_FLASH_BASE, RP2350_SRAM_END);
 
         /* RV instruction cache */
-        static rv_icache_t rv_icache;
         rv_icache_init(&rv_icache);
 
         /* Initialize both harts */
@@ -1244,12 +1246,14 @@ skip_fuse:
         }
 
         instruction_count = rv_cores[0].step_count;
-        fprintf(stderr, "\n[RV] Hart 0: PC=0x%08X, %u instructions, %lu cycles\n",
-                rv_cores[0].pc, rv_cores[0].step_count,
+        fprintf(stderr, "\n[RV] Hart 0: PC=0x%08X SP=0x%08X RA=0x%08X SavedRA=0x%08X, %u instructions, %lu cycles\n",
+                rv_cores[0].pc, rv_cores[0].x[2], rv_cores[0].x[1],
+                rv_mem_read32(&rv_bus, rv_cores[0].x[2] + 28), rv_cores[0].step_count,
                 (unsigned long)rv_cores[0].cycle_count);
         if (!rv_cores[1].is_halted)
-            fprintf(stderr, "[RV] Hart 1: PC=0x%08X, %u instructions, %lu cycles\n",
-                    rv_cores[1].pc, rv_cores[1].step_count,
+            fprintf(stderr, "[RV] Hart 1: PC=0x%08X SP=0x%08X RA=0x%08X SavedRA=0x%08X, %u instructions, %lu cycles\n",
+                    rv_cores[1].pc, rv_cores[1].x[2], rv_cores[1].x[1],
+                    rv_mem_read32(&rv_bus, rv_cores[1].x[2] + 28), rv_cores[1].step_count,
                     (unsigned long)rv_cores[1].cycle_count);
         fprintf(stderr, "[RV] CLINT mtime: %lu\n",
                 (unsigned long)rv_bus.clint.mtime);
@@ -1483,15 +1487,31 @@ skip_fuse:
     fprintf(stderr,"Execution Complete\n");
     fprintf(stderr,"═══════════════════════════════════════════════════════════\n\n");
 
-    dual_core_status();
+    if (arch == ARCH_RV32) {
+        fprintf(stderr, "[RV HART STATUS]\n");
+        for (int i = 0; i < 2; i++) {
+            fprintf(stderr, "[HART%d] Status: %s\n", i, rv_cores[i].is_halted ? "HALTED" : "RUNNING");
+            fprintf(stderr, "[HART%d] PC=0x%08X SP=0x%08X RA=0x%08X SavedRA=0x%08X\n",
+                    i, rv_cores[i].pc, rv_cores[i].x[2], rv_cores[i].x[1],
+                    rv_mem_read32(&rv_bus, rv_cores[i].x[2] + 28));
+            fprintf(stderr, "[HART%d] Step count: %u\n", i, rv_cores[i].step_count);
+        }
+    } else {
+        dual_core_status();
+    }
 
     fprintf(stderr,"═══════════════════════════════════════════════════════════\n");
     fprintf(stderr,"Statistics:\n");
     fprintf(stderr," Total Instructions: %u\n", instruction_count);
     fprintf(stderr," Total Steps: %u\n", step_count);
-    fprintf(stderr," Core 0 Steps: %u\n", cores[CORE0].step_count);
-    fprintf(stderr," Core 1 Steps: %u\n", cores[CORE1].step_count);
-    icache_report_stats();
+    if (arch == ARCH_RV32) {
+        fprintf(stderr," Hart 0 Steps: %u\n", rv_cores[0].step_count);
+        fprintf(stderr," Hart 1 Steps: %u\n", rv_cores[1].step_count);
+    } else {
+        fprintf(stderr," Core 0 Steps: %u\n", cores[CORE0].step_count);
+        fprintf(stderr," Core 1 Steps: %u\n", cores[CORE1].step_count);
+        icache_report_stats();
+    }
     if (jit_mode) {
         jit_report_stats();
     }
