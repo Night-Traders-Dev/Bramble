@@ -15,6 +15,8 @@
  * ======================================================================== */
 
 void rp2350_periph_init(rp2350_periph_state_t *state) {
+    static const uint32_t bootram_xip_reentry_stub = 0x00008067u; /* jalr x0, 0(ra) */
+
     memset(state, 0, sizeof(*state));
 
     /* TICKS: enable proc0/proc1/timer0 by default (1 tick per cycle) */
@@ -39,6 +41,10 @@ void rp2350_periph_init(rp2350_periph_state_t *state) {
     /* BOOTRAM: cleared */
     memset(state->bootram, 0, BOOTRAM_SIZE);
     state->bootram_bootlock_stat = 0xFF;  /* All bootlocks start unclaimed. */
+    /* The RP2350 SDK later copies BOOTRAM_BASE into a RAM buffer and calls it
+     * to "re-enter XIP". In the emulator XIP stays accessible, so a simple
+     * return stub is sufficient and avoids jumping into zero-filled RAM. */
+    memcpy(state->bootram, &bootram_xip_reentry_stub, sizeof(bootram_xip_reentry_stub));
 
     /* Timer1: starts at 0 */
     state->timer1.time_us = 0;

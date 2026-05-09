@@ -111,8 +111,10 @@
 #define PSM_FRCE_OFF_OFFSET     0x04
 #define PSM_WDSEL_OFFSET        0x08
 #define PSM_DONE_OFFSET         0x0C
-#define PSM_ALL_MASK            0x0001FFFF
-#define PSM_FRCE_OFF_PROC1_BITS (1u << 16)
+#define RP2040_PSM_ALL_MASK             0x0001FFFF
+#define RP2040_PSM_FRCE_OFF_PROC1_BITS  (1u << 16)
+#define RP2350_PSM_ALL_MASK             0x01FFFFFF
+#define RP2350_PSM_FRCE_OFF_PROC1_BITS  (1u << 24)
 
 /* PLL state (shared between PLL_SYS and PLL_USB) */
 typedef struct {

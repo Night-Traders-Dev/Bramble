@@ -13,6 +13,14 @@ static inline uint32_t resets_all_mask(void) {
     return membus_rp2350_mode ? RP2350_RESETS_ALL_MASK : RP2040_RESETS_ALL_MASK;
 }
 
+static inline uint32_t psm_all_mask(void) {
+    return membus_rp2350_mode ? RP2350_PSM_ALL_MASK : RP2040_PSM_ALL_MASK;
+}
+
+static inline uint32_t psm_proc1_mask(void) {
+    return membus_rp2350_mode ? RP2350_PSM_FRCE_OFF_PROC1_BITS : RP2040_PSM_FRCE_OFF_PROC1_BITS;
+}
+
 /* Initialize all clock-domain peripherals */
 void clocks_init(void) {
     clocks_reset();
@@ -349,6 +357,7 @@ static void watchdog_write(uint32_t addr, uint32_t val, uint32_t alias) {
 
 static uint32_t psm_read(uint32_t addr) {
     uint32_t offset = addr & 0xFFF;
+    uint32_t mask = psm_all_mask();
 
     switch (offset) {
         case PSM_FRCE_ON_OFFSET:
@@ -358,7 +367,7 @@ static uint32_t psm_read(uint32_t addr) {
         case PSM_WDSEL_OFFSET:
             return clocks_state.psm_wdsel;
         case PSM_DONE_OFFSET:
-            return (~clocks_state.psm_frce_off) & PSM_ALL_MASK;
+            return (~clocks_state.psm_frce_off) & mask;
         default:
             return 0;
     }
@@ -366,23 +375,25 @@ static uint32_t psm_read(uint32_t addr) {
 
 static void psm_write(uint32_t addr, uint32_t val, uint32_t alias) {
     uint32_t offset = addr & 0xFFF;
-    uint32_t prev_proc1 = clocks_state.psm_frce_off & PSM_FRCE_OFF_PROC1_BITS;
+    uint32_t mask = psm_all_mask();
+    uint32_t proc1_mask = psm_proc1_mask();
+    uint32_t prev_proc1 = clocks_state.psm_frce_off & proc1_mask;
 
     switch (offset) {
         case PSM_FRCE_ON_OFFSET:
             clocks_state.psm_frce_on = apply_alias_write(
-                clocks_state.psm_frce_on, val, alias) & PSM_ALL_MASK;
+                clocks_state.psm_frce_on, val, alias) & mask;
             break;
         case PSM_FRCE_OFF_OFFSET:
             clocks_state.psm_frce_off = apply_alias_write(
-                clocks_state.psm_frce_off, val, alias) & PSM_ALL_MASK;
-            if ((clocks_state.psm_frce_off & PSM_FRCE_OFF_PROC1_BITS) != prev_proc1) {
-                sio_set_core1_reset((clocks_state.psm_frce_off & PSM_FRCE_OFF_PROC1_BITS) != 0);
+                clocks_state.psm_frce_off, val, alias) & mask;
+            if ((clocks_state.psm_frce_off & proc1_mask) != prev_proc1) {
+                sio_set_core1_reset((clocks_state.psm_frce_off & proc1_mask) != 0);
             }
             break;
         case PSM_WDSEL_OFFSET:
             clocks_state.psm_wdsel = apply_alias_write(
-                clocks_state.psm_wdsel, val, alias) & PSM_ALL_MASK;
+                clocks_state.psm_wdsel, val, alias) & mask;
             break;
         default:
             break;
