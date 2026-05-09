@@ -993,7 +993,7 @@ decode:
                 result = (a << sh) | (a >> (32 - sh));
                 break;
             }
-            case 4: result = a & ~b; break;                             /* ANDN */
+            case 4: result = a ^ ~b; break;                             /* XNOR */
             case 5: {
                 if (rs2 == 0x07 && rs1 == 0x00 && funct3 == 5) { /* Zbb: ORC.B */
                     result = 0;
@@ -1007,7 +1007,7 @@ decode:
                 break;
             }
             case 6: result = a | ~b; break;                             /* ORN */
-            case 7: result = a ^ ~b; break;                             /* XNOR */
+            case 7: result = a & ~b; break;                             /* ANDN */
             default: goto illegal;
             }
         } else if (funct7 == 0x30 && funct3 == 1) { /* Zbb: ROR */

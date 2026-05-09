@@ -14,8 +14,9 @@
 #define RESETS_WDSEL            (RESETS_BASE + 0x04)  /* Watchdog select */
 #define RESETS_RESET_DONE       (RESETS_BASE + 0x08)  /* Reset done status */
 
-/* All 24 resetable peripherals */
-#define RESETS_ALL_MASK         0x01FFFFFF
+/* Reset bit coverage differs between RP2040 and RP2350. */
+#define RP2040_RESETS_ALL_MASK  0x01FFFFFF
+#define RP2350_RESETS_ALL_MASK  0x1FFFFFFF
 
 /* Clocks Peripheral (0x40008000) */
 #define CLOCKS_BASE             0x40008000

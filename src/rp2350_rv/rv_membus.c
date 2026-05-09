@@ -12,6 +12,65 @@
 #include "rp2350_rv/rp2350_memmap.h"
 #include "emulator.h"
 
+#define RV_SHARED_RP2040_SYSCFG_BASE     0x40004000u
+#define RV_SHARED_RP2040_CLOCKS_BASE     0x40008000u
+#define RV_SHARED_RP2040_PSM_BASE        0x40010000u
+#define RV_SHARED_RP2040_RESETS_BASE     0x4000C000u
+#define RV_SHARED_RP2040_IO_BANK0_BASE   0x40014000u
+#define RV_SHARED_RP2040_IO_QSPI_BASE    0x40018000u
+#define RV_SHARED_RP2040_PADS_BANK0_BASE 0x4001C000u
+#define RV_SHARED_RP2040_PADS_QSPI_BASE  0x40020000u
+#define RV_SHARED_RP2040_XOSC_BASE       0x40024000u
+#define RV_SHARED_RP2040_PLL_SYS_BASE    0x40028000u
+#define RV_SHARED_RP2040_PLL_USB_BASE    0x4002C000u
+#define RV_SHARED_RP2040_BUSCTRL_BASE    0x40030000u
+#define RV_SHARED_RP2040_UART0_BASE      0x40034000u
+#define RV_SHARED_RP2040_UART1_BASE      0x40038000u
+#define RV_SHARED_RP2040_SPI0_BASE       0x4003C000u
+#define RV_SHARED_RP2040_SPI1_BASE       0x40040000u
+#define RV_SHARED_RP2040_I2C0_BASE       0x40044000u
+#define RV_SHARED_RP2040_I2C1_BASE       0x40048000u
+#define RV_SHARED_RP2040_ADC_BASE        0x4004C000u
+#define RV_SHARED_RP2040_PWM_BASE        0x40050000u
+#define RV_SHARED_RP2040_TIMER0_BASE     0x40054000u
+#define RV_SHARED_RP2040_WATCHDOG_BASE   0x40058000u
+#define RV_SHARED_RP2040_ROSC_BASE       0x40060000u
+#define RV_SHARED_RP2040_TBMAN_BASE      0x4006C000u
+
+static uint32_t rv_translate_shared_addr(uint32_t addr) {
+    uint32_t block = addr & ~0x3FFFu;
+    uint32_t tail = addr & 0x3FFFu;
+
+    switch (block) {
+    case RP2350_SYSCFG_BASE:      return RV_SHARED_RP2040_SYSCFG_BASE | tail;
+    case RP2350_CLOCKS_BASE:      return RV_SHARED_RP2040_CLOCKS_BASE | tail;
+    case RP2350_PSM_BASE:         return RV_SHARED_RP2040_PSM_BASE | tail;
+    case RP2350_RESETS_BASE:      return RV_SHARED_RP2040_RESETS_BASE | tail;
+    case RP2350_IO_BANK0_BASE:    return RV_SHARED_RP2040_IO_BANK0_BASE | tail;
+    case RP2350_IO_QSPI_BASE:     return RV_SHARED_RP2040_IO_QSPI_BASE | tail;
+    case RP2350_PADS_BANK0_BASE:  return RV_SHARED_RP2040_PADS_BANK0_BASE | tail;
+    case RP2350_PADS_QSPI_BASE:   return RV_SHARED_RP2040_PADS_QSPI_BASE | tail;
+    case RP2350_XOSC_BASE:        return RV_SHARED_RP2040_XOSC_BASE | tail;
+    case RP2350_PLL_SYS_BASE:     return RV_SHARED_RP2040_PLL_SYS_BASE | tail;
+    case RP2350_PLL_USB_BASE:     return RV_SHARED_RP2040_PLL_USB_BASE | tail;
+    case RP2350_BUSCTRL_BASE:     return RV_SHARED_RP2040_BUSCTRL_BASE | tail;
+    case RP2350_UART0_BASE:       return RV_SHARED_RP2040_UART0_BASE | tail;
+    case RP2350_UART1_BASE:       return RV_SHARED_RP2040_UART1_BASE | tail;
+    case RP2350_SPI0_BASE:        return RV_SHARED_RP2040_SPI0_BASE | tail;
+    case RP2350_SPI1_BASE:        return RV_SHARED_RP2040_SPI1_BASE | tail;
+    case RP2350_I2C0_BASE:        return RV_SHARED_RP2040_I2C0_BASE | tail;
+    case RP2350_I2C1_BASE:        return RV_SHARED_RP2040_I2C1_BASE | tail;
+    case RP2350_ADC_BASE:         return RV_SHARED_RP2040_ADC_BASE | tail;
+    case RP2350_PWM_BASE:         return RV_SHARED_RP2040_PWM_BASE | tail;
+    case RP2350_TIMER0_BASE:      return RV_SHARED_RP2040_TIMER0_BASE | tail;
+    case RP2350_WATCHDOG_BASE:    return RV_SHARED_RP2040_WATCHDOG_BASE | tail;
+    case RP2350_ROSC_BASE:        return RV_SHARED_RP2040_ROSC_BASE | tail;
+    case RP2350_TBMAN_BASE:       return RV_SHARED_RP2040_TBMAN_BASE | tail;
+    default:
+        return addr;
+    }
+}
+
 /* ========================================================================
  * Initialization
  * ======================================================================== */
@@ -141,16 +200,8 @@ uint32_t rv_mem_read32(rv_membus_state_t *bus, uint32_t addr) {
     }
 
     /* XIP aliases */
-    if (addr >= RP2350_XIP_NOALLOC_BASE && addr < RP2350_XIP_NOALLOC_BASE + bus->flash_size) {
-        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOALLOC_BASE], 4);
-        return val;
-    }
-    if (addr >= RP2350_XIP_NOCACHE_BASE && addr < RP2350_XIP_NOCACHE_BASE + bus->flash_size) {
-        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOCACHE_BASE], 4);
-        return val;
-    }
-    if (addr >= RP2350_XIP_NOCACHE_NOALLOC && addr < RP2350_XIP_NOCACHE_NOALLOC + bus->flash_size) {
-        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOCACHE_NOALLOC], 4);
+    if (addr >= RP2350_XIP_NOCACHE_NOALLOC_BASE && addr < RP2350_XIP_NOCACHE_NOALLOC_BASE + bus->flash_size) {
+        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOCACHE_NOALLOC_BASE], 4);
         return val;
     }
 
@@ -175,7 +226,7 @@ uint32_t rv_mem_read32(rv_membus_state_t *bus, uint32_t addr) {
     }
 
     /* Fall through to shared RP2040 peripheral bus */
-    return mem_read32(addr);
+    return mem_read32(rv_translate_shared_addr(addr));
 }
 
 void rv_mem_write32(rv_membus_state_t *bus, uint32_t addr, uint32_t val) {
@@ -192,9 +243,7 @@ void rv_mem_write32(rv_membus_state_t *bus, uint32_t addr, uint32_t val) {
     /* ROM and flash are read-only */
     if (addr < bus->rom_size) return;
     if (addr >= RP2350_FLASH_BASE && addr < RP2350_FLASH_BASE + bus->flash_size) return;
-    if (addr >= RP2350_XIP_NOALLOC_BASE && addr < RP2350_XIP_NOALLOC_BASE + bus->flash_size) return;
-    if (addr >= RP2350_XIP_NOCACHE_BASE && addr < RP2350_XIP_NOCACHE_BASE + bus->flash_size) return;
-    if (addr >= RP2350_XIP_NOCACHE_NOALLOC && addr < RP2350_XIP_NOCACHE_NOALLOC + bus->flash_size) return;
+    if (addr >= RP2350_XIP_NOCACHE_NOALLOC_BASE && addr < RP2350_XIP_NOCACHE_NOALLOC_BASE + bus->flash_size) return;
 
     /* CLINT */
     if (rv_clint_match(addr)) {
@@ -217,7 +266,7 @@ void rv_mem_write32(rv_membus_state_t *bus, uint32_t addr, uint32_t val) {
     }
 
     /* Fall through to shared peripheral bus */
-    mem_write32(addr, val);
+    mem_write32(rv_translate_shared_addr(addr), val);
 }
 
 /* ========================================================================
@@ -242,19 +291,11 @@ uint16_t rv_mem_read16(rv_membus_state_t *bus, uint32_t addr) {
         memcpy(&val, &bus->flash[addr - RP2350_FLASH_BASE], 2);
         return val;
     }
-    if (addr >= RP2350_XIP_NOALLOC_BASE && addr < RP2350_XIP_NOALLOC_BASE + bus->flash_size) {
-        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOALLOC_BASE], 2);
+    if (addr >= RP2350_XIP_NOCACHE_NOALLOC_BASE && addr < RP2350_XIP_NOCACHE_NOALLOC_BASE + bus->flash_size) {
+        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOCACHE_NOALLOC_BASE], 2);
         return val;
     }
-    if (addr >= RP2350_XIP_NOCACHE_BASE && addr < RP2350_XIP_NOCACHE_BASE + bus->flash_size) {
-        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOCACHE_BASE], 2);
-        return val;
-    }
-    if (addr >= RP2350_XIP_NOCACHE_NOALLOC && addr < RP2350_XIP_NOCACHE_NOALLOC + bus->flash_size) {
-        memcpy(&val, &bus->flash[addr - RP2350_XIP_NOCACHE_NOALLOC], 2);
-        return val;
-    }
-    return mem_read16(addr);
+    return mem_read16(rv_translate_shared_addr(addr));
 }
 
 void rv_mem_write16(rv_membus_state_t *bus, uint32_t addr, uint16_t val) {
@@ -268,7 +309,7 @@ void rv_mem_write16(rv_membus_state_t *bus, uint32_t addr, uint16_t val) {
     }
     if (addr < bus->rom_size) return;
     if (addr >= RP2350_FLASH_BASE && addr < RP2350_FLASH_BASE + bus->flash_size) return;
-    mem_write16(addr, val);
+    mem_write16(rv_translate_shared_addr(addr), val);
 }
 
 /* ========================================================================
@@ -284,16 +325,12 @@ uint8_t rv_mem_read8(rv_membus_state_t *bus, uint32_t addr) {
         return bus->rom[addr];
     if (addr >= RP2350_FLASH_BASE && addr < RP2350_FLASH_BASE + bus->flash_size)
         return bus->flash[addr - RP2350_FLASH_BASE];
-    if (addr >= RP2350_XIP_NOALLOC_BASE && addr < RP2350_XIP_NOALLOC_BASE + bus->flash_size)
-        return bus->flash[addr - RP2350_XIP_NOALLOC_BASE];
-    if (addr >= RP2350_XIP_NOCACHE_BASE && addr < RP2350_XIP_NOCACHE_BASE + bus->flash_size)
-        return bus->flash[addr - RP2350_XIP_NOCACHE_BASE];
-    if (addr >= RP2350_XIP_NOCACHE_NOALLOC && addr < RP2350_XIP_NOCACHE_NOALLOC + bus->flash_size)
-        return bus->flash[addr - RP2350_XIP_NOCACHE_NOALLOC];
+    if (addr >= RP2350_XIP_NOCACHE_NOALLOC_BASE && addr < RP2350_XIP_NOCACHE_NOALLOC_BASE + bus->flash_size)
+        return bus->flash[addr - RP2350_XIP_NOCACHE_NOALLOC_BASE];
     /* RP2350 peripherals byte access */
     if (rp2350_periph_match(addr))
         return rp2350_periph_read8(&bus->periph, addr);
-    return mem_read8(addr);
+    return mem_read8(rv_translate_shared_addr(addr));
 }
 
 void rv_mem_write8(rv_membus_state_t *bus, uint32_t addr, uint8_t val) {
@@ -312,5 +349,5 @@ void rv_mem_write8(rv_membus_state_t *bus, uint32_t addr, uint8_t val) {
         rp2350_periph_write8(&bus->periph, addr, val);
         return;
     }
-    mem_write8(addr, val);
+    mem_write8(rv_translate_shared_addr(addr), val);
 }

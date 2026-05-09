@@ -9,6 +9,10 @@ clocks_state_t clocks_state;
 /* Watchdog reboot flag - checked by main loop */
 int watchdog_reboot_pending = 0;
 
+static inline uint32_t resets_all_mask(void) {
+    return membus_rp2350_mode ? RP2350_RESETS_ALL_MASK : RP2040_RESETS_ALL_MASK;
+}
+
 /* Initialize all clock-domain peripherals */
 void clocks_init(void) {
     clocks_reset();
@@ -19,7 +23,7 @@ void clocks_reset(void) {
     memset(&clocks_state, 0, sizeof(clocks_state_t));
 
     /* RP2040 boots with all peripherals held in reset */
-    clocks_state.reset = RESETS_ALL_MASK;
+    clocks_state.reset = resets_all_mask();
 
     /* Clock dividers default to 1:0 (no division) */
     for (int i = 0; i < NUM_CLOCK_GENERATORS; i++) {
@@ -78,7 +82,7 @@ static uint32_t resets_read(uint32_t addr) {
             return clocks_state.wdsel;
         case 0x08: /* RESET_DONE */
             /* A peripheral is "done" when NOT held in reset */
-            return (~clocks_state.reset) & RESETS_ALL_MASK;
+            return (~clocks_state.reset) & resets_all_mask();
         default:
             return 0;
     }
@@ -89,11 +93,11 @@ static void resets_write(uint32_t addr, uint32_t val, uint32_t alias) {
     switch (offset) {
         case 0x00: /* RESET */
             clocks_state.reset = apply_alias_write(
-                clocks_state.reset, val, alias) & RESETS_ALL_MASK;
+                clocks_state.reset, val, alias) & resets_all_mask();
             break;
         case 0x04: /* WDSEL */
             clocks_state.wdsel = apply_alias_write(
-                clocks_state.wdsel, val, alias) & RESETS_ALL_MASK;
+                clocks_state.wdsel, val, alias) & resets_all_mask();
             break;
         default:
             break;

@@ -64,7 +64,7 @@ int rp2350_periph_match(uint32_t addr) {
     /* OTP data */
     if (addr >= RP2350_OTP_DATA_BASE && addr < RP2350_OTP_DATA_BASE + OTP_NUM_ROWS * 4) return 1;
     /* BOOTRAM */
-    if (addr >= 0x400E0000 && addr < 0x400E0000 + BOOTRAM_SIZE) return 1;
+    if (addr >= RP2350_BOOTRAM_BASE && addr < RP2350_BOOTRAM_BASE + BOOTRAM_SIZE) return 1;
     /* TIMER1 */
     if (base >= RP2350_TIMER1_BASE && base < RP2350_TIMER1_BASE + 0x100) return 1;
     /* GLITCH */
@@ -72,7 +72,7 @@ int rp2350_periph_match(uint32_t addr) {
     /* CORESIGHT */
     if (base >= RP2350_CORESIGHT_BASE && base < RP2350_CORESIGHT_BASE + 0x40) return 1;
     /* ACCESSCTRL */
-    if (base >= 0x40160000 && base < 0x40160000 + 0x100) return 1;
+    if (base >= RP2350_ACCESSCTRL_BASE && base < RP2350_ACCESSCTRL_BASE + 0x100) return 1;
     /* TIMER0 at RP2350 address (moved from 0x40054000 to 0x400B0000) */
     if (base >= RP2350_TIMER0_BASE && base < RP2350_TIMER0_BASE + 0x100) return 1;
 
