@@ -569,16 +569,12 @@ void rom_patch_rp2350_arm(void) {
     rom_image[0x13] = 0x00;
 
     /* RP2350 ROM header pointers:
-     * The firmware's rom_func_lookup() reads a 16-bit value from offset
-     * 0x16 and does 'bx r3' to it. On RP2040 this was the data-table
-     * pointer (0x0180). For RP2350 we point it to our 32-bit-entry
-     * lookup function at 0x0700 (Thumb bit → 0x0701).
-     *
-     * 0x14-0x15: 16-bit func table pointer → 0x0720 (32-bit entry table)
-     * 0x16-0x17: 16-bit lookup fn address → 0x0701 (bx target)
+     * 0x14-0x15: 16-bit func table pointer → keep 0x0100 (16-bit entry table
+     *            used by rom_data_lookup and direct table walks)
+     * 0x16-0x17: 16-bit lookup fn address → 0x0701 (bx target for rom_func_lookup)
      * 0x18-0x19: 16-bit data table pointer → keep 0x0180 */
-    rom_image[0x14] = 0x20;
-    rom_image[0x15] = 0x07;
+    rom_image[0x14] = 0x00;
+    rom_image[0x15] = 0x01;
     rom_image[0x16] = 0x01;
     rom_image[0x17] = 0x07;
     rom_image[0x18] = 0x80;
@@ -590,42 +586,62 @@ void rom_patch_rp2350_arm(void) {
     rom_image[0x1E] = 0x00;
     rom_image[0x1F] = 0x00;
 
-    /* Place 32-bit entry lookup at 0x0700.
-     * Steps by 8 bytes per entry, reads 32-bit code and 32-bit addr. */
-    rom_write16(0x0700, 0x6802);
-    rom_write16(0x0702, 0x2A00);
-    rom_write16(0x0704, 0xD007);
-    rom_write16(0x0706, 0x4291);
-    rom_write16(0x0708, 0xD102);
-    rom_write16(0x070A, 0x6840);
-    rom_write16(0x070C, 0x4770);
-    rom_write16(0x070E, 0xBF00);
-    rom_write16(0x0710, 0x3008);
-    rom_write16(0x0712, 0xE7F5);
-    rom_write16(0x0714, 0xBF00);
-    rom_write16(0x0716, 0x2000);
-    rom_write16(0x0718, 0x4770);
+    /* Place 32-bit entry lookup at 0x0700. r0=requested code, r1=ignored.
+     * Uses PC-relative load to get table base from literal at 0x0720. */
+    rom_write16(0x0700, 0xB430); /* push {r4, r5} */
+    rom_write16(0x0702, 0x4C07); /* ldr r4, [pc, #28]  ; -> 0x0720 */
+    rom_write16(0x0704, 0x6825); /* ldr r5, [r4, #0]   ; entry code */
+    rom_write16(0x0706, 0x2D00); /* cmp r5, #0 */
+    rom_write16(0x0708, 0xD007); /* beq 0x071A          ; not found */
+    rom_write16(0x070A, 0x42A8); /* cmp r0, r5          ; match? */
+    rom_write16(0x070C, 0xD102); /* bne 0x0714          ; next */
+    rom_write16(0x070E, 0x6860); /* ldr r0, [r4, #4]    ; func ptr */
+    rom_write16(0x0710, 0xBC30); /* pop {r4, r5} */
+    rom_write16(0x0712, 0x4770); /* bx lr */
+    rom_write16(0x0714, 0x3408); /* adds r4, #8         ; next entry */
+    rom_write16(0x0716, 0xE7F5); /* b 0x0704            ; loop */
+    rom_write16(0x0718, 0xBF00); /* nop */
+    rom_write16(0x071A, 0x2000); /* movs r0, #0         ; not found */
+    rom_write16(0x071C, 0xBC30); /* pop {r4, r5} */
+    rom_write16(0x071E, 0x4770); /* bx lr */
 
-    /* Place RP2350 function table at 0x0720: 32-bit entries [code(4)][addr(4)] */
-    /* Entry 0: 'GS' (0x00004753) -> stub at 0x0751 */
-    rom_write16(0x0720, 0x4753);
+    /* Literal: table base at 0x0740 */
+    rom_write16(0x0720, 0x0740);
     rom_write16(0x0722, 0x0000);
-    rom_write16(0x0724, 0x0751);
-    rom_write16(0x0726, 0x0000);
-    /* Entry 1: 'RB' (0x00005242) -> stub at 0x0753 */
-    rom_write16(0x0728, 0x5242);
-    rom_write16(0x072A, 0x0000);
-    rom_write16(0x072C, 0x0753);
-    rom_write16(0x072E, 0x0000);
+
+    /* Place RP2350 function table at 0x0740: entries [code(4)][addr(4)] */
+    #define RP2350_ADD_FUNC(off, code, addr) do { \
+        rom_write16((off),     (uint16_t)(code)); \
+        rom_write16((off)+2,   0x0000);           \
+        rom_write16((off)+4,   (uint16_t)(addr)); \
+        rom_write16((off)+6,   0x0000);           \
+    } while(0)
+
+    uint32_t t = 0x0740;
+    RP2350_ADD_FUNC(t, ROM_FUNC_MEMCPY,     0x0301); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_MEMCPY44,   0x0301); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_MEMSET,     0x0321); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_MEMSET4,    0x0321); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_POPCOUNT32, 0x0341); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_CLZ32,      0x0361); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_CTZ32,      0x0381); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_REVERSE32,  0x03A1); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_CONNECT_INTERNAL_FLASH, 0x03B1); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_FLASH_EXIT_XIP,         0x03B5); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_FLASH_RANGE_ERASE,      0x03B9); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_FLASH_RANGE_PROGRAM,    0x03BD); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_FLASH_FLUSH_CACHE,      0x03C1); t += 8;
+    RP2350_ADD_FUNC(t, ROM_FUNC_FLASH_ENTER_CMD_XIP,    0x03C5); t += 8;
+    RP2350_ADD_FUNC(t, 0x5347 /* GS */, 0x0751); t += 8;
+    RP2350_ADD_FUNC(t, 0x5242 /* RB */, 0x0753); t += 8;
     /* End marker */
-    rom_write16(0x0730, 0x0000);
-    rom_write16(0x0732, 0x0000);
-    rom_write16(0x0734, 0x0000);
-    rom_write16(0x0736, 0x0000);
+    rom_write16(t,     0x0000); rom_write16(t+2, 0x0000);
+    rom_write16(t+4,   0x0000); rom_write16(t+6, 0x0000);
+    #undef RP2350_ADD_FUNC
 
     /* Place stub functions: BX LR (intercepted by rom_intercept) */
-    rom_write16(0x0750, 0x4770);  /* bx lr - get_sys_info stub */
-    rom_write16(0x0752, 0x4770);  /* bx lr - reboot stub */
+    rom_write16(0x0750, 0x4770);  /* bx lr - get_sys_info */
+    rom_write16(0x0752, 0x4770);  /* bx lr - reboot */
 }
 
 /* Read from ROM */
