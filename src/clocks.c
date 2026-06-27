@@ -471,6 +471,7 @@ uint32_t clocks_read32(uint32_t addr) {
     /* Map to canonical address for reading */
     uint32_t canonical = base_aligned | (addr & 0xFFF);
 
+    /* RP2040 bases (and shared bases) */
     if (base_aligned == RESETS_BASE)
         return resets_read(canonical);
     if (base_aligned == CLOCKS_BASE)
@@ -488,6 +489,26 @@ uint32_t clocks_read32(uint32_t addr) {
     if (base_aligned == ROSC_BASE)
         return rosc_read(canonical);
 
+    /* RP2350-only bases (only checked when in RP2350 mode to avoid collisions) */
+    if (membus_rp2350_mode) {
+        if (base_aligned == RP2350_RESETS_BASE)
+            return resets_read(canonical);
+        if (base_aligned == RP2350_CLOCKS_BASE)
+            return clocks_domain_read(canonical);
+        if (base_aligned == RP2350_XOSC_BASE)
+            return xosc_read(canonical);
+        if (base_aligned == RP2350_PLL_SYS_BASE)
+            return pll_read(&clocks_state.pll_sys, canonical & 0xFFF);
+        if (base_aligned == RP2350_PLL_USB_BASE)
+            return pll_read(&clocks_state.pll_usb, canonical & 0xFFF);
+        if (base_aligned == RP2350_WATCHDOG_BASE)
+            return watchdog_read(canonical);
+        if (base_aligned == RP2350_PSM_BASE)
+            return psm_read(canonical);
+        if (base_aligned == RP2350_ROSC_BASE)
+            return rosc_read(canonical);
+    }
+
     return 0;
 }
 
@@ -496,6 +517,7 @@ void clocks_write32(uint32_t addr, uint32_t val) {
     uint32_t alias = (addr >> 12) & 0x3;
     uint32_t canonical = base_aligned | (addr & 0xFFF);
 
+    /* RP2040 bases (and shared bases) */
     if (base_aligned == RESETS_BASE)
         resets_write(canonical, val, alias);
     else if (base_aligned == CLOCKS_BASE)
@@ -511,5 +533,22 @@ void clocks_write32(uint32_t addr, uint32_t val) {
     else if (base_aligned == PSM_BASE)
         psm_write(canonical, val, alias);
     else if (base_aligned == ROSC_BASE)
+        rosc_write(canonical, val, alias);
+    /* RP2350-only bases */
+    else if (membus_rp2350_mode && base_aligned == RP2350_RESETS_BASE)
+        resets_write(canonical, val, alias);
+    else if (membus_rp2350_mode && base_aligned == RP2350_CLOCKS_BASE)
+        clocks_domain_write(canonical, val, alias);
+    else if (membus_rp2350_mode && base_aligned == RP2350_XOSC_BASE)
+        xosc_write(canonical, val, alias);
+    else if (membus_rp2350_mode && base_aligned == RP2350_PLL_SYS_BASE)
+        pll_write(&clocks_state.pll_sys, canonical & 0xFFF, val, alias);
+    else if (membus_rp2350_mode && base_aligned == RP2350_PLL_USB_BASE)
+        pll_write(&clocks_state.pll_usb, canonical & 0xFFF, val, alias);
+    else if (membus_rp2350_mode && base_aligned == RP2350_WATCHDOG_BASE)
+        watchdog_write(canonical, val, alias);
+    else if (membus_rp2350_mode && base_aligned == RP2350_PSM_BASE)
+        psm_write(canonical, val, alias);
+    else if (membus_rp2350_mode && base_aligned == RP2350_ROSC_BASE)
         rosc_write(canonical, val, alias);
 }

@@ -1223,6 +1223,14 @@ __attribute__((hot)) void cpu_step(void) {
         }
         goto pc_valid;
     }
+    /* RP2350 ROM alias at 0x08000000 (Cortex-M33 system address space) */
+    if (membus_rp2350_mode && pc >= 0x08000000 && pc < 0x08000000 + ROM_SIZE) {
+        if (rom_intercept(pc - 0x08000000)) {
+            timing_tick(4);
+            return;
+        }
+        goto pc_valid;
+    }
     if (pc >= RAM_BASE && pc < RAM_TOP) goto pc_valid;
     if (pc == 0xFFFFFFFF) return;
 

@@ -19,6 +19,7 @@
 #include "rp2350_rv/rv_membus.h"
 #include "rp2350_rv/rv_icache.h"
 #include "emulator.h"
+#include "devtools.h"
 
 /* ========================================================================
  * Memory access wrappers — route through RP2350 bus when available,
@@ -597,6 +598,14 @@ decode:
                 } else {
                     if (rs2 == 0 && rd == 0) {
                         /* C.EBREAK */
+                        /* RISC-V semihosting: if enabled, handle via a0/a1 convention */
+                        if (semihosting_enabled && rv_semihosting_handle(cpu)) {
+                            /* semihosting handled the ebreak, advance PC past it */
+                            cpu->pc = pc + 2;
+                            cpu->x[0] = 0;
+                            cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                            return 0;
+                        }
                         rv_trap_enter(cpu, MCAUSE_BREAKPOINT, pc);
                         return 0;
                     } else if (rs2 == 0) {
@@ -1163,6 +1172,12 @@ decode:
                 rv_trap_enter(cpu, MCAUSE_ECALL_M, 0);
                 return 0;
             case 0x001: /* EBREAK */
+                if (semihosting_enabled && rv_semihosting_handle(cpu)) {
+                    cpu->pc = pc + 4;
+                    cpu->x[0] = 0;
+                    cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
+                    return 0;
+                }
                 rv_trap_enter(cpu, MCAUSE_BREAKPOINT, pc);
                 return 0;
             case 0x302: /* MRET */

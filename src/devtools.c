@@ -124,6 +124,89 @@ int semihosting_handle(void) {
 }
 
 /* ========================================================================
+ * RISC-V Semihosting
+ *
+ * The Pico SDK uses the ebreak instruction with a0=x10 holding the
+ * operation number and a1=x11 holding the parameter.  This follows
+ * the same ARM semihosting conventions (SYS_* operation codes).
+ * ======================================================================== */
+
+#include "rp2350_rv/rv_cpu.h"
+
+int rv_semihosting_handle(void *cpu_ptr) {
+    rv_cpu_state_t *cpu = (rv_cpu_state_t *)cpu_ptr;
+    if (!semihosting_enabled) return 0;
+
+    uint32_t op = cpu->x[10];    /* a0 = operation */
+    uint32_t param = cpu->x[11]; /* a1 = parameter */
+
+    switch (op) {
+    case SEMIHOST_SYS_WRITEC: {
+        char c = (char)sh_read8(param);
+        fputc(c, stdout);
+        fflush(stdout);
+        cpu->x[0] = 0;
+        return 1;
+    }
+    case SEMIHOST_SYS_WRITE0: {
+        for (int i = 0; i < 4096; i++) {
+            char c = (char)sh_read8(param + (uint32_t)i);
+            if (c == '\0') break;
+            fputc(c, stdout);
+        }
+        fflush(stdout);
+        cpu->x[0] = 0;
+        return 1;
+    }
+    case SEMIHOST_SYS_WRITE: {
+        uint32_t fd   = sh_read32(param);
+        uint32_t data = sh_read32(param + 4);
+        uint32_t len  = sh_read32(param + 8);
+        FILE *out = (fd == 1) ? stdout : (fd == 2) ? stderr : stdout;
+        for (uint32_t i = 0; i < len && i < 65536; i++) {
+            fputc(sh_read8(data + i), out);
+        }
+        fflush(out);
+        cpu->x[0] = 0;
+        return 1;
+    }
+    case SEMIHOST_SYS_READC: {
+        int c = fgetc(stdin);
+        cpu->x[0] = (c == EOF) ? (uint32_t)-1 : (uint32_t)c;
+        return 1;
+    }
+    case SEMIHOST_SYS_EXIT: {
+        semihost_exit_code = (param == 0x20026) ? 0 : (int)param;
+        semihost_exit_requested = 1;
+        return 1;
+    }
+    case SEMIHOST_SYS_EXIT_EXTENDED: {
+        semihost_exit_code = (int)sh_read32(param + 4);
+        semihost_exit_requested = 1;
+        return 1;
+    }
+    case SEMIHOST_SYS_ERRNO:
+        cpu->x[0] = 0;
+        return 1;
+    case SEMIHOST_SYS_ELAPSED:
+        cpu->x[0] = 0;
+        return 1;
+    case SEMIHOST_SYS_TICKFREQ:
+        cpu->x[0] = 100;
+        return 1;
+    case SEMIHOST_SYS_OPEN:
+    case SEMIHOST_SYS_CLOSE:
+    case SEMIHOST_SYS_READ:
+    case SEMIHOST_SYS_SEEK:
+    case SEMIHOST_SYS_FLEN:
+        cpu->x[0] = (uint32_t)-1;
+        return 1;
+    default:
+        return 0;  /* Not a semihosting call */
+    }
+}
+
+/* ========================================================================
  * Code Coverage
  * ======================================================================== */
 

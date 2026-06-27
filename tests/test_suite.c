@@ -4645,7 +4645,7 @@ TEST(test_rv_icache) {
 
 TEST(test_rv_periph_bootram) {
     rp2350_periph_state_t periph;
-    rp2350_periph_init(&periph);
+    rp2350_periph_init(&periph, 0);
     rp2350_periph_write8(&periph, 0x400E0000, 0x42);
     ASSERT_EQ(0x42, rp2350_periph_read8(&periph, 0x400E0000), "BOOTRAM byte access");
     rp2350_periph_write32(&periph, 0x400E0010, 0xCAFEBABE);
@@ -4655,7 +4655,7 @@ TEST(test_rv_periph_bootram) {
 
 TEST(test_rv_periph_timer1) {
     rp2350_periph_state_t periph;
-    rp2350_periph_init(&periph);
+    rp2350_periph_init(&periph, 0);
     /* Write alarm and tick */
     rp2350_periph_write32(&periph, 0x400B8010, 100);  /* ALARM0 = 100 */
     ASSERT_EQ(1, periph.timer1.armed & 1, "Alarm 0 should be armed");

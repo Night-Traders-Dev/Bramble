@@ -1091,6 +1091,8 @@ skip_fuse:
         m33_init_overlay();
         /* Enable RP2350 mode in shared membus */
         membus_rp2350_mode = 1;
+        /* Patch ROM for RP2350 format (32-bit pointers, RP2350 functions) */
+        rom_patch_rp2350_arm();
         /* Set up 520KB SRAM: allocate static buffer and redirect ARM membus */
         static uint8_t m33_sram[520 * 1024];
         memset(m33_sram, 0, sizeof(m33_sram));
@@ -1099,7 +1101,7 @@ skip_fuse:
         fprintf(stderr, "[M33] SRAM expanded to 520KB (0x20000000-0x20082000)\n");
         /* Set up RP2350 peripherals for M33 mode */
         static rp2350_periph_state_t m33_periph;
-        rp2350_periph_init(&m33_periph);
+        rp2350_periph_init(&m33_periph, 1);
         membus_rp2350_periph = &m33_periph;
         fprintf(stderr, "[M33] RP2350 peripherals enabled\n");
     }

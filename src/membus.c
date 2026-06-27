@@ -199,19 +199,25 @@ static void io_qspi_write(uint32_t offset, uint32_t val) {
 }
 
 /* ========================================================================
- * PADS_QSPI Registers (0x40020000)
+ * PADS_QSPI Registers (0x40020000 on RP2040, 0x40040000 on RP2350)
  *
  * Minimal stub for QSPI pad electrical control.
  * ======================================================================== */
 
-#define PADS_QSPI_BASE        0x40020000
-#define PADS_QSPI_BLOCK_SIZE  0x20
+#define PADS_QSPI_BASE_RP2040      0x40020000
+#define PADS_QSPI_BASE_RP2350      0x40040000
+#define PADS_QSPI_BLOCK_SIZE       0x20
 
 static uint32_t pads_qspi_regs[8];  /* VOLTAGE_SELECT + 6 pads + spare */
 
+static uint32_t pads_qspi_active_base(void) {
+    return membus_rp2350_mode ? PADS_QSPI_BASE_RP2350 : PADS_QSPI_BASE_RP2040;
+}
+
 static int pads_qspi_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
-    return (base >= PADS_QSPI_BASE && base < PADS_QSPI_BASE + PADS_QSPI_BLOCK_SIZE);
+    uint32_t pbase = pads_qspi_active_base();
+    return (base >= pbase && base < pbase + PADS_QSPI_BLOCK_SIZE);
 }
 
 static int gpio_bus_match(uint32_t addr) {
@@ -555,10 +561,19 @@ static inline uint8_t *get_ram(void) {
 
 static int is_clocks_addr(uint32_t addr) {
     uint32_t base = addr & ~0x3FFF; /* 16KB-aligned base */
-    return (base == RESETS_BASE  || base == CLOCKS_BASE ||
-            base == XOSC_BASE   || base == PLL_SYS_BASE ||
-            base == PLL_USB_BASE || base == WATCHDOG_BASE ||
-            base == PSM_BASE    || base == ROSC_BASE);
+    if (base == RESETS_BASE  || base == CLOCKS_BASE ||
+        base == XOSC_BASE   || base == PLL_SYS_BASE ||
+        base == PLL_USB_BASE || base == WATCHDOG_BASE ||
+        base == PSM_BASE    || base == ROSC_BASE)
+        return 1;
+    if (membus_rp2350_mode) {
+        if (base == RP2350_RESETS_BASE  || base == RP2350_CLOCKS_BASE ||
+            base == RP2350_XOSC_BASE   || base == RP2350_PLL_SYS_BASE ||
+            base == RP2350_PLL_USB_BASE || base == RP2350_WATCHDOG_BASE ||
+            base == RP2350_PSM_BASE    || base == RP2350_ROSC_BASE)
+            return 1;
+    }
+    return 0;
 }
 
 static int is_adc_addr(uint32_t addr) {
@@ -1355,6 +1370,10 @@ void mem_write32(uint32_t addr, uint32_t val) {
     /* ROM area writes (0x00000000-0x00007FFF) — silently ignore */
     if (addr < 0x00008000) return;
 
+    /* RP2350 ROM alias at 0x08000000 — silently ignore writes */
+    if (membus_rp2350_mode && addr >= 0x08000000 && addr < 0x08000000 + ROM_SIZE)
+        return;
+
     /* Stub out other peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) {
         if (mem_debug_unmapped)
@@ -1502,6 +1521,11 @@ uint32_t mem_read32(uint32_t addr) {
     /* ROM (0x00000000 - 0x00000FFF) */
     if (addr < ROM_SIZE) {
         return rom_read32(addr);
+    }
+
+    /* RP2350 ROM alias at 0x08000000 (Cortex-M33 system address space) */
+    if (membus_rp2350_mode && addr >= 0x08000000 && addr < 0x08000000 + ROM_SIZE) {
+        return rom_read32(addr - 0x08000000);
     }
 
     /* XIP flash (and uncached aliases read from same backing store) */
@@ -1718,6 +1742,9 @@ uint16_t mem_read16(uint32_t addr) {
     if (addr < ROM_SIZE) {
         return rom_read16(addr);
     }
+    if (membus_rp2350_mode && addr >= 0x08000000 && addr < 0x08000000 + ROM_SIZE) {
+        return rom_read16(addr - 0x08000000);
+    }
 
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
         uint32_t offset = addr - FLASH_BASE;
@@ -1774,6 +1801,9 @@ uint8_t mem_read8(uint32_t addr) {
     /* ROM */
     if (addr < ROM_SIZE) {
         return rom_read8(addr);
+    }
+    if (membus_rp2350_mode && addr >= 0x08000000 && addr < 0x08000000 + ROM_SIZE) {
+        return rom_read8(addr - 0x08000000);
     }
 
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {

@@ -87,4 +87,7 @@ uint8_t  rom_read8(uint32_t addr);
 /* ROM function interception: returns 1 if PC was intercepted */
 int rom_intercept(uint32_t pc);
 
+/* Patch ROM for RP2350 ARM/M33 mode (call after rom_init in M33 path) */
+void rom_patch_rp2350_arm(void);
+
 #endif /* ROM_H */

@@ -14,8 +14,11 @@
  * Initialization
  * ======================================================================== */
 
-void rp2350_periph_init(rp2350_periph_state_t *state) {
-    static const uint32_t bootram_xip_reentry_stub = 0x00008067u; /* jalr x0, 0(ra) */
+void rp2350_periph_init(rp2350_periph_state_t *state, int for_arm) {
+    /* ARM: bx lr (0x4770) in Thumb. RISC-V: jalr x0, 0(ra) (0x00008067) */
+    static const uint32_t bootram_stub_arm = 0x00004770u;
+    static const uint32_t bootram_stub_rv  = 0x00008067u;
+    const uint32_t bootram_xip_reentry_stub = for_arm ? bootram_stub_arm : bootram_stub_rv;
 
     memset(state, 0, sizeof(*state));
 

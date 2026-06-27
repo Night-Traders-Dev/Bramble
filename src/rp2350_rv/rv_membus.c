@@ -86,7 +86,7 @@ void rv_membus_init(rv_membus_state_t *bus, uint8_t *flash, uint32_t flash_size,
     bus->hart1_launch_pending = 0;
     bus->gpio_hi_in = 0x3E;  /* CS high + data pulled up (same as RP2040 QSPI) */
     rv_clint_init(&bus->clint, cycles_per_us);
-    rp2350_periph_init(&bus->periph);
+    rp2350_periph_init(&bus->periph, 0);
 }
 
 /* ========================================================================

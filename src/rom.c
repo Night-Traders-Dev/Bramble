@@ -5,6 +5,7 @@
 #include "emulator.h"
 #include "storage.h"
 #include "fuse_mount.h"
+#include "devtools.h"
 
 /* ROM image buffer */
 uint8_t rom_image[ROM_SIZE];
@@ -499,19 +500,158 @@ int rom_intercept(uint32_t pc) {
         }
     }
 
+    /* RP2350 get_sys_info ('GS') stub at 0x0750 */
+    if (membus_rp2350_mode && pc == 0x0750) {
+        /* r0 = out_addr, r1 = out_words, r2 = flags
+         * Write minimal chip info to out_addr */
+        uint32_t out_addr = cpu.r[0];
+        uint32_t out_words = cpu.r[1];
+        uint32_t flags = cpu.r[2];
+        (void)out_words;
+        uint32_t count = 0;
+        uint32_t buf[16];
+        buf[count++] = flags; /* first word = included flags mask */
+        buf[count++] = 0x00000000; /* package */
+        buf[count++] = 0x23500001; /* device_id_lo */
+        buf[count++] = 0x00000001; /* device_id_hi */
+        buf[count++] = 0x00000B08; /* critical: ARM arch, debug enabled */
+        buf[count++] = 0x01000200; /* cpu_info: ARM, rev 2 */
+        buf[count++] = 0x0000A204; /* flash devinfo: 4MB */
+        buf[count++] = 0x2350C0DE; /* boot_random[0] */
+        buf[count++] = 0x12345678; /* boot_random[1] */
+        buf[count++] = 0x89ABCDEF; /* boot_random[2] */
+        buf[count++] = 0x0BADF00D; /* boot_random[3] */
+        buf[count++] = 0x10203040; /* nonce[0] */
+        buf[count++] = 0x50607080; /* nonce[1] */
+        buf[count++] = 0x00000000; /* boot_info: normal boot, no partition */
+        buf[count++] = 0x00000000;
+        buf[count++] = 0x00000000;
+        buf[count++] = 0x00000000;
+        for (uint32_t i = 0; i < count; i++) {
+            mem_write32(out_addr + i * 4, buf[i]);
+        }
+        cpu.r[0] = count; /* return word count */
+        cpu.r[15] = cpu.r[14] & ~1u; /* BX LR */
+        cpu.step_count++;
+        return 1;
+    }
+
+    /* RP2350 reboot ('RB') stub at 0x0752 */
+    if (membus_rp2350_mode && pc == 0x0752) {
+        /* Reboot not implemented; trigger semihosting exit */
+        semihost_exit_requested = 1;
+        semihost_exit_code = 0;
+        cpu.r[15] = 0xFFFFFFFF;
+        return 1;
+    }
+
     return 0;
+}
+
+/* ========================================================================
+ * RP2350 ARM ROM Patch
+ *
+ * In RP2350/M33 mode, the ROM must use RP2350 format:
+ * - Magic at 0x10: 'R','P',0x02 (vs RP2040 'M','u',0x01)
+ * - 32-bit pointers at 0x14/0x18/0x1C (vs 16-bit)
+ * - 32-bit function table entries (vs 16-bit)
+ * - RP2350-specific function codes: get_sys_info ('GS'), reboot ('RB')
+ *
+ * Called from M33 init path after rom_init().
+ * ======================================================================== */
+void rom_patch_rp2350_arm(void) {
+    /* Patch magic to RP2350 format */
+    rom_image[0x10] = 'R';
+    rom_image[0x11] = 'P';
+    rom_image[0x12] = 0x02;
+    rom_image[0x13] = 0x00;
+
+    /* Patch 0x14-0x17: 32-bit func table pointer -> keep 0x0100 */
+    /* Already correct via rom_read32 fix, but ensure bytes are right */
+    rom_image[0x14] = 0x00;
+    rom_image[0x15] = 0x01;
+    rom_image[0x16] = 0x00;
+    rom_image[0x17] = 0x00;
+
+    /* Patch 0x18-0x1B: 32-bit data table pointer -> keep 0x0180 */
+    rom_image[0x18] = 0x80;
+    rom_image[0x19] = 0x01;
+    rom_image[0x1A] = 0x00;
+    rom_image[0x1B] = 0x00;
+
+    /* Patch 0x1C-0x1F: 32-bit lookup function pointer -> 0x0701 (new 32-bit lookup) */
+    rom_image[0x1C] = 0x01;
+    rom_image[0x1D] = 0x07;
+    rom_image[0x1E] = 0x00;
+    rom_image[0x1F] = 0x00;
+
+    /* Place 32-bit entry lookup at 0x0700.
+     * Steps by 8 bytes per entry, reads 32-bit code and 32-bit addr.
+     * r0=table, r1=code (32-bit zero-extended from SDK)
+     *
+     * 0x0700: 6802     ldr  r2, [r0, #0]    ; load 32-bit entry code
+     * 0x0702: 2A00     cmp  r2, #0          ; end of table?
+     * 0x0704: D007     beq  0x0716          ; -> return 0
+     * 0x0706: 4291     cmp  r1, r2          ; match?
+     * 0x0708: D102     bne  0x0710          ; -> next entry
+     * 0x070A: 6840     ldr  r0, [r0, #4]    ; load 32-bit addr
+     * 0x070C: 4770     bx   lr              ; return
+     * 0x070E: BF00     nop
+     * 0x0710: 3008     adds r0, #8          ; next entry
+     * 0x0712: E7F5     b    0x0700          ; loop
+     * 0x0714: BF00     nop
+     * 0x0716: 2000     movs r0, #0          ; not found
+     * 0x0718: 4770     bx   lr              ; return
+     */
+    rom_write16(0x0700, 0x6802);
+    rom_write16(0x0702, 0x2A00);
+    rom_write16(0x0704, 0xD007);
+    rom_write16(0x0706, 0x4291);
+    rom_write16(0x0708, 0xD102);
+    rom_write16(0x070A, 0x6840);
+    rom_write16(0x070C, 0x4770);
+    rom_write16(0x070E, 0xBF00);
+    rom_write16(0x0710, 0x3008);
+    rom_write16(0x0712, 0xE7F5);
+    rom_write16(0x0714, 0xBF00);
+    rom_write16(0x0716, 0x2000);
+    rom_write16(0x0718, 0x4770);
+
+    /* Place RP2350 function table at 0x0720: 32-bit entries [code(4)][addr(4)]
+     * Include 'GS' (get_sys_info) and 'RB' (reboot) with stub addresses */
+    /* Entry 0: 'GS' (0x00004753) -> stub at 0x0751 */
+    rom_write16(0x0720, 0x4753);
+    rom_write16(0x0722, 0x0000);
+    rom_write16(0x0724, 0x0751);
+    rom_write16(0x0726, 0x0000);
+    /* Entry 1: 'RB' (0x00005242) -> stub at 0x0753 */
+    rom_write16(0x0728, 0x5242);
+    rom_write16(0x072A, 0x0000);
+    rom_write16(0x072C, 0x0753);
+    rom_write16(0x072E, 0x0000);
+    /* End marker */
+    rom_write16(0x0730, 0x0000);
+    rom_write16(0x0732, 0x0000);
+    rom_write16(0x0734, 0x0000);
+    rom_write16(0x0736, 0x0000);
+
+    /* Point ROM header func table ptr (0x14) to new table */
+    rom_image[0x14] = 0x20;
+    rom_image[0x15] = 0x07;
+
+    /* Place stub functions: BX LR (intercepted by rom_intercept) */
+    rom_write16(0x0750, 0x4770);  /* bx lr - get_sys_info stub */
+    rom_write16(0x0752, 0x4770);  /* bx lr - reboot stub */
 }
 
 /* Read from ROM */
 uint32_t rom_read32(uint32_t addr) {
     uint32_t off = addr & (ROM_SIZE - 1);
-    if (off + 3 < ROM_SIZE) {
-        return rom_image[off] |
-               ((uint32_t)rom_image[off + 1] << 8) |
-               ((uint32_t)rom_image[off + 2] << 16) |
-               ((uint32_t)rom_image[off + 3] << 24);
-    }
-    return 0;
+    if (off + 3 >= ROM_SIZE) return 0;
+    return rom_image[off] |
+           ((uint32_t)rom_image[off + 1] << 8) |
+           ((uint32_t)rom_image[off + 2] << 16) |
+           ((uint32_t)rom_image[off + 3] << 24);
 }
 
 uint16_t rom_read16(uint32_t addr) {

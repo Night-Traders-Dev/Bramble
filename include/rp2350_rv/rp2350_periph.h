@@ -137,7 +137,7 @@ typedef struct {
  * API
  * ======================================================================== */
 
-void rp2350_periph_init(rp2350_periph_state_t *state);
+void rp2350_periph_init(rp2350_periph_state_t *state, int for_arm);
 
 /* Returns 1 if addr is handled, 0 otherwise */
 int rp2350_periph_match(uint32_t addr);

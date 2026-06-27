@@ -50,6 +50,12 @@ void semihosting_init(void);
 /* Handle a BKPT #0xAB instruction.  Returns 1 if handled, 0 if not semihosting. */
 int semihosting_handle(void);
 
+/* RISC-V semihosting: handle an EBREAK instruction via a0/a1 convention.
+ * Returns 1 if handled, 0 if the ebreak should be treated as a real breakpoint.
+ * 'cpu' is a pointer to rv_cpu_state_t (forward-declared as void* to avoid
+ * circular header dependencies). */
+int rv_semihosting_handle(void *cpu);
+
 /* ========================================================================
  * Code Coverage
  *

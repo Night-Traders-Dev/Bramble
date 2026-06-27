@@ -1,5 +1,26 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.46.0] - 2026-06-26
+
+### Added
+
+- **RISC-V Semihosting**: Full ARM semihosting protocol (SYS_WRITE0, SYS_WRITEC, SYS_WRITE, SYS_READC, SYS_EXIT, etc.) now works for RISC-V firmware via the `ebreak` instruction. Use `-semihosting` flag. Tested successfully with SagePico RISC-V REPL.
+- **RP2350 ROM Format Support (ARM/M33)**: The ARM ROM is patched to RP2350 format (32-bit table pointers, `'RP'` magic) when booting M33 firmware. Includes 32-bit entry lookup function and RP2350-specific ROM functions (`get_sys_info`, `reboot`).
+- **Cortex-M33 ROM Alias (0x08000000)**: The 0x08000000 ROM alias (M33 system address space) is now mapped in the ARM memory bus, enabling RP2350 M33 firmware to access ROM through this address range.
+- **Architecture-Aware Bootram Stub**: The bootram XIP reentry stub now uses `bx lr` (Thumb) for ARM/M33 mode instead of the RISC-V `jalr x0, 0(ra)`.
+
+### Fixed
+
+- **RP2350 Clock-Domain Peripheral Address Mapping**: RESETS, CLOCKS, XOSC, PLL_SYS, PLL_USB, WATCHDOG, PSM, and ROSC now use their correct RP2350 base addresses. Previously these were mapped at their RP2040 addresses, causing boot failures on RP2350 firmware.
+- **PADS_QSPI/RESETS Address Collision**: PADS_QSPI at 0x40020000 (RP2040) now correctly relocates to 0x40040000 in RP2350 mode, preventing it from intercepting RESETS register accesses.
+- **Watchdog Tick Regression**: Fixed address collision between RP2350 PLL_USB (0x40058000) and RP2040 WATCHDOG (0x40058000) that broke the watchdog tick test.
+
+### Tests
+
+- 319/319 tests passing, no regressions.
+
+---
+
 ## [0.45.0] - 2026-05-08
 
 ### Added - Virtual Networking, Software-Defined Devices, W5500 Live Sockets

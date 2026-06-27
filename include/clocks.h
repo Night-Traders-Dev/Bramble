@@ -8,7 +8,7 @@
  * Resets, Clocks, XOSC, PLL_SYS, PLL_USB, Watchdog
  * ======================================================================== */
 
-/* Resets Peripheral (0x4000C000) */
+/* Resets Peripheral (0x4000C000 on RP2040, 0x40020000 on RP2350) */
 #define RESETS_BASE             0x4000C000
 #define RESETS_RESET            (RESETS_BASE + 0x00)  /* Reset control */
 #define RESETS_WDSEL            (RESETS_BASE + 0x04)  /* Watchdog select */
@@ -18,7 +18,7 @@
 #define RP2040_RESETS_ALL_MASK  0x01FFFFFF
 #define RP2350_RESETS_ALL_MASK  0x1FFFFFFF
 
-/* Clocks Peripheral (0x40008000) */
+/* Clocks Peripheral (0x40008000 on RP2040, 0x40010000 on RP2350) */
 #define CLOCKS_BASE             0x40008000
 #define NUM_CLOCK_GENERATORS    10  /* GPOUT0-3, REF, SYS, PERI, USB, ADC, RTC */
 
@@ -45,6 +45,34 @@
 #define CLK_FC0_REF_KHZ         (CLOCKS_BASE + 0x80)
 #define CLK_FC0_STATUS          (CLOCKS_BASE + 0x98)
 #define CLK_FC0_RESULT          (CLOCKS_BASE + 0x9C)
+
+/* RP2350 clock-domain peripheral bases (different from RP2040).
+ * These are also defined in rp2350_rv/rp2350_memmap.h; we redefine here
+ * with guards to avoid conflicts when both headers are included. */
+#ifndef RP2350_RESETS_BASE
+#define RP2350_RESETS_BASE      0x40020000
+#endif
+#ifndef RP2350_CLOCKS_BASE
+#define RP2350_CLOCKS_BASE      0x40010000
+#endif
+#ifndef RP2350_PSM_BASE
+#define RP2350_PSM_BASE         0x40018000
+#endif
+#ifndef RP2350_XOSC_BASE
+#define RP2350_XOSC_BASE        0x40048000
+#endif
+#ifndef RP2350_PLL_SYS_BASE
+#define RP2350_PLL_SYS_BASE     0x40050000
+#endif
+#ifndef RP2350_PLL_USB_BASE
+#define RP2350_PLL_USB_BASE     0x40058000
+#endif
+#ifndef RP2350_WATCHDOG_BASE
+#define RP2350_WATCHDOG_BASE    0x400d8000
+#endif
+#ifndef RP2350_ROSC_BASE
+#define RP2350_ROSC_BASE        0x400e8000
+#endif
 
 /* ROSC (0x40060000) - Ring Oscillator */
 #define ROSC_BASE               0x40060000
