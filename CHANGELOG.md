@@ -4,18 +4,22 @@
 
 ### Added
 
-- **RISC-V Semihosting**: Full ARM semihosting protocol (SYS_WRITE0, SYS_WRITEC, SYS_WRITE, SYS_READC, SYS_EXIT, SYS_ERRNO, SYS_ELAPSED, SYS_TICKFREQ) now works for RISC-V firmware via the `ebreak` instruction. Use `-semihosting` flag. Tested successfully with SagePico RISC-V REPL.
-- **RP2350 ROM Format Support (ARM/M33)**: The ARM ROM is patched to RP2350 format when booting M33 firmware: RP2350 magic (`'RP'`), 32-bit lookup function with 8-byte step entries, and RP2350-specific ROM functions (`get_sys_info`, `reboot`). Includes native C intercepts for `get_sys_info` (chip info population) and `reboot`.
-- **Cortex-M33 ROM Alias (0x08000000)**: The 0x08000000 ROM alias (M33 system address space) is now mapped in the ARM memory bus for both reads and instruction execution, enabling RP2350 M33 firmware to access ROM through this address range.
-- **Architecture-Aware Bootram Stub**: The bootram XIP reentry stub now uses `bx lr` (Thumb) for ARM/M33 mode instead of the RISC-V `jalr x0, 0(ra)`.
+- **RISC-V Semihosting**: Full ARM semihosting protocol (SYS_WRITE0, SYS_WRITEC, SYS_WRITE, SYS_READC, SYS_EXIT, SYS_ERRNO, SYS_ELAPSED, SYS_TICKFREQ) via the `ebreak` instruction. Use `-semihosting` flag. Tested with SagePico RISC-V REPL.
+- **RP2350 ROM Format Support (ARM/M33)**: The ARM ROM is patched to RP2350 format when booting M33 firmware: RP2350 magic (`'RP'`), 32-bit lookup function with 8-byte step entries, and RP2350-specific ROM functions (`get_sys_info`, `reboot`). Includes native C intercepts for `get_sys_info` (chip info) and `reboot`.
+- **Cortex-M33 ROM Alias (0x08000000)**: The 0x08000000 ROM alias (M33 system address space) is now mapped in the ARM memory bus for both reads (`mem_read32/16/8`) and instruction execution (`cpu_step`).
+- **Architecture-Aware Bootram Stub**: Uses `bx lr` (Thumb) for ARM/M33 mode instead of the RISC-V `jalr x0, 0(ra)`.
 
 ### Fixed
 
-- **RP2350 Clock-Domain Peripheral Address Mapping**: RESETS, CLOCKS, XOSC, PLL_SYS, PLL_USB, WATCHDOG, PSM, and ROSC now use their correct RP2350 base addresses in both `is_clocks_addr` (membus) and `clocks_read32`/`clocks_write32` dispatchers. Previously these were mapped at their RP2040 addresses, causing boot failures on RP2350 firmware.
-- **PADS_QSPI/RESETS Address Collision**: PADS_QSPI at 0x40020000 (RP2040) now correctly relocates to 0x40040000 in RP2350 mode via `pads_qspi_active_base()`, preventing it from intercepting RESETS register accesses.
-- **Watchdog Tick Regression**: Fixed address collision between RP2350 PLL_USB (0x40058000) and RP2040 WATCHDOG (0x40058000). RP2350 base checks are now gated behind `membus_rp2350_mode` flag to prevent dispatch conflicts in RP2040 mode.
-- **get_sys_info Buffer Overflow**: The ARM `get_sys_info` intercept now respects the caller's `out_words` buffer size to prevent stack corruption.
-- **T32 Unknown Op Handling**: Unknown data-processing and load-store Thumb-2 ops now log as warnings instead of triggering HardFault exceptions, allowing firmware to continue past misrouted T32 instruction groups.
+- **RP2350 Clock-Domain Peripheral Address Mapping**: RESETS, CLOCKS, XOSC, PLL_SYS, PLL_USB, WATCHDOG, PSM, and ROSC now use their correct RP2350 base addresses in `is_clocks_addr`, `clocks_read32`, and `clocks_write32`.
+- **PADS_QSPI/RESETS Address Collision**: PADS_QSPI at 0x40020000 (RP2040) relocates to 0x40040000 in RP2350 mode via `pads_qspi_active_base()`.
+- **Watchdog Tick Regression**: Fixed address collision between RP2350 PLL_USB (0x40058000) and RP2040 WATCHDOG (0x40058000). RP2350 base checks gated behind `membus_rp2350_mode`.
+- **get_sys_info Buffer Overflow**: ARM `get_sys_info` intercept now respects caller's `out_words` buffer size.
+- **T32 Unknown Op Handling**: Unknown data-processing and load-store Thumb-2 ops now log as warnings instead of triggering HardFault exceptions.
+
+### Known Issues
+
+- **ARM SagePico**: Boots through BSS, data copy, ROM init, `sleep_ms`, and into TinyUSB init (91M steps). USB CDC enumeration never completes because the USB peripheral model is incomplete, causing a retry loop in `cdcd_control_xfer_cb` that leaks stack. The firmware never reaches the `puts()` welcome message or REPL. Fix requires completing USB CDC enumeration handshake in the TinyUSB device model.
 
 ### Tests
 
