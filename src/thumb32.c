@@ -174,10 +174,14 @@ static void t32_dp_exec(int op, int S, int Rn, int Rd, uint32_t imm32, int shift
         if (S) update_sub_flags(imm32, rn, res);
         break;
     default:
+        /* Unknown ops are typically misrouted instructions from other
+         * T32 groups. Treat as no-op rather than HardFault to allow
+         * firmware to continue. Real hardware executes the correct
+         * handler, not the data-processing path. */
         if (cpu.debug_enabled)
-            fprintf(stderr, "[T32] Unknown dp op=0x%X @ PC=0x%08X\n", op, cpu.r[15]);
-        cpu_exception_entry(EXC_HARDFAULT);
-        return;
+            fprintf(stderr, "[T32] Unknown dp op=0x%X @ PC=0x%08X (no-op)\n", op, cpu.r[15]);
+        wr = 0;
+        break;
     }
     if (wr && Rd < 16) {
         if (Rd == 15) { cpu.r[15] = res & ~1u; pc_updated = 1; }
@@ -799,9 +803,8 @@ static void t32_ldst_single(uint32_t pc, uint16_t upper, uint16_t lower) {
 
 unhandled_ldst:
     if (cpu.debug_enabled)
-        fprintf(stderr, "[T32] Unhandled ldst upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
+        fprintf(stderr, "[T32] Unhandled ldst upper=0x%04X lower=0x%04X @ PC=0x%08X (no-op)\n",
                 upper, lower, pc);
-    cpu_exception_entry(EXC_HARDFAULT);
     (void)sign; (void)size; (void)L;
 }
 

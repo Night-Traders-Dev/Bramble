@@ -527,6 +527,8 @@ int rom_intercept(uint32_t pc) {
         buf[count++] = 0x00000000;
         buf[count++] = 0x00000000;
         buf[count++] = 0x00000000;
+        /* Cap writes to caller's buffer size to avoid stack corruption */
+        if (count > out_words) count = out_words;
         for (uint32_t i = 0; i < count; i++) {
             mem_write32(out_addr + i * 4, buf[i]);
         }
@@ -566,43 +568,30 @@ void rom_patch_rp2350_arm(void) {
     rom_image[0x12] = 0x02;
     rom_image[0x13] = 0x00;
 
-    /* Patch 0x14-0x17: 32-bit func table pointer -> keep 0x0100 */
-    /* Already correct via rom_read32 fix, but ensure bytes are right */
-    rom_image[0x14] = 0x00;
-    rom_image[0x15] = 0x01;
-    rom_image[0x16] = 0x00;
-    rom_image[0x17] = 0x00;
-
-    /* Patch 0x18-0x1B: 32-bit data table pointer -> keep 0x0180 */
+    /* RP2350 ROM header pointers:
+     * The firmware's rom_func_lookup() reads a 16-bit value from offset
+     * 0x16 and does 'bx r3' to it. On RP2040 this was the data-table
+     * pointer (0x0180). For RP2350 we point it to our 32-bit-entry
+     * lookup function at 0x0700 (Thumb bit → 0x0701).
+     *
+     * 0x14-0x15: 16-bit func table pointer → 0x0720 (32-bit entry table)
+     * 0x16-0x17: 16-bit lookup fn address → 0x0701 (bx target)
+     * 0x18-0x19: 16-bit data table pointer → keep 0x0180 */
+    rom_image[0x14] = 0x20;
+    rom_image[0x15] = 0x07;
+    rom_image[0x16] = 0x01;
+    rom_image[0x17] = 0x07;
     rom_image[0x18] = 0x80;
     rom_image[0x19] = 0x01;
     rom_image[0x1A] = 0x00;
     rom_image[0x1B] = 0x00;
-
-    /* Patch 0x1C-0x1F: 32-bit lookup function pointer -> 0x0701 (new 32-bit lookup) */
-    rom_image[0x1C] = 0x01;
-    rom_image[0x1D] = 0x07;
+    rom_image[0x1C] = 0x00;
+    rom_image[0x1D] = 0x00;
     rom_image[0x1E] = 0x00;
     rom_image[0x1F] = 0x00;
 
     /* Place 32-bit entry lookup at 0x0700.
-     * Steps by 8 bytes per entry, reads 32-bit code and 32-bit addr.
-     * r0=table, r1=code (32-bit zero-extended from SDK)
-     *
-     * 0x0700: 6802     ldr  r2, [r0, #0]    ; load 32-bit entry code
-     * 0x0702: 2A00     cmp  r2, #0          ; end of table?
-     * 0x0704: D007     beq  0x0716          ; -> return 0
-     * 0x0706: 4291     cmp  r1, r2          ; match?
-     * 0x0708: D102     bne  0x0710          ; -> next entry
-     * 0x070A: 6840     ldr  r0, [r0, #4]    ; load 32-bit addr
-     * 0x070C: 4770     bx   lr              ; return
-     * 0x070E: BF00     nop
-     * 0x0710: 3008     adds r0, #8          ; next entry
-     * 0x0712: E7F5     b    0x0700          ; loop
-     * 0x0714: BF00     nop
-     * 0x0716: 2000     movs r0, #0          ; not found
-     * 0x0718: 4770     bx   lr              ; return
-     */
+     * Steps by 8 bytes per entry, reads 32-bit code and 32-bit addr. */
     rom_write16(0x0700, 0x6802);
     rom_write16(0x0702, 0x2A00);
     rom_write16(0x0704, 0xD007);
@@ -617,8 +606,7 @@ void rom_patch_rp2350_arm(void) {
     rom_write16(0x0716, 0x2000);
     rom_write16(0x0718, 0x4770);
 
-    /* Place RP2350 function table at 0x0720: 32-bit entries [code(4)][addr(4)]
-     * Include 'GS' (get_sys_info) and 'RB' (reboot) with stub addresses */
+    /* Place RP2350 function table at 0x0720: 32-bit entries [code(4)][addr(4)] */
     /* Entry 0: 'GS' (0x00004753) -> stub at 0x0751 */
     rom_write16(0x0720, 0x4753);
     rom_write16(0x0722, 0x0000);
@@ -634,10 +622,6 @@ void rom_patch_rp2350_arm(void) {
     rom_write16(0x0732, 0x0000);
     rom_write16(0x0734, 0x0000);
     rom_write16(0x0736, 0x0000);
-
-    /* Point ROM header func table ptr (0x14) to new table */
-    rom_image[0x14] = 0x20;
-    rom_image[0x15] = 0x07;
 
     /* Place stub functions: BX LR (intercepted by rom_intercept) */
     rom_write16(0x0750, 0x4770);  /* bx lr - get_sys_info stub */

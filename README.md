@@ -2,9 +2,9 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.45.0
+## Current Status: v0.46.0
 
-319 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, and Zcmp extensions. Boots MicroPython Pico 2 RISC-V and custom test firmware with UART output. **RP2350 ARM**: Complete Cortex-M33 mode (`-arch m33`). **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
+319 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
 
 ### Coverage
 
@@ -30,7 +30,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus logging, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Firmware Auto-Detect | UF2 + ELF | Auto-detects RP2040/RP2350-ARM/RP2350-RV from UF2 family ID or ELF machine type |
 | RV Performance | ICache | 64K-entry decoded instruction cache for flash/ROM fetches |
-| RV Semihosting | EBREAK | EBREAK with a0=0x20026 triggers SYS_EXIT |
+| RV Semihosting | EBREAK | Full ARM semihosting protocol: SYS_WRITE0, SYS_WRITEC, SYS_WRITE, SYS_READC, SYS_EXIT, etc. via EBREAK |
 | Tests | 319 | CTest integrated, 57+ categories (20 RV + 4 M33 + 19 networking tests) |
 
 ### Peripherals
