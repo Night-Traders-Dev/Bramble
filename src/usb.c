@@ -341,11 +341,7 @@ static void usb_enum_step(void) {
             usb_state.ctrl_state = USB_CTRL_IDLE;
             /* SET_CONFIGURATION 1 */
             usb_send_setup(0x00, 9, 1, 0, 0);
-            /* Skip SET_LINE_CODING (causes hangs with some firmware),
-             * go directly to SET_CONTROL_LINE_STATE for DTR/RTS.
-             * Delay to let firmware complete USB stack init before DTR. */
-            usb_state.enum_state = USB_ENUM_CDC_SET_CTRL_LINE;
-            usb_state.delay = 500;
+            usb_state.enum_state = USB_ENUM_CDC_SET_LINE_CODING;
         }
         break;
 
@@ -594,6 +590,7 @@ void usb_write32(uint32_t addr, uint32_t val) {
 
     /* DPRAM writes (no alias for DPRAM) */
     if (base >= USBCTRL_DPRAM_BASE && base < USBCTRL_DPRAM_BASE + USBCTRL_DPRAM_SIZE) {
+        usb_state.dpram_touched = 1;
         uint32_t off = base - USBCTRL_DPRAM_BASE;
         if (alias == 0) {
             memcpy(&usb_state.dpram[off], &val, 4);
@@ -630,6 +627,7 @@ void usb_write32(uint32_t addr, uint32_t val) {
         ALIAS_APPLY(usb_state.main_ctrl);
         break;
     case USB_SIE_CTRL:
+        usb_state.sie_ctrl_written = 1;
         ALIAS_APPLY(usb_state.sie_ctrl);
         break;
     case USB_SIE_STATUS:

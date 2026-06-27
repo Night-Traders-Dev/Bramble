@@ -133,6 +133,10 @@ typedef struct {
     int config_total_len;     /* Total configuration descriptor length */
     int cdc_iface;            /* CDC interface number (for class requests) */
 
+    /* Auto-start: true when firmware writes to DPRAM or SIE_CTRL */
+    int dpram_touched;
+    int sie_ctrl_written;
+
     /* CDC bulk endpoint tracking */
     int cdc_in_ep;            /* CDC bulk IN endpoint number (0 = not found) */
     int cdc_out_ep;           /* CDC bulk OUT endpoint number (0 = not found) */
