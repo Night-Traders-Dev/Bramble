@@ -1660,6 +1660,11 @@ uint32_t mem_read32(uint32_t addr) {
 
     /* USB controller */
     if (usb_match(addr)) {
+        static int usb_read_hit = 0;
+        if (usb_read_hit < 5) {
+            fprintf(stderr, "[MEM] USB read addr=0x%08X\n", addr);
+            usb_read_hit++;
+        }
         return usb_read32(addr);
     }
 

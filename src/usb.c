@@ -492,6 +492,7 @@ void usb_step(void) {
 
     /* First time enabled: start enumeration */
     if (usb_state.enum_state == USB_ENUM_DISABLED) {
+        fprintf(stderr, "[USB] Enumeration starting\n");
         usb_state.enum_state = USB_ENUM_WAIT_PULLUP;
         usb_state.sie_status |= USB_SIE_VBUS_DETECTED;
     }
