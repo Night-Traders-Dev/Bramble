@@ -646,7 +646,7 @@ void cyw43_reset(void) {
     memcpy(cyw43.tap_name, saved_tap_name, sizeof(cyw43.tap_name));
 
     memcpy(cyw43.mac_addr, default_mac, 6);
-    strcpy(cyw43.country, "XX");
+    snprintf(cyw43.country, sizeof(cyw43.country), "XX");
     cyw43.wifi_state = CYW43_WIFI_OFF;
     cyw43.chipclkcsr = CYW43_HT_AVAIL | CYW43_ALP_AVAIL;
     cyw43.pio_num = -1;
@@ -672,7 +672,7 @@ int cyw43_is_wifi_gpio(uint32_t gpio) {
 int cyw43_tap_open(const char *name) {
     cyw43.tap_fd = tapif_open(name);
     if (cyw43.tap_fd >= 0) {
-        strncpy(cyw43.tap_name, name, sizeof(cyw43.tap_name) - 1);
+        snprintf(cyw43.tap_name, sizeof(cyw43.tap_name), "%s", name);
         fprintf(stderr, "[CYW43] TAP bridge enabled on '%s'\n", name);
     }
     return cyw43.tap_fd;
@@ -918,7 +918,7 @@ void cyw43_add_scan_result(const char *ssid, int rssi, int channel, int auth) {
     if (cyw43.scan_count >= CYW43_MAX_SCAN_RESULTS) return;
 
     cyw43_scan_result_t *r = &cyw43.scan_results[cyw43.scan_count];
-    strncpy(r->ssid, ssid, CYW43_MAX_SSID_LEN);
+    snprintf(r->ssid, CYW43_MAX_SSID_LEN + 1, "%s", ssid);
     r->ssid[CYW43_MAX_SSID_LEN] = '\0';
     r->rssi = (int16_t)rssi;
     r->channel = (uint8_t)channel;
