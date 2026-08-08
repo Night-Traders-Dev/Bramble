@@ -50,6 +50,7 @@ typedef enum { ARCH_M0PLUS, ARCH_RV32, ARCH_M33 } arch_t;
 #include "pio.h"
 #include "gdb.h"
 #include "usb.h"
+#include "usb_console.h"
 #include "rtc.h"
 #include "netbridge.h"
 #include "wire.h"
@@ -190,7 +191,7 @@ static void uart_stdin_cleanup(void) {
  * stdio. That keeps littleOS interactive while still allowing USB-only
  * shells such as MicroPython to consume stdin through CDC. */
 static stdin_target_t stdin_select_target(void) {
-    int usb_ready = usb_cdc_stdout_enabled && usb_cdc_stdio_active();
+    int usb_ready = usb_cdc_stdio_active();
     int uart_ready = stdin_uart0_rx_ready();
     int uart_console_ready = stdin_uart0_console_active();
 
@@ -198,7 +199,7 @@ static stdin_target_t stdin_select_target(void) {
         return STDIN_TARGET_UART0;
     }
 
-    if (usb_ready) {
+    if (usb_ready && (usb_cdc_stdout_enabled || usb_console_active())) {
         return STDIN_TARGET_USB_CDC;
     }
 
@@ -290,6 +291,9 @@ static void reset_runtime_peripherals(const char *tap_name) {
     clocks_init();
     adc_init();
     usb_init();
+    if (usb_console_init() < 0) {
+        fprintf(stderr, "[Error] Failed to initialize USB CDC console\n");
+    }
     rtc_init();
 
     if (cyw43.enabled) {
@@ -336,6 +340,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -asm       Show assembly instruction tracing\n");
         fprintf(stderr, "  -status    Print periodic status updates\n");
         fprintf(stderr, "  -stdin     Enable stdin polling for guest console input\n");
+        fprintf(stderr, "  -usb-console <port>  Bidirectional USB CDC over TCP (nc localhost <port>)\n");
+        fprintf(stderr, "  -usb-console pty[:path]  USB CDC on a PTY (default symlink /tmp/bramble-usb-console)\n");
+        fprintf(stderr, "  -usb-serial [path]     Alias for -usb-console pty[:path]\n");
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
         fprintf(stderr, "  -cores <N|auto> Active cores per instance (1, 2, or auto; default: 1)\n");
@@ -457,6 +464,22 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-stdin") == 0) {
             stdin_enabled = 1;
             usb_cdc_stdout_enabled = 1;
+        } else if (strcmp(argv[i], "-usb-serial") == 0) {
+            const char *link = "/tmp/bramble-usb-console";
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                link = argv[++i];
+            usb_console_set_pty(link);
+        } else if (strcmp(argv[i], "-usb-console") == 0) {
+            if (i + 1 < argc) {
+                const char *arg = argv[++i];
+                if (strcmp(arg, "pty") == 0)
+                    usb_console_set_pty("/tmp/bramble-usb-console");
+                else if (strncmp(arg, "pty:", 4) == 0) {
+                    const char *link = arg + 4;
+                    usb_console_set_pty(link[0] ? link : NULL);
+                } else
+                    usb_console_set_port(atoi(arg));
+            }
         } else if (strcmp(argv[i], "-gdb") == 0) {
             gdb_enabled = 1;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
@@ -1551,6 +1574,7 @@ skip_fuse:
         mem_heatmap_cleanup();
     }
     if (script_enabled) script_cleanup();
+    usb_console_cleanup();
     if (symbols_loaded) symbols_cleanup();
 
     /* Determine exit code */

@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "usb.h"
+#include "usb_console.h"
 #include "nvic.h"
 #include "devtools.h"
 
@@ -404,6 +405,8 @@ static void usb_handle_cdc(void) {
             /* Output CDC data to stdout only when USB CDC stdio is primary
              * (i.e. -stdin mode). When UART stdio is also active, UART
              * already handles stdout and we must not duplicate the data. */
+            if (usb_console_active())
+                usb_console_tx(&usb_state.dpram[buf_addr], len);
             if (usb_cdc_stdout_enabled) {
                 fwrite(&usb_state.dpram[buf_addr], 1, len, stdout);
                 fflush(stdout);
@@ -485,6 +488,9 @@ static void usb_cdc_rx_drain(void) {
  * ======================================================================== */
 
 void usb_step(void) {
+    if (usb_console_active())
+        usb_console_poll();
+
     /* Only active when controller is enabled */
     if (!(usb_state.main_ctrl & USB_MAIN_CTRL_EN)) {
         return;

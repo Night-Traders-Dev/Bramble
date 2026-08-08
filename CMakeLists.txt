@@ -44,6 +44,7 @@ set(EMU_SOURCES
     src/pio.c
     src/gdb.c
     src/usb.c
+    src/usb_console.c
     src/rtc.c
     src/netbridge.c
     src/wire.c
