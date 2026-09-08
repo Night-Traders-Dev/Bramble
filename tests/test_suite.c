@@ -737,6 +737,61 @@ TEST(test_busctrl_atomic_aliases) {
     PASS();
 }
 
+/* SIO GPIO output registers. SIO_BASE and SIO_BASE_GPIO are the same
+ * address, and mem_write32() tests SIO_BASE first, so these writes reach
+ * sio_write32() and never gpio_bus_match()/gpio_write32(). Reads already
+ * delegate; writes have to as well or GPIO output state is never updated
+ * and every trace hook built on it is dead. */
+#define TEST_SIO_GPIO_OUT      (0xD0000000 + 0x10)
+#define TEST_SIO_GPIO_OUT_SET  (0xD0000000 + 0x14)
+#define TEST_SIO_GPIO_OUT_CLR  (0xD0000000 + 0x18)
+#define TEST_SIO_GPIO_OUT_XOR  (0xD0000000 + 0x1C)
+#define TEST_SIO_GPIO_OE       (0xD0000000 + 0x20)
+#define TEST_SIO_GPIO_OE_SET   (0xD0000000 + 0x24)
+
+TEST(test_sio_gpio_out_writes_reach_gpio_state) {
+    reset_cpu();
+    gpio_reset();
+
+    mem_write32(TEST_SIO_GPIO_OUT_SET, 1u << 25);
+    ASSERT_EQ(1u << 25, mem_read32(TEST_SIO_GPIO_OUT), "GPIO_OUT_SET should set pin 25");
+
+    mem_write32(TEST_SIO_GPIO_OUT_CLR, 1u << 25);
+    ASSERT_EQ(0, mem_read32(TEST_SIO_GPIO_OUT), "GPIO_OUT_CLR should clear pin 25");
+
+    mem_write32(TEST_SIO_GPIO_OUT_XOR, 1u << 25);
+    ASSERT_EQ(1u << 25, mem_read32(TEST_SIO_GPIO_OUT), "GPIO_OUT_XOR should toggle pin 25 on");
+
+    mem_write32(TEST_SIO_GPIO_OUT, 0);
+    ASSERT_EQ(0, mem_read32(TEST_SIO_GPIO_OUT), "GPIO_OUT should write the whole mask");
+    PASS();
+}
+
+TEST(test_sio_gpio_oe_writes_reach_gpio_state) {
+    reset_cpu();
+    gpio_reset();
+
+    mem_write32(TEST_SIO_GPIO_OE_SET, 1u << 25);
+    ASSERT_EQ(1u << 25, mem_read32(TEST_SIO_GPIO_OE), "GPIO_OE_SET should enable output on pin 25");
+
+    mem_write32(TEST_SIO_GPIO_OE, 0);
+    ASSERT_EQ(0, mem_read32(TEST_SIO_GPIO_OE), "GPIO_OE should write the whole mask");
+    PASS();
+}
+
+TEST(test_sio_non_gpio_writes_still_reach_sio) {
+    reset_cpu();
+    gpio_reset();
+
+    /* The delegation must not swallow the rest of SIO space: DIV is above
+     * the GPIO offsets and still belongs to sio_write32(). */
+    mem_write32(SIO_BASE + 0x60, 100);  /* DIV_UDIVIDEND */
+    mem_write32(SIO_BASE + 0x64, 7);    /* DIV_UDIVISOR */
+    ASSERT_EQ(14, mem_read32(SIO_BASE + 0x70), "DIV quotient 100/7");
+    ASSERT_EQ(2, mem_read32(SIO_BASE + 0x74), "DIV remainder of 100/7");
+    PASS();
+}
+
 TEST(test_uart_output) {
     reset_cpu();
     mem_write32(UART0_BASE + UART_DR, 'X');
@@ -4772,6 +4827,9 @@ int main(void) {
     RUN_TEST(test_io_qspi_atomic_aliases);
     RUN_TEST(test_pads_qspi_atomic_aliases);
     RUN_TEST(test_busctrl_atomic_aliases);
+    RUN_TEST(test_sio_gpio_out_writes_reach_gpio_state);
+    RUN_TEST(test_sio_gpio_oe_writes_reach_gpio_state);
+    RUN_TEST(test_sio_non_gpio_writes_still_reach_sio);
     END_CATEGORY("Memory Bus");
 
     BEGIN_CATEGORY("Instruction Integration");
