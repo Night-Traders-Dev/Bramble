@@ -28,6 +28,22 @@
 #include "timer.h"
 #include "usb.h"
 
+/* Clock backing wfi_cond's timed waits.
+ *
+ * pthread_condattr_setclock() is a Linux extension; macOS has no way to move a
+ * condvar off CLOCK_REALTIME. Computing deadlines from CLOCK_MONOTONIC there
+ * would put every one of them decades in the past (monotonic counts from boot,
+ * realtime from 1970), so every pthread_cond_timedwait() would return instantly
+ * and the WFI path would busy-spin. Use one clock consistently: the condvar's
+ * own. The elapsed-time math below compares two reads of the same clock, so it
+ * is unaffected either way, and Linux keeps CLOCK_MONOTONIC exactly as before.
+ */
+#if defined(__APPLE__)
+#define BRAMBLE_COND_CLOCK CLOCK_REALTIME
+#else
+#define BRAMBLE_COND_CLOCK CLOCK_MONOTONIC
+#endif
+
 /*
  * Each host thread keeps the big lock for a short burst of guest work before
  * yielding. This cuts mutex/scheduler overhead without changing interrupt
@@ -71,7 +87,9 @@ void corepool_init(void) {
 
     pthread_condattr_t attr;
     pthread_condattr_init(&attr);
+#if !defined(__APPLE__)
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#endif
     pthread_cond_init(&corepool.wfi_cond, &attr);
     pthread_condattr_destroy(&attr);
 
@@ -287,7 +305,7 @@ static void *core_thread_fn(void *arg) {
             if (cores[core_id].is_halted) {
                 /* Halted core: sleep briefly then re-check (may be re-launched) */
                 struct timespec ts;
-                clock_gettime(CLOCK_MONOTONIC, &ts);
+                clock_gettime(BRAMBLE_COND_CLOCK, &ts);
                 ts.tv_nsec += 1000000;  /* 1ms */
                 if (ts.tv_nsec >= 1000000000) {
                     ts.tv_sec++;
@@ -316,7 +334,7 @@ static void *core_thread_fn(void *arg) {
                 struct timespec ts;
                 struct timespec end;
 
-                clock_gettime(CLOCK_MONOTONIC, &start);
+                clock_gettime(BRAMBLE_COND_CLOCK, &start);
                 ts = start;
                 ts.tv_nsec += 1000000;  /* 1ms */
                 if (ts.tv_nsec >= 1000000000) {
@@ -325,7 +343,7 @@ static void *core_thread_fn(void *arg) {
                 }
                 pthread_cond_timedwait(&corepool.wfi_cond, &corepool.emu_lock, &ts);
 
-                clock_gettime(CLOCK_MONOTONIC, &end);
+                clock_gettime(BRAMBLE_COND_CLOCK, &end);
                 uint32_t elapsed_us = corepool_elapsed_us_from_wait(&start, &end);
 
                 if (elapsed_us > 0) {

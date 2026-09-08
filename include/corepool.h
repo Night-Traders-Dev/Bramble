@@ -1,6 +1,7 @@
 #ifndef COREPOOL_H
 #define COREPOOL_H
 
+#include <sys/types.h>
 #include <pthread.h>
 #include <stdint.h>
 
