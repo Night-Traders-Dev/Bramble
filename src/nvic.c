@@ -108,16 +108,17 @@ void systick_tick(uint32_t cycles) {
 
     while (remaining > 0) {
         if (st->cvr == 0) {
-            /* Counter already at zero from a previous tick — reload and fire.
-             * This consumes one cycle (the cycle that "sees" zero and reloads). */
-            st->csr |= (1u << 16); /* COUNTFLAG */
+            /* Counter is zero on ENTRY to this batch, i.e. it was never loaded:
+             * SysTick was just enabled, or CVR was written (both leave CVR 0).
+             * ARMv6-M raises COUNTFLAG/SysTick only on a 1->0 transition of a
+             * running counter, so this reloads silently. Firing here instead
+             * takes the exception on the very first cycle after the enabling
+             * write to SYST_CSR -- before the firmware's next instruction can
+             * set SYST_RVR -- which leaves RVR at 0 and re-pends SysTick every
+             * cycle thereafter. The genuine wrap case is handled below. */
             st->cvr = reload;
-            if (st->csr & 2) {
-                st->pending = 1;
-                corepool_wake_cores();
-            }
+            if (reload == 0) return; /* RVR=0 disables the counter */
             remaining--;
-            if (reload == 0) return;
             continue;
         }
 

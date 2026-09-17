@@ -822,6 +822,43 @@ TEST(test_systick_calib_tenms) {
     PASS();
 }
 
+TEST(test_systick_enable_before_rvr_does_not_fire) {
+    reset_cpu();
+    /* Firmware ordering used by arduino-pico: SYST_CSR is written first and
+     * SYST_RVR on the next instruction. Enabling a SysTick whose CVR is 0
+     * makes it reload; ARMv6-M raises COUNTFLAG/SysTick only on a 1->0
+     * transition of a running counter, never on that reload. Firing here
+     * takes the exception before the RVR write can run, leaving RVR at 0
+     * and re-pending SysTick every cycle thereafter. */
+    nvic_write_register(SYST_CSR, 0x07); /* ENABLE | TICKINT | CLKSOURCE */
+    systick_tick(1);
+    ASSERT_EQ(0, systick_states[get_active_core()].pending,
+              "SysTick pended on the cycle it was enabled");
+    ASSERT_EQ(0, nvic_read_register(SYST_CSR) & (1u << 16),
+              "COUNTFLAG set on the cycle SysTick was enabled");
+
+    /* The firmware's next instruction still gets to set the reload value. */
+    nvic_write_register(SYST_RVR, 0x00FFFFFF);
+    systick_tick(1);
+    ASSERT_EQ(0x00FFFFFF, nvic_read_register(SYST_CVR),
+              "counter did not load from RVR");
+    PASS();
+}
+
+TEST(test_systick_fires_on_counter_wrap) {
+    reset_cpu();
+    nvic_write_register(SYST_RVR, 4);
+    nvic_write_register(SYST_CSR, 0x07);
+    systick_tick(1); /* silent load: CVR 0 -> 4 */
+    systick_tick(4); /* genuine 1->0 transition */
+    ASSERT_EQ(1, systick_states[get_active_core()].pending,
+              "SysTick did not pend on a real counter wrap");
+    ASSERT_TRUE(nvic_read_register(SYST_CSR) & (1u << 16),
+                "COUNTFLAG not set on a real counter wrap");
+    ASSERT_EQ(4, nvic_read_register(SYST_CVR), "counter did not reload after wrap");
+    PASS();
+}
+
 /* ========================================================================
  * MSR/MRS Instruction Tests
  * ======================================================================== */
@@ -4784,6 +4821,8 @@ int main(void) {
     RUN_TEST(test_systick_countdown);
     RUN_TEST(test_systick_disabled_no_count);
     RUN_TEST(test_systick_calib_tenms);
+    RUN_TEST(test_systick_enable_before_rvr_does_not_fire);
+    RUN_TEST(test_systick_fires_on_counter_wrap);
     END_CATEGORY("SysTick Timer");
 
     BEGIN_CATEGORY("MSR/MRS Instructions");
