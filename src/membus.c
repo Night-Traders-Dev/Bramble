@@ -929,6 +929,17 @@ static void sio_write32(uint32_t offset, uint32_t val) {
     int core_id = sio_current_core();
     int other_core = (core_id == CORE0) ? CORE1 : CORE0;
 
+    /* GPIO offsets in SIO space - delegate to gpio module, mirroring what
+     * sio_read32() already does for reads. Without this, GPIO_OUT/OUT_SET/
+     * OUT_CLR/OUT_XOR and the OE registers fall through to `default: break;`
+     * and are silently dropped: mem_write32() tests SIO_BASE before
+     * gpio_bus_match(), and both are 0xD0000000, so gpio_write32()'s SIO
+     * branch is never reached from the write path. */
+    if (offset >= SIO_GPIO_OUT_OFFSET && offset <= SIO_GPIO_OE_XOR_OFFSET) {
+        gpio_write32(SIO_BASE + offset, val);
+        return;
+    }
+
     /* Interpolator writes (0x80-0xBF = INTERP0, 0xC0-0xFF = INTERP1) */
     if (offset >= 0x80 && offset <= 0xFC) {
         int interp_idx = (offset >= 0xC0) ? 1 : 0;
