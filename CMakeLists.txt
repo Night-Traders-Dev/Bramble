@@ -38,6 +38,7 @@ set(EMU_SOURCES
     src/rom.c
     src/uart.c
     src/spi.c
+    src/spi_flash.c
     src/i2c.c
     src/pwm.c
     src/dma.c

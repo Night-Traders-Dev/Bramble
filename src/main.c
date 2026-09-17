@@ -50,6 +50,7 @@ typedef enum { ARCH_M0PLUS, ARCH_RV32, ARCH_M33 } arch_t;
 #include "pio.h"
 #include "gdb.h"
 #include "usb.h"
+#include "spi_flash.h"
 #include "rtc.h"
 #include "netbridge.h"
 #include "wire.h"
@@ -323,6 +324,11 @@ static void reboot_from_watchdog(const char *tap_name,
  * Main Entry Point
  * ============================================================================ */
 
+static int cli_next_arg_is_value(int argc, char **argv, int i) {
+    return (i + 1 < argc && argv[i + 1][0] != '-');
+}
+
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <firmware.uf2> [options]\n", argv[0]);
@@ -336,6 +342,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -asm       Show assembly instruction tracing\n");
         fprintf(stderr, "  -status    Print periodic status updates\n");
         fprintf(stderr, "  -stdin     Enable stdin polling for guest console input\n");
+        fprintf(stderr, "  -spi-flash1 [path]       SPI flash chip #1 backing file (default: flash/spi-flash1.bin)\n");
+        fprintf(stderr, "  -spi-flash1-size <MB>    SPI chip #1 size in MB (default: 64, multiple of 32)\n");
+        fprintf(stderr, "  -spi-flash2 [path]       SPI flash chip #2 backing file (default: flash/spi-flash2.bin)\n");
+        fprintf(stderr, "  -spi-flash2-size <MB>    SPI chip #2 size in MB (default: 64, multiple of 32)\n");
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
         fprintf(stderr, "  -cores <N|auto> Active cores per instance (1, 2, or auto; default: 1)\n");
@@ -580,7 +590,27 @@ int main(int argc, char **argv) {
             if (i + 1 < argc) {
                 wire_add_link(argv[++i], WIRE_MSG_ETH_FRAME, 0);
             }
-        } else if (strcmp(argv[i], "-wifi") == 0) {
+                } else if (strcmp(argv[i], "-spi-flash1") == 0) {
+            const char *path = NULL;
+            if (cli_next_arg_is_value(argc, argv, i)) {
+                path = argv[++i];
+            }
+            spi_flash_configure(0u, path);
+        } else if (strcmp(argv[i], "-spi-flash1-size") == 0) {
+            if (i + 1 < argc) {
+                spi_flash_set_size(0u, (uint32_t)atoi(argv[++i]));
+            }
+        } else if (strcmp(argv[i], "-spi-flash2") == 0) {
+            const char *path = NULL;
+            if (cli_next_arg_is_value(argc, argv, i)) {
+                path = argv[++i];
+            }
+            spi_flash_configure(1u, path);
+        } else if (strcmp(argv[i], "-spi-flash2-size") == 0) {
+            if (i + 1 < argc) {
+                spi_flash_set_size(1u, (uint32_t)atoi(argv[++i]));
+            }
+} else if (strcmp(argv[i], "-wifi") == 0) {
             cyw43.enabled = 1;
         } else if (strcmp(argv[i], "-tap") == 0) {
             if (i + 1 < argc) {
