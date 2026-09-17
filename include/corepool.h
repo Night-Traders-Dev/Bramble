@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <unistd.h>
 
 /* ========================================================================
  * Core Pool — Host-Threaded Execution & Multi-Instance Coordination

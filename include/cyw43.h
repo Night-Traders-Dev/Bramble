@@ -15,12 +15,14 @@
  *   Functions: 0=bus, 1=backplane, 2=wlan
  *
  * TAP Bridge (optional):
- *   -tap <ifname> bridges CYW43 WLAN data frames to a Linux TAP interface,
+ *   -tap <ifname> bridges CYW43 WLAN data frames to a host virtual interface,
  *   enabling real internet access for emulated Pico W firmware.
+ *   Linux: TAP + iptables/nft NAT.  macOS: utun + Ethernet↔IPv4 + pf NAT helper.
  *
  * Usage:
- *   ./bramble firmware.uf2 -wifi              # Stub mode (no networking)
- *   ./bramble firmware.uf2 -wifi -tap tap0    # TAP bridge mode
+ *   ./bramble firmware.uf2 -wifi              # Join + fake DHCP only
+ *   ./bramble firmware.uf2 -wifi -tap tap0    # Bridge to host / internet
+ *   # macOS internet: sudo scripts/macos-cyw43-pf-nat.sh enable
  */
 
 #ifndef CYW43_H
@@ -218,6 +220,7 @@ typedef struct {
 typedef struct {
     int enabled;
     int initialized;
+    int feedbead_ok;         /* SPI_READ_TEST_REGISTER seen (bus bring-up) */
 
     /* gSPI state */
     cyw43_spi_state_t spi;
@@ -232,10 +235,12 @@ typedef struct {
     /* Backplane (function 1) */
     uint32_t bp_window;
     uint32_t chipclkcsr;
+    uint32_t sleepcsr;           /* SBSDIO_FUNC1_SLEEPCSR (KSO) */
 
     /* WiFi state */
     int wifi_state;
     char connected_ssid[CYW43_MAX_SSID_LEN + 1];
+    int password_provided;   /* WLC_SET_WSEC_PMK seen (not validated) */
     uint8_t mac_addr[CYW43_MAC_LEN];
     uint32_t ip_addr;
 

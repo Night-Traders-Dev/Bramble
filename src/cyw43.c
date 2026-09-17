@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include "cyw43.h"
 #include "tapif.h"
@@ -90,6 +91,12 @@ static void rx_queue_pop(void) {
  * SDPCM Frame Construction Helpers
  * ======================================================================== */
 
+/* Firmware stalls TX while last_bus_data_credit == next TX sequence
+ * (cyw43_ll sdpcm_send_common). Credits advance only via RX SDPCM headers.
+ * After DHCP, DNS/NTP TX with no RX exhausts the window → STALL timeout.
+ * Offer a window of 8 ahead of the last firmware TX sequence. */
+#define CYW43_SDPCM_CREDIT_WINDOW 8
+
 static void sdpcm_fill_header(uint8_t *buf, int total_size, uint8_t channel, uint8_t hdr_len) {
     sdpcm_header_t *h = (sdpcm_header_t *)buf;
     memset(h, 0, sizeof(*h));
@@ -98,7 +105,19 @@ static void sdpcm_fill_header(uint8_t *buf, int total_size, uint8_t channel, uin
     h->sequence = cyw43.tx_seq++;
     h->channel_and_flags = channel;
     h->header_length = hdr_len;
-    h->bus_data_credit = (uint8_t)(cyw43.last_fw_seq + 4);
+    h->bus_data_credit = (uint8_t)(cyw43.last_fw_seq + CYW43_SDPCM_CREDIT_WINDOW);
+}
+
+/* SDPCM header-only frame: firmware updates credits then ignores as data. */
+static void cyw43_queue_credit_refresh(void) {
+    uint8_t frame[12];
+    sdpcm_fill_header(frame, 12, SDPCM_CONTROL_CHANNEL, 12);
+    if (rx_queue_push(frame, 12) < 0) {
+        static int once;
+        if (!once++) {
+            fprintf(stderr, "[CYW43] credit refresh dropped (RX queue full)\n");
+        }
+    }
 }
 
 /* Build an IOCTL response and queue it */
@@ -300,6 +319,9 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
     case WLC_GET_VAR: {
         /* payload is null-terminated iovar name */
         const char *varname = (const char *)payload;
+        fprintf(stderr, "[CYW43] GET_VAR '%s' (payload_len=%d)\n",
+                varname[0] ? varname : "(empty)", payload_len);
+        fflush(stderr);
 
         if (strcmp(varname, "cur_etheraddr") == 0) {
             cyw43_queue_ioctl_response(cmd, ioctl_id, cyw43.mac_addr, 6, 0);
@@ -309,6 +331,14 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
             const char *ver = "wl0: Bramble CYW43 Emulator\n";
             cyw43_queue_ioctl_response(cmd, ioctl_id,
                                         (const uint8_t *)ver, (int)strlen(ver) + 1, 0);
+            return;
+        }
+        /* CLM blob load status: 0 = complete/OK. Returning zeros left firmware
+         * spinning / HardFaulting BusLoop during cyw43_arch_init. */
+        if (strcmp(varname, "clmload_status") == 0) {
+            int32_t status = 0;
+            cyw43_queue_ioctl_response(cmd, ioctl_id,
+                                        (const uint8_t *)&status, (int)sizeof(status), 0);
             return;
         }
         /* Default: return zeros */
@@ -322,22 +352,44 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
 
     case WLC_SET_SSID: {
         /* Payload: 4 bytes SSID length + SSID string (32 bytes) */
+        uint32_t ssid_len = 0;
         if (payload_len >= 36) {
-            uint32_t ssid_len = payload[0] | (payload[1] << 8) |
-                                (payload[2] << 16) | (payload[3] << 24);
+            ssid_len = payload[0] | (payload[1] << 8) |
+                       (payload[2] << 16) | (payload[3] << 24);
             if (ssid_len > CYW43_MAX_SSID_LEN) ssid_len = CYW43_MAX_SSID_LEN;
             memcpy(cyw43.connected_ssid, payload + 4, ssid_len);
             cyw43.connected_ssid[ssid_len] = '\0';
-
-            if (cpu.debug_enabled)
-                fprintf(stderr, "[CYW43] JOIN SSID: '%s'\n", cyw43.connected_ssid);
+        } else {
+            cyw43.connected_ssid[0] = '\0';
         }
 
-        /* Respond success */
-        cyw43_queue_ioctl_response(cmd, ioctl_id, NULL, 0, 0);
+        fprintf(stderr, "[CYW43] JOIN SSID='%s' (len=%u)%s\n",
+                cyw43.connected_ssid, ssid_len,
+                cyw43.password_provided ? " [passphrase set]" : " [no passphrase yet]");
 
-        /* Queue connection events */
+        if (ssid_len == 0) {
+            fprintf(stderr, "[CYW43] JOIN refused: empty SSID (no link-up events)\n");
+            cyw43.wifi_state = CYW43_WIFI_OFF;
+            cyw43_queue_ioctl_response(cmd, ioctl_id, NULL, 0, 0);
+            return;
+        }
+
+        /* Respond success and simulate association */
+        cyw43_queue_ioctl_response(cmd, ioctl_id, NULL, 0, 0);
         cyw43_queue_connect_events();
+        return;
+    }
+
+    case WLC_SET_WSEC_PMK: {
+        /* Passphrase / PMK for WPA — accept any; host never joins a real AP. */
+        cyw43.password_provided = 1;
+        uint32_t key_len = 0;
+        if (payload_len >= 2) {
+            key_len = payload[0] | ((uint32_t)payload[1] << 8);
+        }
+        fprintf(stderr, "[CYW43] WPA passphrase provided (reported_len=%u, payload=%d)\n",
+                key_len, payload_len);
+        cyw43_queue_ioctl_response(cmd, ioctl_id, NULL, 0, 0);
         return;
     }
 
@@ -382,9 +434,13 @@ static void cyw43_handle_ioctl(const uint8_t *buf, int len) {
  * Fake DHCP Server (assigns 192.168.4.2 to firmware, no real network needed)
  * ======================================================================== */
 
-/* Fixed IP addressing for the virtual WiFi network */
+/* Fixed IP addressing for the virtual WiFi network.
+ * DNS must be a public resolver — not 192.168.4.1. The host utun address is
+ * only a gateway; nothing listens on :53 there, so guest DNS to the gateway
+ * never gets a reply. With pf/iptables NAT, 8.8.8.8 reaches the internet. */
 static const uint8_t dhcp_client_ip[4]  = {192, 168,   4, 2};
 static const uint8_t dhcp_server_ip[4]  = {192, 168,   4, 1};
+static const uint8_t dhcp_dns_ip[4]     = {8, 8, 8, 8};
 static const uint8_t dhcp_subnet[4]     = {255, 255, 255, 0};
 static const uint8_t dhcp_lease_time[4] = {0, 0, 14, 16};  /* 3600 s */
 
@@ -466,8 +522,12 @@ static void cyw43_send_dhcp_reply(const uint8_t *eth_req, int eth_len, uint8_t r
     frame[off++] =  3; frame[off++] = 4;
     memcpy(frame + off, dhcp_server_ip, 4);     off += 4;  /* router */
     frame[off++] =  6; frame[off++] = 4;
-    memcpy(frame + off, dhcp_server_ip, 4);     off += 4;  /* DNS */
+    memcpy(frame + off, dhcp_dns_ip, 4);        off += 4;  /* DNS (public) */
     frame[off++] = 255;                                    /* end */
+    /* lwIP dhcp_parse_reply under Thumb emu issues a 4-byte pbuf_copy_partial
+     * at the END option offset (IT/cmp edge). Trailing pad makes that read
+     * succeed so parse can still see END and return ERR_OK. */
+    frame[off++] = 0; frame[off++] = 0; frame[off++] = 0; frame[off++] = 0;
 
     /* Fill in lengths */
     int ip_total  = off - ip_off;
@@ -490,11 +550,16 @@ static void cyw43_send_dhcp_reply(const uint8_t *eth_req, int eth_len, uint8_t r
 
     cyw43_queue_rx_data(frame, off);
 
-    if (cpu.debug_enabled)
-        fprintf(stderr, "[CYW43] DHCP %s → offer %d.%d.%d.%d\n",
-                reply_type == 2 ? "DISCOVER" : "REQUEST",
-                dhcp_client_ip[0], dhcp_client_ip[1],
-                dhcp_client_ip[2], dhcp_client_ip[3]);
+    fprintf(stderr,
+            "[CYW43] DHCP %s → %d.%d.%d.%d/24 gw %d.%d.%d.%d dns %d.%d.%d.%d\n",
+            reply_type == 2 ? "OFFER" : "ACK",
+            dhcp_client_ip[0], dhcp_client_ip[1],
+            dhcp_client_ip[2], dhcp_client_ip[3],
+            dhcp_server_ip[0], dhcp_server_ip[1],
+            dhcp_server_ip[2], dhcp_server_ip[3],
+            dhcp_dns_ip[0], dhcp_dns_ip[1],
+            dhcp_dns_ip[2], dhcp_dns_ip[3]);
+    fflush(stderr);
 }
 
 /* Returns 1 if this was a DHCP packet that we handled, 0 otherwise. */
@@ -587,13 +652,58 @@ static void cyw43_wlan_tx_complete(void) {
             int eth_len = len - eth_offset;
             if (eth_len > 0) {
                 const uint8_t *eth = cyw43.wlan_tx_buf + eth_offset;
+                {
+                    static int tx_logged;
+                    if (tx_logged < 8) {
+                        tx_logged++;
+                        fprintf(stderr,
+                                "[CYW43] WLAN DATA TX %d bytes ethertype=%02x%02x\n",
+                                eth_len,
+                                eth_len >= 14 ? eth[12] : 0,
+                                eth_len >= 14 ? eth[13] : 0);
+                        fflush(stderr);
+                    }
+                }
                 /* Always try fake DHCP first (no real network needed) */
                 if (!cyw43_handle_dhcp(eth, eth_len)) {
-                    /* Not DHCP: forward to TAP interface if available */
+                    /* Not DHCP: forward to TAP/utun if available */
                     if (cyw43.tap_fd >= 0) {
+                        {
+                            static int tap_tx_logged;
+                            if (tap_tx_logged < 12 && eth_len >= 34 &&
+                                eth[12] == 0x08 && eth[13] == 0x00) {
+                                const uint8_t *ip = eth + 14;
+                                int ihl = (ip[0] & 0x0F) * 4;
+                                tap_tx_logged++;
+                                if (ip[9] == 17 && eth_len >= 14 + ihl + 8) {
+                                    const uint8_t *udp = ip + ihl;
+                                    uint16_t dport = ((uint16_t)udp[2] << 8) | udp[3];
+                                    fprintf(stderr,
+                                            "[CYW43] TAP TX UDP %d.%d.%d.%d:%u (%d eth bytes)\n",
+                                            ip[16], ip[17], ip[18], ip[19],
+                                            (unsigned)dport, eth_len);
+                                } else {
+                                    fprintf(stderr,
+                                            "[CYW43] TAP TX IP proto=%u → %d.%d.%d.%d (%d eth bytes)\n",
+                                            ip[9], ip[16], ip[17], ip[18], ip[19],
+                                            eth_len);
+                                }
+                                fflush(stderr);
+                            }
+                        }
                         tapif_write(cyw43.tap_fd, eth, eth_len);
                         if (cpu.debug_enabled)
                             fprintf(stderr, "[CYW43] TAP TX: %d bytes\n", eth_len);
+                    } else {
+                        static int no_tap_warned;
+                        if (no_tap_warned < 3) {
+                            no_tap_warned++;
+                            fprintf(stderr,
+                                    "[CYW43] drop WLAN TX (%d bytes) — no host bridge "
+                                    "(-tap / UDP NAT)\n",
+                                    eth_len);
+                            fflush(stderr);
+                        }
                     }
                 }
             }
@@ -608,6 +718,8 @@ static void cyw43_wlan_tx_complete(void) {
     }
 
     cyw43.wlan_tx_offset = 0;
+    /* Keep SDPCM TX credits ahead of firmware seq even when TAP is quiet. */
+    cyw43_queue_credit_refresh();
 }
 
 /* Forward declarations for PIO gSPI state (defined in PIO section below) */
@@ -649,6 +761,7 @@ void cyw43_reset(void) {
     snprintf(cyw43.country, sizeof(cyw43.country), "XX");
     cyw43.wifi_state = CYW43_WIFI_OFF;
     cyw43.chipclkcsr = CYW43_HT_AVAIL | CYW43_ALP_AVAIL;
+    cyw43.sleepcsr = 0x03; /* KSO_SET | DEV_ON — awake after reset */
     cyw43.pio_num = -1;
     cyw43.pio_sm = -1;
     pio_init_swap_remaining = 2;  /* First 2 commands use SWAP32 encoding */
@@ -687,20 +800,55 @@ void cyw43_tap_close(void) {
 
 void cyw43_tap_poll(void) {
     if (cyw43.tap_fd < 0) return;
+
+    /*
+     * Always service UDP NAT (DNS/NTP/TFTP host-ACK) even if the guest has
+     * put the radio to sleep — otherwise long TFTP stalls when kso_set(0)
+     * runs and guest stops calling into the WLAN RX path.
+     */
+    tapif_service(cyw43.tap_fd);
+
     if (cyw43.wifi_state != CYW43_WIFI_CONNECTED) return;
 
     /* Read Ethernet frames from TAP and queue for firmware */
     uint8_t eth_buf[1518];  /* Max Ethernet frame (tapif_read clamps to this) */
     int n = tapif_read(cyw43.tap_fd, eth_buf, (int)sizeof(eth_buf));
     if (n > 0) {
+        {
+            static int tap_rx_logged;
+            if (tap_rx_logged < 8 && n >= 34 &&
+                eth_buf[12] == 0x08 && eth_buf[13] == 0x00) {
+                const uint8_t *ip = eth_buf + 14;
+                int ihl = (ip[0] & 0x0F) * 4;
+                tap_rx_logged++;
+                if (ip[9] == 17 && n >= 14 + ihl + 8) {
+                    const uint8_t *udp = ip + ihl;
+                    uint16_t sport = ((uint16_t)udp[0] << 8) | udp[1];
+                    fprintf(stderr,
+                            "[CYW43] TAP RX UDP %d.%d.%d.%d:%u → guest (%d eth bytes)\n",
+                            ip[12], ip[13], ip[14], ip[15],
+                            (unsigned)sport, n);
+                } else {
+                    fprintf(stderr,
+                            "[CYW43] TAP RX IP proto=%u from %d.%d.%d.%d (%d eth bytes)\n",
+                            ip[9], ip[12], ip[13], ip[14], ip[15], n);
+                }
+                fflush(stderr);
+            }
+        }
         cyw43_queue_rx_data(eth_buf, n);
         if (cpu.debug_enabled)
             fprintf(stderr, "[CYW43] TAP RX: %d bytes queued\n", n);
     } else if (n < 0) {
-        /* Persistent error — close TAP to avoid spin-polling a dead fd */
-        fprintf(stderr, "[CYW43] TAP read error, closing interface\n");
-        tapif_close(cyw43.tap_fd);
-        cyw43.tap_fd = -1;
+        /* Do not tear down the bridge: on macOS UDP NAT/ARP still need tap_fd.
+         * Closing here killed DNS after a transient utun read error. */
+        static int tap_err_logged;
+        if (tap_err_logged < 3) {
+            tap_err_logged++;
+            fprintf(stderr, "[CYW43] TAP read error (%s) — keeping bridge\n",
+                    strerror(errno));
+            fflush(stderr);
+        }
     }
 }
 
@@ -735,6 +883,7 @@ static uint32_t cyw43_bus_read(uint32_t addr) {
         return val;
     }
     case 0x14: /* SPI_READ_TEST_REGISTER = FEEDBEAD */
+        cyw43.feedbead_ok = 1;
         return 0xFEEDBEAD;
     case 0x18:
         return cyw43.bus_test_reg;
@@ -788,8 +937,8 @@ static uint32_t cyw43_backplane_read(uint32_t addr) {
 
     /* SDIO func1 direct registers (full 17-bit address, no windowing) */
     if (addr == 0x1001F) {
-        /* SBSDIO_FUNC1_SLEEPCSR (KSO): always return KSO_SET | DEVICE_ON = 0x03 */
-        return 0x03;
+        /* SBSDIO_FUNC1_SLEEPCSR — see write path (KSO clear + KSO|DEVON wake). */
+        return cyw43.sleepcsr & 0xFFu;
     }
 
     /* Windowed backplane access: reconstruct full address from window + offset */
@@ -829,6 +978,25 @@ static void cyw43_backplane_write(uint32_t addr, uint32_t val) {
     /* CHIPCLKCSR write (SDIO func1 direct register) */
     if (addr == CYW43_BP_CHIPCLKCSR) {
         cyw43.chipclkcsr = val | CYW43_HT_AVAIL | CYW43_ALP_AVAIL;
+        return;
+    }
+    if (addr == 0x1001F) {
+        /* cyw43_kso_set(1) polls until (SLEEPCSR & 0x03) == 0x03 (KSO|DEVON).
+         * Hardware sets DEVON after KSO; storing write-as-is (0x01) made wake
+         * fail → 64× delay_ms busy-loops that starve TFTP host-ACK. */
+        static int kso_logged;
+        uint8_t v = (uint8_t)(val & 0xFFu);
+        if (v & 0x01u)
+            v |= 0x02u;
+        else
+            v &= (uint8_t)~0x03u;
+        cyw43.sleepcsr = v;
+        if (kso_logged < 8) {
+            kso_logged++;
+            fprintf(stderr, "[CYW43] SLEEPCSR write → 0x%02X\n",
+                    (unsigned)cyw43.sleepcsr);
+            fflush(stderr);
+        }
         return;
     }
 
@@ -1010,6 +1178,11 @@ void cyw43_pio_tx_write(uint32_t val) {
         return;
     }
 
+    /* Belt-and-suspenders: direct pio_sm_put bit-counts are always small
+     * (< 8 * max_transfer). Real gSPI command words after DMA bswap are not. */
+    if (pio_cyw43_phase == PIO_CYW43_IDLE && val < 0x10000u)
+        return;
+
     switch (pio_cyw43_phase) {
     case PIO_CYW43_IDLE: {
         /* Determine encoding: first 2 commands at boot use SWAP32 (rev16+bswap),
@@ -1053,6 +1226,8 @@ void cyw43_pio_tx_write(uint32_t val) {
             switch (pio_cmd_function) {
             case CYW43_FUNC_BUS: {
                 uint32_t resp = cyw43_bus_read(pio_cmd_address);
+                if (pio_cmd_address == 0x14)
+                    fprintf(stderr, "[CYW43] SPI_READ_TEST_REGISTER → 0x%08X\n", resp);
                 pio_resp_buf[0] = cyw43_encode_resp(resp, pio_cmd_is_swap);
                 pio_resp_count = total_words;
                 break;
@@ -1089,9 +1264,18 @@ void cyw43_pio_tx_write(uint32_t val) {
                     pio_resp_count = total_words;
                     rx_queue_pop();
 
-                    if (cpu.debug_enabled)
-                        fprintf(stderr, "[CYW43] WLAN RX: delivering %d byte frame (ch=%d seq=%d)\n",
-                                copy_len, f->data[4] & 0x0F, f->data[3]);
+                    {
+                        /* Always log data-channel / large frames (DHCP OFFER ~300B+). */
+                        uint8_t ch = f->data[5] & 0x0Fu;
+                        uint8_t seq = f->data[4];
+                        if (copy_len >= 64 || ch == SDPCM_DATA_CHANNEL) {
+                            fprintf(stderr,
+                                    "[CYW43] WLAN RX: delivering %d byte frame "
+                                    "(ch=%u seq=%u)\n",
+                                    copy_len, (unsigned)ch, (unsigned)seq);
+                            fflush(stderr);
+                        }
+                    }
                 } else {
                     /* No data - return empty SDPCM (size=0) */
                     pio_resp_count = total_words;
@@ -1131,8 +1315,9 @@ void cyw43_pio_tx_write(uint32_t val) {
     }
 
     case PIO_CYW43_READ:
-        pio_cyw43_phase = PIO_CYW43_IDLE;
-        cyw43_pio_tx_write(val);
+        /* Full-duplex / countdown dummy TX during an outstanding read.
+         * Do not abort the response — firmware may still clock TXF while
+         * DMA drains RXF (or after Y is loaded). */
         break;
     }
 }

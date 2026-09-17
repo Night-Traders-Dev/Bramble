@@ -22,7 +22,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`), architecture-aware registers |
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
-| WiFi | CYW43 (Pico W) | gSPI-over-PIO, TAP bridge with auto IP/NAT (`-wifi`, `-tap`) |
+| WiFi | CYW43 (Pico W) | gSPI-over-PIO, TAP bridge with auto IP/NAT (`-wifi`, `-tap` (Linux TAP / macOS utun)) |
 | Virtual Network | VNet bus | Central Ethernet frame router, TAP/NAT bridge (`-net`), peer mesh (`-net-peer`), W5500 live sockets (`-net-live`) |
 | Multi-Device | Wire + SDD | Wire UART/GPIO/Ethernet between instances, pluggable software-defined devices (`-sdd`) |
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |

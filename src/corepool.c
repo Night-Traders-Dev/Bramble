@@ -28,6 +28,15 @@
 #include "timer.h"
 #include "usb.h"
 
+/* macOS pthread_cond_timedwait uses CLOCK_REALTIME; no setclock API */
+#if defined(__APPLE__)
+#define COREPOOL_COND_CLOCK_ID CLOCK_REALTIME
+#define COREPOOL_COND_USE_SETCLOCK 0
+#else
+#define COREPOOL_COND_CLOCK_ID CLOCK_MONOTONIC
+#define COREPOOL_COND_USE_SETCLOCK 1
+#endif
+
 /*
  * Each host thread keeps the big lock for a short burst of guest work before
  * yielding. This cuts mutex/scheduler overhead without changing interrupt
@@ -71,7 +80,9 @@ void corepool_init(void) {
 
     pthread_condattr_t attr;
     pthread_condattr_init(&attr);
-    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#if COREPOOL_COND_USE_SETCLOCK
+    pthread_condattr_setclock(&attr, COREPOOL_COND_CLOCK_ID);
+#endif
     pthread_cond_init(&corepool.wfi_cond, &attr);
     pthread_condattr_destroy(&attr);
 
@@ -287,7 +298,7 @@ static void *core_thread_fn(void *arg) {
             if (cores[core_id].is_halted) {
                 /* Halted core: sleep briefly then re-check (may be re-launched) */
                 struct timespec ts;
-                clock_gettime(CLOCK_MONOTONIC, &ts);
+                clock_gettime(COREPOOL_COND_CLOCK_ID, &ts);
                 ts.tv_nsec += 1000000;  /* 1ms */
                 if (ts.tv_nsec >= 1000000000) {
                     ts.tv_sec++;
@@ -317,7 +328,7 @@ static void *core_thread_fn(void *arg) {
                 struct timespec end;
 
                 clock_gettime(CLOCK_MONOTONIC, &start);
-                ts = start;
+                clock_gettime(COREPOOL_COND_CLOCK_ID, &ts);
                 ts.tv_nsec += 1000000;  /* 1ms */
                 if (ts.tv_nsec >= 1000000000) {
                     ts.tv_sec++;
@@ -336,11 +347,10 @@ static void *core_thread_fn(void *arg) {
                     systick_tick_for_core(core_id, (uint32_t)elapsed_cycles);
                 }
 
-                /* If every active core is sleeping/halted, use host elapsed time
-                 * as a fallback so timer-driven wakeups still happen. */
-                if (core_id == CORE0 &&
-                    (num_active_cores == 1 || cores[CORE1].is_wfi || cores[CORE1].is_halted) &&
-                    elapsed_us > 0) {
+                /* Any core in WFI/WFE: advance shared TIMER by host elapsed so
+                 * sleep_until/alarms work while the peer core stays busy (e.g.
+                 * cyw43_arch_init on core0 + BusLoop on core1). */
+                if (elapsed_us > 0) {
                     timer_tick(elapsed_us);
                     rtc_tick(elapsed_us);
                 }
