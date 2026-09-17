@@ -11,10 +11,9 @@
  * (client) modes for each UART.
  *
  * Usage:
- *   -net-uart0 <port>         Listen on TCP port for UART0
- *   -net-uart1 <port>         Listen on TCP port for UART1
- *   -net-uart0-connect <host:port>  Connect UART0 to remote
- *   -net-uart1-connect <host:port>  Connect UART1 to remote
+ *   -uart-console <port>     Listen on TCP (UART0); connect with nc/socat
+ *   -net-uart0 <port>         Same as -uart-console
+ *   -net-uart0-connect <host:port>  TCP client mode
  * ======================================================================== */
 
 #define NET_BRIDGE_MAX_UART  2
@@ -57,5 +56,11 @@ void net_bridge_uart_tx(int uart_num, uint8_t byte);
 
 /* Returns 1 if UART has a network bridge active */
 int  net_bridge_uart_active(int uart_num);
+
+/* Returns 1 if any UART has a TCP bridge configured */
+int net_bridge_any_active(void);
+
+/* When set, guest UART TX is also copied to host stderr */
+extern int net_bridge_mirror_stdio;
 
 #endif /* NETBRIDGE_H */

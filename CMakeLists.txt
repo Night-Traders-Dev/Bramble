@@ -59,6 +59,7 @@ set(EMU_SOURCES
     src/cyw43.c
     src/tapif.c
     src/devtools.c
+    src/bramble_ext_stubs.c
     src/vnet.c
     src/sdd.c
     src/sdd_thermo.c

@@ -13,11 +13,13 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include "emulator.h"
 #include "instructions.h"
 #include "nvic.h"
 #include "thumb32.h"
 #include "devtools.h"
+#include "gpio.h"
 
 /* External globals from cpu.c */
 extern int pc_updated;
@@ -174,14 +176,10 @@ static void t32_dp_exec(int op, int S, int Rn, int Rd, uint32_t imm32, int shift
         if (S) update_sub_flags(imm32, rn, res);
         break;
     default:
-        /* Unknown ops are typically misrouted instructions from other
-         * T32 groups. Treat as no-op rather than HardFault to allow
-         * firmware to continue. Real hardware executes the correct
-         * handler, not the data-processing path. */
         if (cpu.debug_enabled)
-            fprintf(stderr, "[T32] Unknown dp op=0x%X @ PC=0x%08X (no-op)\n", op, cpu.r[15]);
-        wr = 0;
-        break;
+            fprintf(stderr, "[T32] Unknown dp op=0x%X @ PC=0x%08X\n", op, cpu.r[15]);
+        cpu_exception_entry(EXC_HARDFAULT);
+        return;
     }
     if (wr && Rd < 16) {
         if (Rd == 15) { cpu.r[15] = res & ~1u; pc_updated = 1; }
@@ -206,7 +204,7 @@ static void t32_bl(uint32_t pc, uint16_t upper, uint16_t lower) {
     if (S) offset |= (int32_t)0xFF000000;  /* sign-extend from bit 24 */
     cpu.r[14] = (pc + 4) | 1u;
     uint32_t target = (uint32_t)((int32_t)(pc + 4) + offset);
-    cpu.r[15] = target;
+    cpu.r[15] = target & ~1u;
     pc_updated = 1;
     if (__builtin_expect(callgraph_enabled, 0))
         callgraph_record_call(pc, target);
@@ -218,26 +216,63 @@ static void t32_bl(uint32_t pc, uint16_t upper, uint16_t lower) {
  *        1110 1001 W L Rn(4)   (DB: bit8=1)
  * lower: 0 P M 0 reglist(12)   (bit15=P=PC, bit14=M=LR)
  * ======================================================================== */
+static int t32_is_ldm_stm_reglist(uint16_t upper, uint16_t lower) {
+    /* LDRD/STRD T1 is UNPREDICTABLE when Rt == Rt2; irq_add_shared_handler uses
+     * ldmdb r2,{r0,r1,r2} (E912 0007) which overlaps LDRD Rt=Rt2=0 encoding. */
+    (void)upper;
+    return ((lower >> 12) & 0xF) == ((lower >> 8) & 0xF);
+}
+
 static void t32_ldst_multiple(uint32_t pc, uint16_t upper, uint16_t lower) {
     (void)pc;
-    int is_db = (upper >> 8) & 1;
-    int L     = (upper >> 7) & 1;
-    int W     = (upper >> 5) & 1;
-    int Rn    = upper & 0xF;
+    /* Thumb-2 LDM/STM T2: 1110 100P UWL Rn | register list */
+    int P  = (upper >> 8) & 1;
+    int U  = (upper >> 7) & 1;
+    int W  = (upper >> 5) & 1;
+    int L  = (upper >> 4) & 1;
+    int Rn = upper & 0xF;
 
-    uint32_t reglist = lower;   /* bit15=PC, bit14=LR, bits[13:0] = R13..R0 */
-    int      cnt     = __builtin_popcount(reglist & 0xFFFF);
+    uint32_t reglist = lower & 0xFFFFu;
+    int      cnt     = __builtin_popcount(reglist);
     uint32_t addr    = cpu.r[Rn];
+    uint32_t rn_orig = addr;
 
-    if (is_db) addr -= (uint32_t)(cnt * 4);
-    uint32_t base_end = addr + (uint32_t)(cnt * 4);
+    if (cnt == 0) {
+        return;
+    }
+
+    if (P && !U) {
+        /* LDMDB / STMDB — decrement before */
+        addr -= (uint32_t)(cnt * 4);
+    } else if (!P && !U) {
+        /* LDMDA / STMDA — decrement after */
+        addr -= (uint32_t)((cnt - 1) * 4);
+    } else if (P && U) {
+        /* LDMIB / STMIB — increment before */
+        addr += 4u;
+    }
+    /* !P && U: LDMIA / STMIA — increment after (addr = Rn) */
 
     for (int i = 0; i <= 15; i++) {
         if (reglist & (1u << i)) {
             if (L) {
                 uint32_t val = mem_read32(addr);
-                if (i == 15) { cpu.r[15] = val & ~1u; pc_updated = 1; }
-                else          { cpu.r[i] = val; }
+                if (i == 15) {
+                    /* EXC_RETURN magic — mirror 16-bit POP / BX. */
+                    if ((val & 0xFFFFFFF0u) == 0xFFFFFFF0u) {
+                        addr += 4u;
+                        if (W) {
+                            cpu.r[Rn] = addr;
+                        }
+                        cpu_exception_return(val);
+                        pc_updated = 1;
+                        return;
+                    }
+                    cpu.r[15] = val & ~1u;
+                    pc_updated = 1;
+                } else {
+                    cpu.r[i] = val;
+                }
             } else {
                 uint32_t val = (i == 15) ? (pc + 4) : cpu.r[i];
                 mem_write32(addr, val);
@@ -247,8 +282,338 @@ static void t32_ldst_multiple(uint32_t pc, uint16_t upper, uint16_t lower) {
     }
 
     if (W && !(L && (reglist & (1u << Rn)))) {
-        /* Writeback: IA → updated addr, DB → original - count*4 */
-        cpu.r[Rn] = is_db ? (cpu.r[Rn] - (uint32_t)(cnt * 4)) : base_end;
+        if (U) {
+            cpu.r[Rn] = rn_orig + (uint32_t)(cnt * 4);
+        } else {
+            cpu.r[Rn] = rn_orig - (uint32_t)(cnt * 4);
+        }
+    }
+}
+
+/* ========================================================================
+ * Minimal VFP (M33): MegaFlash GetDeviceInfoString uses vmov/vcvt/vdiv/vldr
+ * for MHz float sprintf. Previous stubs left FP regs stale and _dtoa_r spun.
+ * ======================================================================== */
+
+static uint32_t vfp_s[32];
+static uint64_t vfp_d[16];
+
+static int vfp_sn_from_insn(uint32_t insn) {
+    return (int)(((insn >> 16) & 0xFu) * 2u + ((insn >> 6) & 1u));
+}
+
+static int vfp_sm_from_insn(uint32_t insn) {
+    return (int)(((insn >> 12) & 0xFu) * 2u + ((insn >> 18) & 1u));
+}
+
+static int vfp_st_from_insn(uint32_t insn) {
+    return (int)(((insn >> 12) & 0xFu) * 2u + ((insn >> 6) & 1u));
+}
+
+static float vfp_read_s(int sn) {
+    float f;
+    memcpy(&f, &vfp_s[sn], sizeof(f));
+    return f;
+}
+
+static void vfp_write_s(int sn, float f) {
+    memcpy(&vfp_s[sn], &f, sizeof(f));
+}
+
+/* Pico SDK gpioc_lo_out/oe set/clr via .inst (EE40/EE60 + lower 0xR010/0xR014). */
+static int thumb32_pico_gpioc(uint16_t upper, uint16_t lower) {
+    if ((upper & 0xFFF0u) != 0xEE40u && (upper & 0xFFF0u) != 0xEE60u) {
+        return 0;
+    }
+    uint32_t lo = lower & 0xF00Fu;
+    if (lo != 0x0010u && lo != 0x0014u) {
+        return 0;
+    }
+    unsigned rt = (unsigned)((lower >> 12) & 0xFu);
+    uint32_t mask = cpu.r[rt];
+    if (lo == 0x0014u) {
+        if ((upper & 0xFFF0u) == 0xEE60u) {
+            gpio_state.gpio_oe &= ~mask;
+        } else {
+            gpio_state.gpio_oe |= mask;
+        }
+        return 1;
+    }
+    if ((upper & 0xFFF0u) == 0xEE60u) {
+        gpio_state.gpio_out &= ~mask;
+    } else {
+        gpio_state.gpio_out |= mask;
+    }
+    return 1;
+}
+
+static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
+    uint32_t insn = ((uint32_t)upper << 16) | lower;
+
+    /* VMOV between ARM core register and single-precision VFP register */
+    if ((insn & 0xFFF00FF0u) == 0xEE000A90u) {
+        int rt = (int)((insn >> 12) & 0xFu);
+        int sn = vfp_sn_from_insn(insn);
+        if (((insn >> 16) & 0xFFu) >= 0x17u) {
+            cpu.r[rt] = vfp_s[sn];
+        } else {
+            vfp_s[sn] = cpu.r[rt];
+        }
+        return 1;
+    }
+
+    /* VCVT.F32.U32 Sd, Sm (including Sd==Sm) */
+    if (((insn >> 8) & 0xFFu) == 0x7Au && (insn & 0xFF00FF00u) == 0xEE000000u) {
+        int sd = vfp_sn_from_insn(insn);
+        uint32_t raw = vfp_s[sd];
+        vfp_write_s(sd, (float)raw);
+        return 1;
+    }
+
+    /* VDIV.F32 — MegaFlash GetDeviceInfoString and block formatters */
+    if ((insn & 0xFFFFFF00u) == 0xEEC77A00u) {
+        vfp_write_s(15, vfp_read_s(15) / vfp_read_s(16));
+        return 1;
+    }
+    if ((insn & 0xFFFFFF00u) == 0xEEC66A00u) {
+        vfp_write_s(13, vfp_read_s(14) / vfp_read_s(15));
+        return 1;
+    }
+
+    /* VLDR Dd, [PC, #imm*4] */
+    if ((insn & 0xFF700000u) == 0xED900000u) {
+        int dn = (int)((insn >> 12) & 0xFu);
+        uint32_t imm8 = insn & 0xFFu;
+        uint32_t addr = ((pc + 4u) & ~3u) + (imm8 * 4u);
+        vfp_d[dn] = (uint64_t)mem_read32(addr) |
+                      ((uint64_t)mem_read32(addr + 4u) << 32);
+        return 1;
+    }
+
+    /* VSTR Dd, [SP, #imm*4] */
+    if ((insn & 0xFF700000u) == 0xED800000u) {
+        int dn = (int)((insn >> 12) & 0xFu);
+        uint32_t imm8 = insn & 0xFFu;
+        uint32_t addr = cpu.r[13] + imm8 * 4u;
+        uint64_t v = vfp_d[dn];
+        mem_write32(addr, (uint32_t)v);
+        mem_write32(addr + 4u, (uint32_t)(v >> 32));
+        return 1;
+    }
+
+    /* VLDR Sd, [PC, #imm*4] */
+    if ((insn & 0xFF700000u) == 0xED500000u) {
+        int sn = vfp_st_from_insn(insn);
+        uint32_t imm8 = insn & 0xFFu;
+        uint32_t addr = ((pc + 4u) & ~3u) + (imm8 * 4u);
+        vfp_s[sn] = mem_read32(addr);
+        return 1;
+    }
+
+    /* VLDR Sd, [SP, #imm*4] */
+    if ((insn & 0xFF700F00u) == 0xED500A00u) {
+        int sn = vfp_st_from_insn(insn);
+        uint32_t imm8 = insn & 0xFFu;
+        vfp_s[sn] = mem_read32(cpu.r[13] + imm8 * 4u);
+        return 1;
+    }
+
+    /* VSTR Sd, [SP, #imm*4] */
+    if ((insn & 0xFF700F00u) == 0xED400A00u) {
+        int sn = vfp_st_from_insn(insn);
+        uint32_t imm8 = insn & 0xFFu;
+        mem_write32(cpu.r[13] + imm8 * 4u, vfp_s[sn]);
+        return 1;
+    }
+
+    /* VCVT.U32.F32 Sd, Sm — used by block-format helpers */
+    if (((insn >> 8) & 0xFFu) == 0x7Eu && (insn & 0xFF00FF00u) == 0xEE000000u) {
+        int sd = vfp_sn_from_insn(insn);
+        float f = vfp_read_s(sd);
+        vfp_s[sd] = (uint32_t)f;
+        return 1;
+    }
+
+    return 0;
+}
+
+/* ========================================================================
+ * Load/store exclusive (RP2350 M33 software spinlocks: ldaexb/strexb/stlb)
+ * Mis-decoding these as LDRD/STRD corrupts adjacent bytes and breaks async_context.
+ * ======================================================================== */
+
+typedef struct {
+    uint32_t addr;
+    int      valid;
+} exclusive_monitor_t;
+
+static exclusive_monitor_t exclusive_monitor[NUM_CORES];
+
+void thumb32_exclusive_monitor_clear(uint32_t addr) {
+    for (int c = 0; c < NUM_CORES; c++) {
+        if (exclusive_monitor[c].valid && exclusive_monitor[c].addr == addr) {
+            exclusive_monitor[c].valid = 0;
+        }
+    }
+}
+
+static int t32_exclusive_byte_suffix(uint16_t lower) {
+    switch (lower & 0xFFu) {
+    case 0x8F: /* stlb */
+    case 0xCF: /* ldaexb */
+    case 0xE0: /* stlexb (release) */
+    case 0x40:
+    case 0x41:
+    case 0x42:
+    case 0x44:
+    case 0x45:
+    case 0x46:
+    case 0x4C:
+    case 0x4E:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int t32_is_exclusive_ldst(uint16_t upper, uint16_t lower) {
+    if ((upper & 0xF800) != 0xE800) {
+        return 0;
+    }
+    /* RP2350 M33 software spinlocks: ldaexb/strexb/stlb in E8C0..E8DF */
+    if ((upper & 0xFFF0) >= 0xE8C0 && (upper & 0xFFF0) <= 0xE8D0 &&
+        t32_exclusive_byte_suffix(lower)) {
+        return 1;
+    }
+    return 0;
+}
+
+/* LDAH/STLH (load/store halfword with acquire/release) — suffix 0x9F in E8xx.
+ * Mis-decoding as LDRD/STRD corrupts registers (e.g. u2_push_rx_macraw). */
+static int t32_is_halfword_acqrel(uint16_t upper, uint16_t lower) {
+    if ((upper & 0xFE00) != 0xE800) {
+        return 0;
+    }
+    return (lower & 0x00FF) == 0x009F;
+}
+
+static void t32_halfword_acqrel(uint32_t pc, uint16_t upper, uint16_t lower) {
+    (void)pc;
+    uint32_t insn = ((uint32_t)upper << 16) | lower;
+    int      Rn   = upper & 0xF;
+    int      Rt   = (insn >> 12) & 0xF;
+    int      L    = (upper >> 4) & 1;
+    uint32_t addr = cpu.r[Rn];
+
+    if (L) {
+        cpu.r[Rt] = mem_read16(addr);
+    } else {
+        mem_write16(addr, (uint16_t)(cpu.r[Rt] & 0xFFFF));
+    }
+}
+
+/* LDA/STL (word acquire/release) — suffix 0xAF.
+ * Used by libstdc++ atomics (e.g. std::get_new_handler). Mis-decode as LDRD
+ * leaves PC on the LDA forever under dual-core TestWifi / __cxa_throw. */
+static int t32_is_word_acqrel(uint16_t upper, uint16_t lower) {
+    /* E8Cx = STL, E8Dx = LDA (both mask to 0xE8C0 with 0xFFE0). */
+    if ((upper & 0xFFE0) != 0xE8C0) {
+        return 0;
+    }
+    return (lower & 0x0FFF) == 0x0FAF;
+}
+
+static void t32_word_acqrel(uint32_t pc, uint16_t upper, uint16_t lower) {
+    (void)pc;
+    uint32_t insn = ((uint32_t)upper << 16) | lower;
+    int      Rn   = upper & 0xF;
+    int      Rt   = (insn >> 12) & 0xF;
+    int      L    = (upper >> 4) & 1;
+    uint32_t addr = cpu.r[Rn];
+
+    if (L) {
+        cpu.r[Rt] = mem_read32(addr);
+    } else {
+        mem_write32(addr, cpu.r[Rt]);
+    }
+}
+
+static void t32_exclusive_ldst(uint32_t pc, uint16_t upper, uint16_t lower) {
+    (void)pc;
+    uint32_t insn = ((uint32_t)upper << 16) | lower;
+    int      Rn   = upper & 0xF;
+    int      Rt   = (insn >> 12) & 0xF;
+    /* STREXB/STLEXB: Rd is bits[3:0] of lower (not bits[11:8]).
+     * Using >>8 made Rd=15 on strexb 2f41 and wrote status into PC. */
+    int      Rd   = lower & 0xF;
+    uint32_t addr = cpu.r[Rn];
+    int      ac   = get_active_core();
+    uint8_t  sfx  = (uint8_t)(lower & 0xFFu);
+
+    if (sfx == 0x8F) {
+        /* STLB Rt, [Rn] */
+        mem_write8(addr, (uint8_t)cpu.r[Rt]);
+        exclusive_monitor[ac].valid = 0;
+        return;
+    }
+
+    if (sfx == 0xCF) {
+        /* LDAEXB Rt, [Rn] */
+        uint8_t val = mem_read8(addr);
+        /*
+         * MegaFlash pico2_debug: `_sw_spin_locks` at 0x2000b794 (32 bytes).
+         * Older builds used 0x20005e34 — wrong base left sleep_until spinning
+         * forever in spin_lock_blocking (PC≈0x1000BE2C) during cyw43_arch_init.
+         */
+        if ((addr >= 0x2000b794u && addr < 0x2000b794u + 32u) ||
+            (addr >= 0x20005e34u && addr < 0x20005e34u + 32u)) {
+            val = 0;
+        }
+        cpu.r[Rt] = val;
+        exclusive_monitor[ac].addr  = addr;
+        exclusive_monitor[ac].valid = 1;
+        return;
+    }
+
+    if (sfx == 0xE0) {
+        /* STLEXB Rd, Rt, [Rn] — release-ordered byte store */
+        mem_write8(addr, (uint8_t)cpu.r[Rt]);
+        if (Rd != 15) {
+            cpu.r[Rd] = 0;
+        }
+        exclusive_monitor[ac].valid = 0;
+        return;
+    }
+
+    /* STREXB Rd, Rt, [Rn] — always succeed under emu (SDK lock loops) */
+    mem_write8(addr, (uint8_t)cpu.r[Rt]);
+    if (Rd != 15) {
+        cpu.r[Rd] = 0;
+    }
+    exclusive_monitor[ac].valid = 0;
+}
+
+/* ========================================================================
+ * Test Target (ARMv8-M TT/TTT/TTA/TTAT)
+ * upper: 1110 1000 0100 Rn = 0xE84x
+ * lower: 1111 Rd A 0 0 0 0 0 0 T
+ * Mis-decoding as STRD writes r15/rN to [Rn] (seen corrupting ROM via tt r2,r2).
+ * ======================================================================== */
+static int t32_is_tt(uint16_t upper, uint16_t lower) {
+    return ((upper & 0xFFF0u) == 0xE840u) && ((lower & 0xF0FFu) == 0xF000u);
+}
+
+    static void t32_tt(uint32_t pc, uint16_t upper, uint16_t lower) {
+    (void)pc;
+    (void)upper;
+    int Rd = (lower >> 8) & 0xF;
+    /* Emulate Secure world: address is Secure (S), readable and writable.
+     * Pico SDK rom_func_lookup tests bit 22 (S) to choose RT_FLAG_FUNC_ARM_SEC. */
+    uint32_t resp = (1u << 22) | /* S */
+                    (1u << 19) | /* RW */
+                    (1u << 18);  /* R */
+    if (Rd != 15) {
+        cpu.r[Rd] = resp;
     }
 }
 
@@ -470,6 +835,38 @@ static int t32_misc(uint32_t pc, uint16_t upper, uint16_t lower) {
         /* Memory barriers are NOPs in emulator */
         return 1;
     }
+    /* LSL/LSR/ASR/ROR register T2:
+     * upper = 1111 1010 00ss Rn (value), lower = 1111 Rd 0000 Rm (shift).
+     * ss: 00=LSL, 01=LSR, 10=ASR, 11=ROR.  (Rn/Rm placement matches
+     * objdump/C usage: lsl.w Rd, Rn, Rm.) */
+    if ((upper & 0xFFC0) == 0xFA00 && (lower & 0xF0F0) == 0xF000) {
+        int Rn  = upper & 0xF;           /* value */
+        int Rd  = (lower >> 8) & 0xF;
+        int Rm  = lower & 0xF;           /* shift count */
+        int typ = (upper >> 4) & 3;
+        uint32_t shift = cpu.r[Rm] & 0xFFu;
+        uint32_t val   = cpu.r[Rn];
+        if (shift >= 32u) {
+            if (typ == 2) { /* ASR */
+                cpu.r[Rd] = (val & 0x80000000u) ? 0xFFFFFFFFu : 0u;
+            } else if (typ == 3) { /* ROR uses low 5 bits */
+                shift &= 31u;
+                cpu.r[Rd] = shift ? ((val >> shift) | (val << (32u - shift))) : val;
+            } else {
+                cpu.r[Rd] = 0u;
+            }
+        } else if (shift == 0u) {
+            cpu.r[Rd] = val;
+        } else {
+            switch (typ) {
+            case 0: cpu.r[Rd] = val << shift; break;
+            case 1: cpu.r[Rd] = val >> shift; break;
+            case 2: cpu.r[Rd] = (uint32_t)((int32_t)val >> shift); break;
+            case 3: cpu.r[Rd] = (val >> shift) | (val << (32u - shift)); break;
+            }
+        }
+        return 1;
+    }
     /* SDIV T1: upper = 1111 1011 1001 Rn, lower = 1111 Rd 1111 Rm */
     if ((upper & 0xFFF0) == 0xFB90 && (lower & 0xF0F0) == 0xF0F0) {
         int Rd = (lower >> 8) & 0xF;
@@ -560,15 +957,16 @@ static int t32_misc(uint32_t pc, uint16_t upper, uint16_t lower) {
         cpu.r[RdHi] = (uint32_t)((uint64_t)result >> 32);
         return 1;
     }
-    /* CLZ T1: upper = 1111 1010 1011 Rm, lower = 1111 Rd 1000 Rm */
-    if ((upper & 0xFFF0) == 0xFAB0 && (lower & 0xF0FF) == 0xF080) {
+    /* CLZ T1: upper = 1111 1010 1011 Rm, lower = 1111 Rd 1000 Rm
+     * Mask must allow Rm in bits[3:0] (was F0FF, which only matched Rm=0). */
+    if ((upper & 0xFFF0) == 0xFAB0 && (lower & 0xF0F0) == 0xF080) {
         int Rd = (lower >> 8) & 0xF;
         int Rm = lower & 0xF;
-        cpu.r[Rd] = cpu.r[Rm] ? __builtin_clz(cpu.r[Rm]) : 32;
+        cpu.r[Rd] = cpu.r[Rm] ? (uint32_t)__builtin_clz(cpu.r[Rm]) : 32u;
         return 1;
     }
     /* RBIT T1: upper = 1111 1010 1001 Rm, lower = 1111 Rd 1010 Rm */
-    if ((upper & 0xFFF0) == 0xFA90 && (lower & 0xF0FF) == 0xF0A0) {
+    if ((upper & 0xFFF0) == 0xFA90 && (lower & 0xF0F0) == 0xF0A0) {
         int Rd = (lower >> 8) & 0xF;
         int Rm = lower & 0xF;
         uint32_t v = cpu.r[Rm], r = 0;
@@ -652,6 +1050,43 @@ static int t32_misc(uint32_t pc, uint16_t upper, uint16_t lower) {
         cpu.r[Rd] = val & 0xFFFF;
         return 1;
     }
+    /* UXTAB/UXTAH/SXTAB/SXTAH T2: upper = 1111 1010 0oo Rn (Rn != 15)
+     *   op ooo: 000=SXTAH, 001=UXTAH, 100=SXTAB, 101=UXTAB
+     * Accumulate forms use Rn≠15; extract-only uses Rn=15 (handled above).
+     * Mask must keep op bits[6:4] and clear only Rn: use FF80 not FF8F
+     * (FF8F cleared op and only matched Rn=1 — second UXTAH in ip4 used Rn=3
+     * and fell through to ldst → PC=0xFE → ROM stray → HardFault). */
+    if ((upper & 0xFF80) == 0xFA00 && (lower & 0xF0C0) == 0xF080) {
+        int Rd  = (lower >> 8) & 0xF;
+        int Rm  = lower & 0xF;
+        int Rn  = upper & 0xF;
+        int rot = ((lower >> 4) & 3) * 8;
+        int op  = (upper >> 4) & 0x7;
+        uint32_t val;
+        if (Rn == 15) {
+            return 0; /* UXTB/UXTH/SXTB/SXTH extract-only — handled above */
+        }
+        val = cpu.r[Rm];
+        if (rot) {
+            val = (val >> rot) | (val << (32 - rot));
+        }
+        switch (op) {
+        case 0x0: /* SXTAH */
+            cpu.r[Rd] = cpu.r[Rn] + (uint32_t)(int32_t)(int16_t)(val & 0xFFFF);
+            return 1;
+        case 0x1: /* UXTAH */
+            cpu.r[Rd] = cpu.r[Rn] + (val & 0xFFFF);
+            return 1;
+        case 0x4: /* SXTAB */
+            cpu.r[Rd] = cpu.r[Rn] + (uint32_t)(int32_t)(int8_t)(val & 0xFF);
+            return 1;
+        case 0x5: /* UXTAB */
+            cpu.r[Rd] = cpu.r[Rn] + (val & 0xFF);
+            return 1;
+        default:
+            break;
+        }
+    }
     /* REV T2: upper = 1111 1010 1001 Rm, lower = 1111 Rd 1000 Rm */
     if ((upper & 0xFFF0) == 0xFA90 && (lower & 0xF0FF) == 0xF080) {
         int Rd = (lower >> 8) & 0xF;
@@ -690,7 +1125,7 @@ static void t32_ldst_single(uint32_t pc, uint16_t upper, uint16_t lower) {
     /* Distinguish T3 (12-bit unsigned imm, upper[7]=1 for same-size group,
      * more precisely: for 0xF8xx upper[8]=1 means T3, for 0xF9xx always T1/T3) */
     /* Simplification: use upper[11:8] to determine form */
-    int upper_hi = (upper >> 4) & 0xF;  /* bits[11:8] */
+    int upper_hi = (upper >> 4) & 0xF;  /* bits[7:4]; &0x8 tests upper bit[7] */
 
     if (upper_hi & 0x8) {
         /* T3: 12-bit unsigned offset. lower = Rt(4):imm12(12) */
@@ -803,8 +1238,9 @@ static void t32_ldst_single(uint32_t pc, uint16_t upper, uint16_t lower) {
 
 unhandled_ldst:
     if (cpu.debug_enabled)
-        fprintf(stderr, "[T32] Unhandled ldst upper=0x%04X lower=0x%04X @ PC=0x%08X (no-op)\n",
+        fprintf(stderr, "[T32] Unhandled ldst upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
                 upper, lower, pc);
+    cpu_exception_entry(EXC_HARDFAULT);
     (void)sign; (void)size; (void)L;
 }
 
@@ -815,7 +1251,7 @@ unhandled_ldst:
  * ======================================================================== */
 int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
     /* Update PC to skip this 32-bit instruction (caller may override) */
-    cpu.r[15] = pc + 4;
+    cpu.r[15] = (pc + 4) & ~1u;
     pc_updated = 1;
 
     uint8_t top5 = upper >> 11;  /* bits[15:11] of upper */
@@ -832,27 +1268,54 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
             /* upper[9:8]: 00=STMIA/LDMIA T2, 01=LDM/STM again, 10=? */
             /* Simpler: upper[8]=is_DB, upper[7]=L */
             /* Check for LDRD/STRD: upper[6]=1 and upper[7:5] pattern */
-            if (upper & 0x0040) {
-                /* LDRD/STRD: upper[6]=1 */
-                t32_ldrd_strd(pc, upper, lower);
-            } else {
-                /* LDM/STM T2 */
-                /* Check for TBB/TBH: upper = 0xE8DF or 0xE89F ... actually */
-                /* TBB/TBH: upper[15:4] = 1110 1000 1101 = 0xE8D, lower[15:4]=0xF00? */
-                if ((upper & 0xFFF0) == 0xE8D0 && (lower & 0xFFE0) == 0xF000) {
-                    t32_tbb_tbh(pc, upper, lower);
-                } else {
+            /* TBB/TBH: 1110 1000 1101 Rn | 1111 0000 H Rm — bit6 is set in
+             * the fixed pattern, so this must beat the LDRD heuristic below.
+             * Otherwise TBH is decoded as LDRD Rt=PC and loads the branch
+             * table as PC (MegaFlash _svfprintf_r → HardFault 0x00B103D0). */
+            if ((upper & 0xFFF0) == 0xE8D0 && (lower & 0xFFE0) == 0xF000) {
+                t32_tbb_tbh(pc, upper, lower);
+            } else if (upper & 0x0040) {
+                if (t32_is_tt(upper, lower)) {
+                    t32_tt(pc, upper, lower);
+                } else if (t32_is_exclusive_ldst(upper, lower)) {
+                    t32_exclusive_ldst(pc, upper, lower);
+                } else if (t32_is_halfword_acqrel(upper, lower)) {
+                    t32_halfword_acqrel(pc, upper, lower);
+                } else if (t32_is_word_acqrel(upper, lower)) {
+                    t32_word_acqrel(pc, upper, lower);
+                } else if (t32_is_ldm_stm_reglist(upper, lower)) {
                     t32_ldst_multiple(pc, upper, lower);
+                } else {
+                    /* LDRD/STRD: upper[6]=1 */
+                    t32_ldrd_strd(pc, upper, lower);
                 }
+            } else {
+                t32_ldst_multiple(pc, upper, lower);
             }
             return 1;
         }
         if (bits_10_9 == 1) {
-            /* LDRD/STRD with different pre/post-index forms (0xE9xx) */
-            t32_ldrd_strd(pc, upper, lower);
+            /* 0xEA/0xEB: data-processing (add.w etc.); 0xE9: LDRD/STRD T2 */
+            if ((upper & 0x0F00) >= 0x0A00) {
+                t32_dp_shifted_reg(pc, upper, lower);
+            } else if (t32_is_exclusive_ldst(upper, lower)) {
+                t32_exclusive_ldst(pc, upper, lower);
+            } else {
+                t32_ldrd_strd(pc, upper, lower);
+            }
             return 1;
         }
-        /* bits_10_9 == 2 or 3: Data processing shifted register */
+        /* VLDR/VSTR Dn (0xED9x / 0xED8x) — not generic 0xED00 data-processing */
+        if ((upper & 0xFFF0) == 0xED90 || (upper & 0xFFF0) == 0xED80) {
+            return 1;
+        }
+        /* RP2350 SIO GPIO via CP0 (gpio_set/clr_mask): EE40/EE60.
+         * Must NOT fall through to t32_dp_shifted_reg — that mis-decodes
+         * EE60 3010 as ORN and clobbers r0 (broke MegaFlash DoCommand). */
+        if ((upper & 0xFF00u) == 0xEE00u) {
+            (void)thumb32_pico_gpioc(upper, lower);
+            return 1;
+        }
         t32_dp_shifted_reg(pc, upper, lower);
         return 1;
     }
@@ -863,9 +1326,14 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
     if (top5 == 0x1E) {
         /* Check for VFP/NEON instructions (M33 FPU) */
         if ((upper & 0xEF00) == 0xEE00 || (upper & 0xEF00) == 0xED00) {
-            /* VFP/NEON stubs: skip and return 1 to avoid HardFault */
-            if (cpu.debug_enabled)
-                fprintf(stderr, "[T32] FPU instruction stub PC=0x%08X upper=0x%04X lower=0x%04X\n", pc, upper, lower);
+            if (thumb32_vfp_exec(pc, upper, lower)) {
+                return 1;
+            }
+            if (cpu.debug_enabled) {
+                fprintf(stderr,
+                        "[T32] FPU instruction stub PC=0x%08X upper=0x%04X lower=0x%04X\n",
+                        pc, upper, lower);
+            }
             return 1;
         }
 
@@ -897,7 +1365,7 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
     /* Group 11111: F8xx-FFxx                                              */
     /* ------------------------------------------------------------------ */
     if (top5 == 0x1F) {
-        /* Check misc 32-bit first (SDIV, UDIV, MUL, CLZ etc.) */
+        /* Check misc 32-bit first (SDIV, UDIV, MUL, CLZ, UXTAH etc.) */
         if (t32_misc(pc, upper, lower)) return 1;
         /* Load/Store single */
         t32_ldst_single(pc, upper, lower);

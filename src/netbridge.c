@@ -20,6 +20,40 @@
 #include "uart.h"
 
 net_bridge_t net_bridge;
+int net_bridge_mirror_stdio = 0;
+
+#define NET_BRIDGE_TX_PENDING_MAX 4096u
+static uint8_t net_bridge_tx_pending[NET_BRIDGE_MAX_UART][NET_BRIDGE_TX_PENDING_MAX];
+static size_t net_bridge_tx_pending_len[NET_BRIDGE_MAX_UART];
+
+static void net_bridge_flush_pending(int uart_num) {
+    net_uart_bridge_t *b = &net_bridge.uart[uart_num];
+    size_t len = net_bridge_tx_pending_len[uart_num];
+    if (b->client_fd < 0 || len == 0) {
+        return;
+    }
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = write(b->client_fd, net_bridge_tx_pending[uart_num] + off,
+                          len - off);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+        fprintf(stderr, "[Net] UART%d flush error, disconnecting\n", uart_num);
+        close(b->client_fd);
+        b->client_fd = -1;
+        break;
+    }
+    if (off > 0) {
+        memmove(net_bridge_tx_pending[uart_num],
+                net_bridge_tx_pending[uart_num] + off, len - off);
+        net_bridge_tx_pending_len[uart_num] = len - off;
+    }
+}
 
 /* Set a file descriptor to non-blocking mode */
 static void set_nonblock(int fd) {
@@ -157,6 +191,7 @@ void net_bridge_poll(void) {
                 fprintf(stderr, "[Net] UART%d client connected from %s:%d\n",
                         i, inet_ntoa(client_addr.sin_addr),
                         ntohs(client_addr.sin_port));
+                net_bridge_flush_pending(i);
             }
         }
 
@@ -187,15 +222,30 @@ void net_bridge_uart_tx(int uart_num, uint8_t byte) {
 
     if (b->client_fd >= 0) {
         ssize_t n = write(b->client_fd, &byte, 1);
-        if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            fprintf(stderr, "[Net] UART%d write error, disconnecting\n", uart_num);
-            close(b->client_fd);
-            b->client_fd = -1;
+        if (n == 1) {
+            return;
         }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (net_bridge_tx_pending_len[uart_num] < NET_BRIDGE_TX_PENDING_MAX) {
+                net_bridge_tx_pending[uart_num][net_bridge_tx_pending_len[uart_num]++] =
+                    byte;
+            }
+            return;
+        }
+        fprintf(stderr, "[Net] UART%d write error, disconnecting\n", uart_num);
+        close(b->client_fd);
+        b->client_fd = -1;
+    }
+    if (net_bridge_tx_pending_len[uart_num] < NET_BRIDGE_TX_PENDING_MAX) {
+        net_bridge_tx_pending[uart_num][net_bridge_tx_pending_len[uart_num]++] = byte;
     }
 }
 
 int net_bridge_uart_active(int uart_num) {
     if (uart_num < 0 || uart_num >= NET_BRIDGE_MAX_UART) return 0;
     return net_bridge.uart[uart_num].mode != NET_MODE_NONE;
+}
+
+int net_bridge_any_active(void) {
+    return net_bridge_uart_active(0) || net_bridge_uart_active(1);
 }

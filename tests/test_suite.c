@@ -1568,7 +1568,7 @@ TEST(test_pwm_global_enable) {
 
 TEST(test_dma_n_channels) {
     reset_cpu();
-    ASSERT_EQ(DMA_NUM_CHANNELS, mem_read32(DMA_BASE + DMA_N_CHANNELS), "DMA N_CHANNELS");
+    ASSERT_EQ(DMA_NUM_CHANNELS_RP2040, mem_read32(DMA_BASE + DMA_N_CHANNELS), "DMA N_CHANNELS");
     PASS();
 }
 

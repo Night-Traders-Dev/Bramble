@@ -5,6 +5,26 @@
 #include "corepool.h"
 #include "devtools.h"
 
+uint32_t nvic_num_external_irqs(void) {
+    return membus_rp2350_mode ? NUM_EXTERNAL_IRQS_RP2350 : NUM_EXTERNAL_IRQS;
+}
+
+static inline uint64_t nvic_valid_irq_mask(void) {
+    uint32_t n = nvic_num_external_irqs();
+    return (n >= 64) ? ~0ULL : ((1ULL << n) - 1);
+}
+
+static void nvic_recompute_priorities_flag(nvic_state_t *ns) {
+    ns->priorities_nondefault = 0;
+    uint32_t n = nvic_num_external_irqs();
+    for (uint32_t i = 0; i < n; i++) {
+        if (ns->priority[i] != 0) {
+            ns->priorities_nondefault = 1;
+            break;
+        }
+    }
+}
+
 /* CPUID value (M0+ default, M33 overlay changes this) */
 uint32_t nvic_cpuid_value = 0x410CC601;  /* Cortex-M0+ default */
 
@@ -44,7 +64,7 @@ void nvic_reset(void) {
         nvic_states[c].shpr2 = 0;
         nvic_states[c].shpr3 = 0;
         nvic_states[c].pendsv_pending = 0;
-        for (int i = 0; i < NUM_EXTERNAL_IRQS; i++) {
+        for (int i = 0; i < NUM_EXTERNAL_IRQS_MAX; i++) {
             nvic_states[c].priority[i] = 0;
         }
     }
@@ -160,7 +180,7 @@ uint8_t nvic_get_exception_priority(uint32_t vector_num) {
         case EXC_SYSTICK:
             return (ns->shpr3 >> 24) & 0xC0;
         default:
-            if (vector_num >= 16 && (vector_num - 16) < NUM_EXTERNAL_IRQS) {
+            if (vector_num >= 16 && nvic_irq_valid(vector_num - 16)) {
                 return ns->priority[vector_num - 16] & 0xC0;
             }
             return 0xFF;
@@ -169,59 +189,63 @@ uint8_t nvic_get_exception_priority(uint32_t vector_num) {
 
 /* Enable an IRQ on current core (set in ISER) */
 void nvic_enable_irq(uint32_t irq) {
-    if (irq < NUM_EXTERNAL_IRQS) {
+    if (nvic_irq_valid(irq)) {
         nvic_state_t *ns = nvic_cur();
-        ns->enable |= (1 << irq);
+        ns->enable |= (1ULL << irq);
         if (cpu.debug_enabled)
-            printf("[NVIC] Core %d: Enabled IRQ %u (enable mask=0x%X)\n",
-                   get_active_core(), irq, ns->enable);
+            printf("[NVIC] Core %d: Enabled IRQ %u (enable=0x%llX)\n",
+                   get_active_core(), irq, (unsigned long long)ns->enable);
     }
 }
 
 /* Disable an IRQ on current core (set in ICER) */
 void nvic_disable_irq(uint32_t irq) {
-    if (irq < NUM_EXTERNAL_IRQS) {
+    if (nvic_irq_valid(irq)) {
         nvic_state_t *ns = nvic_cur();
-        ns->enable &= ~(1 << irq);
+        ns->enable &= ~(1ULL << irq);
         if (cpu.debug_enabled)
-            printf("[NVIC] Core %d: Disabled IRQ %u (enable mask=0x%X)\n",
-                   get_active_core(), irq, ns->enable);
+            printf("[NVIC] Core %d: Disabled IRQ %u (enable=0x%llX)\n",
+                   get_active_core(), irq, (unsigned long long)ns->enable);
     }
 }
 
 /* Mark an IRQ as pending on current core (firmware ISPR write) */
 void nvic_set_pending(uint32_t irq) {
-    if (irq < NUM_EXTERNAL_IRQS) {
+    if (nvic_irq_valid(irq)) {
         nvic_state_t *ns = nvic_cur();
-        ns->pending |= (1 << irq);
+        ns->pending |= (1ULL << irq);
         corepool_wake_cores();
+        if (irq >= 46) {
+            static int user_irq_logged;
+            if (!user_irq_logged) {
+                fprintf(stderr, "[Init] NVIC pending user IRQ %u (RP2350 SPARE)\n", irq);
+                user_irq_logged = 1;
+            }
+        }
         if (cpu.debug_enabled)
-            printf("[NVIC] Core %d: Set pending IRQ %u (pending=0x%X, enable=0x%X)\n",
-                   get_active_core(), irq, ns->pending, ns->enable);
+            printf("[NVIC] Core %d: Set pending IRQ %u (pending=0x%llX, enable=0x%llX)\n",
+                   get_active_core(), irq,
+                   (unsigned long long)ns->pending, (unsigned long long)ns->enable);
     }
 }
 
 /* Clear pending bit on current core (set in ICPR) */
 void nvic_clear_pending(uint32_t irq) {
-    if (irq < NUM_EXTERNAL_IRQS) {
+    if (nvic_irq_valid(irq)) {
         nvic_state_t *ns = nvic_cur();
-        ns->pending &= ~(1 << irq);
+        ns->pending &= ~(1ULL << irq);
         if (cpu.debug_enabled)
-            printf("[NVIC] Core %d: Cleared pending IRQ %u (pending now=0x%X)\n",
-                   get_active_core(), irq, ns->pending);
+            printf("[NVIC] Core %d: Cleared pending IRQ %u (pending now=0x%llX)\n",
+                   get_active_core(), irq, (unsigned long long)ns->pending);
     }
 }
 
 /* Set priority for an IRQ on current core */
 void nvic_set_priority(uint32_t irq, uint8_t priority) {
-    if (irq < NUM_EXTERNAL_IRQS) {
+    if (nvic_irq_valid(irq)) {
         nvic_state_t *ns = nvic_cur();
         ns->priority[irq] = priority & 0xC0;
-        /* Recompute fast-path flag */
-        ns->priorities_nondefault = 0;
-        for (uint32_t i = 0; i < NUM_EXTERNAL_IRQS; i++) {
-            if (ns->priority[i] != 0) { ns->priorities_nondefault = 1; break; }
-        }
+        nvic_recompute_priorities_flag(ns);
     }
 }
 
@@ -231,9 +255,8 @@ void nvic_set_priority(uint32_t irq, uint8_t priority) {
  */
 uint32_t nvic_get_pending_irq(void) {
     nvic_state_t *ns = nvic_cur();
-    /* Mask to valid IRQ range (RP2040 has 26 external IRQs, bits 0-25) */
-    uint32_t valid_mask = (1u << NUM_EXTERNAL_IRQS) - 1;
-    uint32_t pending_and_enabled = ns->pending & ns->enable & valid_mask;
+    uint64_t valid_mask = nvic_valid_irq_mask();
+    uint64_t pending_and_enabled = ns->pending & ns->enable & valid_mask;
 
     if (pending_and_enabled == 0) {
         return 0xFFFFFFFF;
@@ -241,16 +264,16 @@ uint32_t nvic_get_pending_irq(void) {
 
     /* Fast path: if no custom priorities set, lowest IRQ number wins */
     if (ns->priorities_nondefault == 0) {
-        return (uint32_t)__builtin_ctz(pending_and_enabled);
+        return (uint32_t)__builtin_ctzll(pending_and_enabled);
     }
 
     /* Slow path: scan for highest priority (lowest value) */
     uint32_t highest_priority_irq = 0xFFFFFFFF;
     uint8_t highest_priority_value = 0xFF;
-    uint32_t bits = pending_and_enabled;
+    uint64_t bits = pending_and_enabled;
 
     while (bits) {
-        uint32_t irq = (uint32_t)__builtin_ctz(bits);
+        uint32_t irq = (uint32_t)__builtin_ctzll(bits);
         uint8_t prio = ns->priority[irq] & 0xC0;
 
         if (prio < highest_priority_value ||
@@ -258,7 +281,7 @@ uint32_t nvic_get_pending_irq(void) {
             highest_priority_value = prio;
             highest_priority_irq = irq;
         }
-        bits &= bits - 1; /* Clear lowest set bit */
+        bits &= bits - 1;
     }
 
     return highest_priority_irq;
@@ -268,6 +291,18 @@ uint32_t nvic_get_pending_irq(void) {
 uint32_t nvic_read_register(uint32_t addr) {
     nvic_state_t *ns = nvic_cur();
     systick_state_t *st = systick_cur();
+
+    if (addr >= NVIC_IPR && addr < NVIC_IPR + NUM_EXTERNAL_IRQS_MAX) {
+        uint32_t offset = (addr - NVIC_IPR) / 4;
+        uint32_t result = 0;
+        for (int i = 0; i < 4; i++) {
+            uint32_t irq_idx = offset * 4 + i;
+            if (nvic_irq_valid(irq_idx)) {
+                result |= ((uint32_t)ns->priority[irq_idx]) << (i * 8);
+            }
+        }
+        return result;
+    }
 
     switch (addr) {
         /* SysTick registers */
@@ -285,44 +320,31 @@ uint32_t nvic_read_register(uint32_t addr) {
         case SYST_CALIB:
             return 0xC0002710;
 
-        /* NVIC registers */
+        /* NVIC registers (ISER/ICER/ISPR/ICPR are banked: +0x100 = IRQ 0-31, +0x104 = IRQ 32-63) */
         case NVIC_ISER:
-            return ns->enable;
+            return (uint32_t)ns->enable;
+        case NVIC_ISER + 4:
+            return (uint32_t)(ns->enable >> 32);
 
         case NVIC_ICER:
-            return ns->enable;
+            return (uint32_t)ns->enable;
+        case NVIC_ICER + 4:
+            return (uint32_t)(ns->enable >> 32);
 
         case NVIC_ISPR:
-            return ns->pending;
+            return (uint32_t)ns->pending;
+        case NVIC_ISPR + 4:
+            return (uint32_t)(ns->pending >> 32);
 
         case NVIC_ICPR:
-            return ns->pending;
+            return (uint32_t)ns->pending;
+        case NVIC_ICPR + 4:
+            return (uint32_t)(ns->pending >> 32);
 
         case NVIC_IABR:
-            return ns->iabr;
-
-        case NVIC_IPR:
-        case NVIC_IPR + 4:
-        case NVIC_IPR + 8:
-        case NVIC_IPR + 12:
-        case NVIC_IPR + 16:
-        case NVIC_IPR + 20:
-        case NVIC_IPR + 24:
-        case NVIC_IPR + 28:
-            {
-                uint32_t offset = (addr - NVIC_IPR) / 4;
-                if (offset < 8) {
-                    uint32_t result = 0;
-                    for (int i = 0; i < 4; i++) {
-                        uint32_t irq_idx = offset * 4 + i;
-                        if (irq_idx < NUM_EXTERNAL_IRQS) {
-                            result |= ((uint32_t)ns->priority[irq_idx]) << (i * 8);
-                        }
-                    }
-                    return result;
-                }
-            }
-            return 0;
+            return (uint32_t)ns->iabr;
+        case NVIC_IABR + 4:
+            return (uint32_t)(ns->iabr >> 32);
 
         /* SCB registers */
         case SCB_ICSR:
@@ -371,6 +393,18 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
     nvic_state_t *ns = nvic_cur();
     systick_state_t *st = systick_cur();
 
+    if (addr >= NVIC_IPR && addr < NVIC_IPR + NUM_EXTERNAL_IRQS_MAX) {
+        uint32_t offset = (addr - NVIC_IPR) / 4;
+        for (int i = 0; i < 4; i++) {
+            uint32_t irq_idx = offset * 4 + i;
+            if (nvic_irq_valid(irq_idx)) {
+                ns->priority[irq_idx] = (val >> (i * 8)) & 0xFF;
+            }
+        }
+        nvic_recompute_priorities_flag(ns);
+        return;
+    }
+
     switch (addr) {
         /* SysTick registers */
         case SYST_CSR:
@@ -390,57 +424,47 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
 
         /* NVIC registers */
         case NVIC_ISER:
-            ns->enable |= val;
-            if (cpu.debug_enabled)
-                printf("[NVIC] Core %d: Write ISER: 0x%X, enabled mask now=0x%X\n",
-                       get_active_core(), val, ns->enable);
+            ns->enable |= (uint64_t)val;
+            break;
+        case NVIC_ISER + 4:
+            if (val & 0xFFFF0000) {
+                static int iser_hi_logged;
+                if (!iser_hi_logged) {
+                    fprintf(stderr, "[Init] NVIC ISER1=0x%08X (enables IRQ 32+)\n", val);
+                    iser_hi_logged = 1;
+                }
+            }
+            ns->enable |= ((uint64_t)val << 32);
             break;
 
         case NVIC_ICER:
-            ns->enable &= ~val;
-            if (cpu.debug_enabled)
-                printf("[NVIC] Core %d: Write ICER: 0x%X, enabled mask now=0x%X\n",
-                       get_active_core(), val, ns->enable);
+            ns->enable &= ~((uint64_t)val);
+            break;
+        case NVIC_ICER + 4:
+            ns->enable &= ~((uint64_t)val << 32);
             break;
 
         case NVIC_ISPR:
-            ns->pending |= val;
-            if (cpu.debug_enabled)
-                printf("[NVIC] Core %d: Write ISPR: 0x%X, pending mask now=0x%X\n",
-                       get_active_core(), val, ns->pending);
+            ns->pending |= (uint64_t)val;
+            corepool_wake_cores();
+            break;
+        case NVIC_ISPR + 4:
+            if (val) {
+                static int ispr_hi_logged;
+                if (!ispr_hi_logged) {
+                    fprintf(stderr, "[Init] NVIC ISPR1=0x%08X (pending IRQ 32+)\n", val);
+                    ispr_hi_logged = 1;
+                }
+            }
+            ns->pending |= ((uint64_t)val << 32);
+            corepool_wake_cores();
             break;
 
         case NVIC_ICPR:
-            ns->pending &= ~val;
-            if (cpu.debug_enabled)
-                printf("[NVIC] Core %d: Write ICPR: 0x%X, pending mask now=0x%X\n",
-                       get_active_core(), val, ns->pending);
+            ns->pending &= ~((uint64_t)val);
             break;
-
-        case NVIC_IPR:
-        case NVIC_IPR + 4:
-        case NVIC_IPR + 8:
-        case NVIC_IPR + 12:
-        case NVIC_IPR + 16:
-        case NVIC_IPR + 20:
-        case NVIC_IPR + 24:
-        case NVIC_IPR + 28:
-            {
-                uint32_t offset = (addr - NVIC_IPR) / 4;
-                if (offset < 8) {
-                    for (int i = 0; i < 4; i++) {
-                        uint32_t irq_idx = offset * 4 + i;
-                        if (irq_idx < NUM_EXTERNAL_IRQS) {
-                            ns->priority[irq_idx] = (val >> (i * 8)) & 0xFF;
-                        }
-                    }
-                    /* Recompute fast-path flag */
-                    ns->priorities_nondefault = 0;
-                    for (uint32_t i = 0; i < NUM_EXTERNAL_IRQS; i++) {
-                        if (ns->priority[i] != 0) { ns->priorities_nondefault = 1; break; }
-                    }
-                }
-            }
+        case NVIC_ICPR + 4:
+            ns->pending &= ~((uint64_t)val << 32);
             break;
 
         /* SCB registers */
@@ -492,7 +516,7 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
  * On real RP2040, the interrupt line goes to both cores' NVICs.
  * Each core independently decides whether to handle based on its own enable mask. */
 void nvic_signal_irq(uint32_t irq) {
-    if (irq < NUM_EXTERNAL_IRQS) {
+    if (nvic_irq_valid(irq)) {
         irq_signal_count++;
 
         if (cpu.debug_enabled) {
@@ -502,13 +526,11 @@ void nvic_signal_irq(uint32_t irq) {
 
         last_irq_signal = irq;
 
-        /* IRQ latency profiling: record pend time */
         if (__builtin_expect(irq_latency_enabled, 0))
             irq_latency_pend(irq);
 
-        /* Set pending on BOTH cores (shared interrupt line) */
         for (int c = 0; c < 2; c++) {
-            nvic_states[c].pending |= (1 << irq);
+            nvic_states[c].pending |= (1ULL << irq);
         }
         corepool_wake_cores();
     }

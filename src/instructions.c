@@ -4,9 +4,11 @@
 #include "instructions.h"
 #include "nvic.h"
 #include "devtools.h"
+#include "corepool.h"
 
 /* pc_updated flag: instruction handlers set this when they modify cpu.r[15] */
 extern int pc_updated;
+
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -997,15 +999,81 @@ void instr_mrs(uint32_t instr) {
 // OPTIONAL INSTRUCTIONS
 // ============================================================================
 
+static int thumb_check_cond(uint8_t cond) {
+    int N = (cpu.xpsr & FLAG_N) != 0;
+    int Z = (cpu.xpsr & FLAG_Z) != 0;
+    int C = (cpu.xpsr & FLAG_C) != 0;
+    int V = (cpu.xpsr & FLAG_V) != 0;
+    switch (cond & 0xF) {
+    case 0x0: return  Z;
+    case 0x1: return !Z;
+    case 0x2: return  C;
+    case 0x3: return !C;
+    case 0x4: return  N;
+    case 0x5: return !N;
+    case 0x6: return  V;
+    case 0x7: return !V;
+    case 0x8: return  C && !Z;
+    case 0x9: return !C ||  Z;
+    case 0xA: return  N == V;
+    case 0xB: return  N != V;
+    case 0xC: return !Z && (N == V);
+    case 0xD: return  Z || (N != V);
+    case 0xE: return 1;
+    default:  return 1;
+    }
+}
+
 void instr_it(uint16_t instr) {
-    (void)instr;
-    if (cpu.debug_enabled)
-        printf("[CPU] IT instruction at 0x%08X (limited support)\n", cpu.r[15]);
+    int core_id = get_active_core();
+    if (core_id < 0 || core_id >= NUM_CORES) {
+        return;
+    }
+
+    cpu_state_dual_t *c = &cores[core_id];
+    c->it_cond = (instr >> 4) & 0xF;
+    c->it_mask = instr & 0xF;
+    c->it_total = 0;
+    for (int i = 3; i >= 0; i--) {
+        if (c->it_mask & (1u << i)) {
+            c->it_total++;
+        } else {
+            break;
+        }
+    }
+    c->it_remaining = c->it_total;
+
+    if (cpu.debug_enabled) {
+        printf("[CPU] IT at 0x%08X cond=%u mask=0x%X (%u insn)\n",
+               cpu.r[15], c->it_cond, c->it_mask, c->it_total);
+    }
+}
+
+int thumb_it_should_execute(int core_id) {
+    if (core_id < 0 || core_id >= NUM_CORES) {
+        return 1;
+    }
+
+    cpu_state_dual_t *c = &cores[core_id];
+    if (c->it_remaining == 0) {
+        return 1;
+    }
+
+    unsigned idx = c->it_total - c->it_remaining;
+    int then_bit = (c->it_mask >> (3 - idx)) & 1;
+    int pass = thumb_check_cond(c->it_cond);
+    if (!then_bit) {
+        pass = !pass;
+    }
+    c->it_remaining--;
+    return pass;
 }
 
 void instr_dsb(uint32_t instr) { (void)instr; }
 void instr_dmb(uint32_t instr) { (void)instr; }
 void instr_isb(uint32_t instr) { (void)instr; }
+
+static int mc_wfi_trace_count = 0;
 
 void instr_wfi(uint16_t instr) {
     (void)instr;
@@ -1013,6 +1081,10 @@ void instr_wfi(uint16_t instr) {
     int c = get_active_core();
     if (c < NUM_CORES) {
         cores[c].is_wfi = 1;
+    }
+    if (multicore_trace_enabled && mc_wfi_trace_count < 8) {
+        fprintf(stderr, "[MC-trace] WFI at PC=0x%08X core%d\n", cpu.r[15], c);
+        mc_wfi_trace_count++;
     }
     if (cpu.debug_enabled) {
         printf("[CPU] WFI - Core %d sleeping until interrupt\n", c);
@@ -1026,14 +1098,23 @@ void instr_wfe(uint16_t instr) {
     if (c < NUM_CORES) {
         cores[c].is_wfi = 1;
     }
+    if (multicore_trace_enabled && mc_wfi_trace_count < 8) {
+        fprintf(stderr, "[MC-trace] WFE at PC=0x%08X core%d\n", cpu.r[15], c);
+        mc_wfi_trace_count++;
+    }
 }
 
 void instr_sev(uint16_t instr) {
     (void)instr;
     /* SEV: wake all cores from WFE */
+    if (multicore_trace_enabled && mc_wfi_trace_count < 16) {
+        fprintf(stderr, "[MC-trace] SEV at PC=0x%08X core%d\n", cpu.r[15], get_active_core());
+        mc_wfi_trace_count++;
+    }
     for (int i = 0; i < NUM_CORES; i++) {
         cores[i].is_wfi = 0;
     }
+    corepool_wake_cores();
 }
 
 void instr_yield(uint16_t instr) {

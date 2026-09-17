@@ -82,6 +82,8 @@ uint32_t timing_instruction_cycles_32(uint16_t upper, uint16_t lower);
 
 /* SIO (Single-cycle I/O) - RP2040 core registers */
 #define SIO_BASE        0xD0000000
+/* RP2350 non-secure SIO view (same register layout, +0x20000 from secure) */
+#define SIO_NONSEC_BASE 0xD0020000
 
 /* Peripherals - see individual headers (uart.h, spi.h, i2c.h, pwm.h) */
 
@@ -180,6 +182,10 @@ typedef struct {
     int core_id;                    /* 0 or 1 */
     int is_halted;                  /* Execution state */
     int is_wfi;                     /* Core sleeping (WFI/WFE), skip until interrupt */
+    uint8_t it_remaining;           /* Thumb IT block: instructions left to predicate */
+    uint8_t it_cond;                /* IT block base condition (bits [7:4] of IT insn) */
+    uint8_t it_mask;                /* IT block mask (bits [3:0] of IT insn) */
+    uint8_t it_total;               /* IT block length (for mask bit indexing) */
     uint32_t exception_sp;          /* Saved SP for exception handling */
     int in_handler_mode;            /* True if currently in ISR */
 
@@ -215,6 +221,12 @@ extern multicore_fifo_t fifo[NUM_CORES];
 /* Set active RAM pointer for memory bus routing (eliminates per-step memcpy) */
 void mem_set_ram_ptr(uint8_t *ram, uint32_t base, uint32_t size);
 
+/* Bulk RAM fill (returns 1 if dest/len are in active RAM) */
+int mem_guest_memset(uint32_t dest, int val, uint32_t len);
+int mem_guest_memset_words(uint32_t dest, uint32_t word, uint32_t len);
+int mem_guest_memcpy(uint32_t dest, uint32_t src_flash, uint32_t len);
+int mem_guest_memcpy_any(uint32_t dest, uint32_t src, uint32_t len);
+
 /* pc_updated flag: set by instruction handlers that modify PC */
 extern int pc_updated;
 
@@ -239,6 +251,10 @@ void mem_write16(uint32_t addr, uint16_t val);
 uint16_t mem_read16(uint32_t addr);
 
 void mem_write8(uint32_t addr, uint8_t val);
+
+/* Set alarm-pool wake byte (+8) for one validated node in SRAM. */
+void membus_alarm_pool_wake_node(uint32_t node_addr);
+void membus_alarm_pool_wake_pending(void);
 uint8_t mem_read8(uint32_t addr);
 
 /* ========================================================================
@@ -334,6 +350,11 @@ uint32_t sio_get_core_id(void);
 void sio_set_core1_reset(int assert_reset);
 void sio_set_core1_stall(int stall);
 int sio_core1_bootrom_handle_fifo_write(uint32_t val);
+void sio_force_core1_launch(uint32_t entry_pc, uint32_t stack_sp, uint32_t vtor);
+
+/* Set to 1 to log Core 1 launch / SIO FIFO / PSM activity (-trace-mc) */
+extern int multicore_trace_enabled;
+extern uint32_t sio_fifo_wr_total;
 
 /* Boot2 detection */
 int cpu_has_boot2(void);

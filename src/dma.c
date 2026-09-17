@@ -1,18 +1,14 @@
 /*
- * RP2040 DMA Controller Emulation
+ * RP2040 / RP2350 DMA Controller Emulation
  *
- * Implements 12 DMA channels with immediate (synchronous) transfers.
+ * Implements DMA channels with immediate (synchronous) transfers.
  * When a channel is triggered (CTRL_TRIG written with EN=1, or via alias
  * trigger registers), the transfer executes immediately within the write call.
  *
- * Supports:
- * - READ_ADDR / WRITE_ADDR with optional increment
- * - DATA_SIZE: byte, halfword, word
- * - TRANS_COUNT transfers per trigger
- * - CHAIN_TO: automatically triggers another channel on completion
- * - IRQ_QUIET: suppress interrupt on completion
- * - Global INTR/INTE/INTF/INTS interrupt registers
- * - All 4 alias register layouts per channel
+ * RP2350 differences vs RP2040 (selected via membus_rp2350_mode):
+ * - 16 channels (vs 12)
+ * - CTRL_TRIG: INCR_WRITE, CHAIN_TO, BSWAP, IRQ_QUIET, BUSY bit positions
+ * - Global regs MULTI_CHAN_TRIGGER / CHAN_ABORT / N_CHANNELS offsets
  */
 
 #include <string.h>
@@ -22,6 +18,39 @@
 
 dma_state_t dma_state;
 
+static int dma_n_channels(void) {
+    return membus_rp2350_mode ? DMA_NUM_CHANNELS_RP2350 : DMA_NUM_CHANNELS_RP2040;
+}
+
+static uint32_t dma_ctrl_incr_write_bit(void) {
+    return membus_rp2350_mode ? DMA_CTRL_INCR_WRITE_RP2350 : DMA_CTRL_INCR_WRITE;
+}
+
+static uint32_t dma_ctrl_bswap_bit(void) {
+    return membus_rp2350_mode ? DMA_CTRL_BSWAP_RP2350 : DMA_CTRL_BSWAP;
+}
+
+static uint32_t dma_ctrl_irq_quiet_bit(void) {
+    return membus_rp2350_mode ? DMA_CTRL_IRQ_QUIET_RP2350 : DMA_CTRL_IRQ_QUIET;
+}
+
+static uint32_t dma_ctrl_busy_bit(void) {
+    return membus_rp2350_mode ? DMA_CTRL_BUSY_RP2350 : DMA_CTRL_BUSY;
+}
+
+static uint32_t dma_ctrl_chain_to_mask(void) {
+    return membus_rp2350_mode ? DMA_CTRL_CHAIN_TO_MASK_RP2350 : DMA_CTRL_CHAIN_TO_MASK;
+}
+
+static int dma_ctrl_chain_to_shift(void) {
+    return membus_rp2350_mode ? DMA_CTRL_CHAIN_TO_SHIFT_RP2350 : DMA_CTRL_CHAIN_TO_SHIFT;
+}
+
+static uint32_t dma_ctrl_ro_mask(void) {
+    return dma_ctrl_busy_bit() | DMA_CTRL_AHB_ERROR |
+           DMA_CTRL_WRITE_ERROR | DMA_CTRL_READ_ERROR;
+}
+
 /* ========================================================================
  * Initialization
  * ======================================================================== */
@@ -29,8 +58,9 @@ dma_state_t dma_state;
 void dma_init(void) {
     memset(&dma_state, 0, sizeof(dma_state));
     /* Default CHAIN_TO = self (no chaining) for each channel */
+    int shift = dma_ctrl_chain_to_shift();
     for (int i = 0; i < DMA_NUM_CHANNELS; i++) {
-        dma_state.ch[i].ctrl = (uint32_t)i << DMA_CTRL_CHAIN_TO_SHIFT;
+        dma_state.ch[i].ctrl = (uint32_t)i << shift;
     }
 }
 
@@ -45,9 +75,6 @@ int dma_match(uint32_t addr) {
 
 /* ========================================================================
  * DMA Transfer Engine
- *
- * Performs an immediate synchronous transfer for the given channel.
- * This is called when a trigger register is written.
  * ======================================================================== */
 
 static void dma_do_transfer(int ch_idx) {
@@ -62,13 +89,12 @@ static void dma_do_transfer(int ch_idx) {
 
     int data_size = (c->ctrl & DMA_CTRL_DATA_SIZE_MASK) >> DMA_CTRL_DATA_SIZE_SHIFT;
     int incr_read  = (c->ctrl & DMA_CTRL_INCR_READ)  ? 1 : 0;
-    int incr_write = (c->ctrl & DMA_CTRL_INCR_WRITE) ? 1 : 0;
-    int bswap      = (c->ctrl & DMA_CTRL_BSWAP)      ? 1 : 0;
+    int incr_write = (c->ctrl & dma_ctrl_incr_write_bit()) ? 1 : 0;
+    int bswap      = (c->ctrl & dma_ctrl_bswap_bit()) ? 1 : 0;
 
     uint32_t src = c->read_addr;
     uint32_t dst = c->write_addr;
     uint32_t step;
-
 
     switch (data_size) {
     case DMA_SIZE_BYTE:     step = 1; break;
@@ -108,7 +134,7 @@ static void dma_do_transfer(int ch_idx) {
     c->trans_count = 0;  /* Transfer complete */
 
     /* Set interrupt if not IRQ_QUIET */
-    if (!(c->ctrl & DMA_CTRL_IRQ_QUIET)) {
+    if (!(c->ctrl & dma_ctrl_irq_quiet_bit())) {
         dma_state.intr |= (1u << ch_idx);
         /* Signal NVIC if enabled in INTE0 or INTE1 */
         if (dma_state.inte0 & (1u << ch_idx))
@@ -118,27 +144,16 @@ static void dma_do_transfer(int ch_idx) {
     }
 
     /* Chain: if CHAIN_TO != self, trigger the chained channel */
-    int chain_to = (c->ctrl & DMA_CTRL_CHAIN_TO_MASK) >> DMA_CTRL_CHAIN_TO_SHIFT;
-    if (chain_to != ch_idx && chain_to < DMA_NUM_CHANNELS) {
+    int chain_to = (int)((c->ctrl & dma_ctrl_chain_to_mask()) >> dma_ctrl_chain_to_shift());
+    if (chain_to != ch_idx && chain_to < dma_n_channels()) {
         dma_do_transfer(chain_to);
     }
 }
 
 /* ========================================================================
  * Channel Register Access Helpers
- *
- * Each channel has 4 alias layouts (0x00-0x3F within the channel block).
- * All aliases access the same 4 fields (CTRL, READ_ADDR, WRITE_ADDR,
- * TRANS_COUNT) but in different orders. The last register in each alias
- * is the "trigger" register — writing it starts a transfer.
- *
- * Alias 0: READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG
- * Alias 1: CTRL, READ_ADDR, WRITE_ADDR, TRANS_COUNT_TRIG
- * Alias 2: CTRL, TRANS_COUNT, READ_ADDR, WRITE_ADDR_TRIG
- * Alias 3: CTRL, WRITE_ADDR, TRANS_COUNT, READ_ADDR_TRIG
  * ======================================================================== */
 
-/* Map alias register offset (0x00-0x3F) to field + is_trigger */
 enum dma_field { F_CTRL, F_READ, F_WRITE, F_COUNT };
 
 static void ch_field_write(int ch, enum dma_field f, uint32_t val, int trigger) {
@@ -150,8 +165,7 @@ static void ch_field_write(int ch, enum dma_field f, uint32_t val, int trigger) 
             uint32_t w1c = val & (DMA_CTRL_WRITE_ERROR | DMA_CTRL_READ_ERROR);
             c->ctrl &= ~w1c;  /* Clear error flags that are written as 1 */
             /* Write all other writable bits */
-            uint32_t writable = ~(DMA_CTRL_BUSY | DMA_CTRL_AHB_ERROR |
-                                  DMA_CTRL_WRITE_ERROR | DMA_CTRL_READ_ERROR);
+            uint32_t writable = ~dma_ctrl_ro_mask();
             c->ctrl = (c->ctrl & ~writable) | (val & writable);
         }
         break;
@@ -183,13 +197,38 @@ static const enum dma_field alias_layout[4][4] = {
     /* Alias 3 */ { F_CTRL,  F_WRITE, F_COUNT, F_READ  },
 };
 
+/* RP2040 and RP2350 global maps overlap (e.g. 0x448 = N_CHANNELS vs TIMER2). */
+static int dma_off_multi(void) {
+    return membus_rp2350_mode ? DMA_MULTI_CHAN_TRIGGER_RP2350 : DMA_MULTI_CHAN_TRIGGER;
+}
+static int dma_off_abort(void) {
+    return membus_rp2350_mode ? DMA_CHAN_ABORT_RP2350 : DMA_CHAN_ABORT;
+}
+static int dma_off_nchan(void) {
+    return membus_rp2350_mode ? DMA_N_CHANNELS_RP2350 : DMA_N_CHANNELS;
+}
+static int dma_off_sniff_ctrl(void) {
+    return membus_rp2350_mode ? DMA_SNIFF_CTRL_RP2350 : DMA_SNIFF_CTRL;
+}
+static int dma_off_sniff_data(void) {
+    return membus_rp2350_mode ? DMA_SNIFF_DATA_RP2350 : DMA_SNIFF_DATA;
+}
+static int dma_off_fifo(void) {
+    return membus_rp2350_mode ? DMA_FIFO_LEVELS_RP2350 : DMA_FIFO_LEVELS;
+}
+static int dma_off_timer0(void) {
+    return membus_rp2350_mode ? 0x440 : DMA_TIMER0;
+}
+
 /* ========================================================================
  * Register Read
  * ======================================================================== */
 
 uint32_t dma_read32(uint32_t offset) {
-    /* Per-channel registers: 12 channels * 0x40 = 0x300 */
-    if (offset < DMA_NUM_CHANNELS * DMA_CH_STRIDE) {
+    int nchan = dma_n_channels();
+
+    /* Per-channel registers */
+    if (offset < (uint32_t)nchan * DMA_CH_STRIDE) {
         int ch = offset / DMA_CH_STRIDE;
         int reg = offset % DMA_CH_STRIDE;
         int alias = reg / 0x10;         /* 0-3 */
@@ -197,7 +236,7 @@ uint32_t dma_read32(uint32_t offset) {
         return ch_field_read(ch, alias_layout[alias][field_idx]);
     }
 
-    /* Global registers */
+    /* Global registers — interrupt block is identical on both chips */
     switch (offset) {
     case DMA_INTR:  return dma_state.intr;
     case DMA_INTE0: return dma_state.inte0;
@@ -206,18 +245,30 @@ uint32_t dma_read32(uint32_t offset) {
     case DMA_INTE1: return dma_state.inte1;
     case DMA_INTF1: return dma_state.intf1;
     case DMA_INTS1: return (dma_state.intr | dma_state.intf1) & dma_state.inte1;
-    case DMA_TIMER0: return dma_state.timer[0];
-    case DMA_TIMER1: return dma_state.timer[1];
-    case DMA_TIMER2: return dma_state.timer[2];
-    case DMA_TIMER3: return dma_state.timer[3];
-    case DMA_MULTI_CHAN_TRIGGER: return 0;  /* Write-only */
-    case DMA_SNIFF_CTRL: return dma_state.sniff_ctrl;
-    case DMA_SNIFF_DATA: return dma_state.sniff_data;
-    case DMA_FIFO_LEVELS: return 0;  /* All FIFOs empty */
-    case DMA_CHAN_ABORT: return 0;    /* Write-only */
-    case DMA_N_CHANNELS: return DMA_NUM_CHANNELS;
-    default: return 0;
+    default:
+        break;
     }
+
+    {
+        uint32_t t0 = (uint32_t)dma_off_timer0();
+        if (offset >= t0 && offset < t0 + 16u)
+            return dma_state.timer[(offset - t0) / 4u];
+    }
+
+    if (offset == (uint32_t)dma_off_multi())
+        return 0;  /* Write-only */
+    if (offset == (uint32_t)dma_off_sniff_ctrl())
+        return dma_state.sniff_ctrl;
+    if (offset == (uint32_t)dma_off_sniff_data())
+        return dma_state.sniff_data;
+    if (offset == (uint32_t)dma_off_fifo())
+        return 0;  /* All FIFOs empty */
+    if (offset == (uint32_t)dma_off_abort())
+        return 0;  /* Write-only */
+    if (offset == (uint32_t)dma_off_nchan())
+        return (uint32_t)nchan;
+
+    return 0;
 }
 
 /* ========================================================================
@@ -225,8 +276,10 @@ uint32_t dma_read32(uint32_t offset) {
  * ======================================================================== */
 
 void dma_write32(uint32_t offset, uint32_t val) {
+    int nchan = dma_n_channels();
+
     /* Per-channel registers */
-    if (offset < DMA_NUM_CHANNELS * DMA_CH_STRIDE) {
+    if (offset < (uint32_t)nchan * DMA_CH_STRIDE) {
         int ch = offset / DMA_CH_STRIDE;
         int reg = offset % DMA_CH_STRIDE;
         int alias = reg / 0x10;
@@ -242,47 +295,52 @@ void dma_write32(uint32_t offset, uint32_t val) {
     case DMA_INTR:
         /* Write-1-to-clear */
         dma_state.intr &= ~val;
-        break;
+        return;
     case DMA_INTE0:
-        dma_state.inte0 = val & ((1u << DMA_NUM_CHANNELS) - 1);
-        break;
+        dma_state.inte0 = val & ((1u << nchan) - 1);
+        return;
     case DMA_INTF0:
-        dma_state.intf0 = val & ((1u << DMA_NUM_CHANNELS) - 1);
-        break;
+        dma_state.intf0 = val & ((1u << nchan) - 1);
+        return;
     case DMA_INTE1:
-        dma_state.inte1 = val & ((1u << DMA_NUM_CHANNELS) - 1);
-        break;
+        dma_state.inte1 = val & ((1u << nchan) - 1);
+        return;
     case DMA_INTF1:
-        dma_state.intf1 = val & ((1u << DMA_NUM_CHANNELS) - 1);
-        break;
-    case DMA_TIMER0: dma_state.timer[0] = val; break;
-    case DMA_TIMER1: dma_state.timer[1] = val; break;
-    case DMA_TIMER2: dma_state.timer[2] = val; break;
-    case DMA_TIMER3: dma_state.timer[3] = val; break;
-    case DMA_MULTI_CHAN_TRIGGER:
-        /* Trigger all channels indicated by set bits */
-        for (int i = 0; i < DMA_NUM_CHANNELS; i++) {
-            if (val & (1u << i)) {
-                dma_do_transfer(i);
-            }
-        }
-        break;
-    case DMA_SNIFF_CTRL:
-        dma_state.sniff_ctrl = val;
-        break;
-    case DMA_SNIFF_DATA:
-        dma_state.sniff_data = val;
-        break;
-    case DMA_CHAN_ABORT:
-        /* Abort channels - for our synchronous model, transfers are already complete.
-         * Just clear trans_count for indicated channels. */
-        for (int i = 0; i < DMA_NUM_CHANNELS; i++) {
-            if (val & (1u << i)) {
-                dma_state.ch[i].trans_count = 0;
-            }
-        }
-        break;
+        dma_state.intf1 = val & ((1u << nchan) - 1);
+        return;
     default:
         break;
+    }
+
+    {
+        uint32_t t0 = (uint32_t)dma_off_timer0();
+        if (offset >= t0 && offset < t0 + 16u) {
+            dma_state.timer[(offset - t0) / 4u] = val;
+            return;
+        }
+    }
+
+    if (offset == (uint32_t)dma_off_multi()) {
+        for (int i = 0; i < nchan; i++) {
+            if (val & (1u << i))
+                dma_do_transfer(i);
+        }
+        return;
+    }
+    if (offset == (uint32_t)dma_off_sniff_ctrl()) {
+        dma_state.sniff_ctrl = val;
+        return;
+    }
+    if (offset == (uint32_t)dma_off_sniff_data()) {
+        dma_state.sniff_data = val;
+        return;
+    }
+    if (offset == (uint32_t)dma_off_abort()) {
+        /* Abort channels - for our synchronous model, transfers are already complete.
+         * Just clear trans_count for indicated channels. */
+        for (int i = 0; i < nchan; i++) {
+            if (val & (1u << i))
+                dma_state.ch[i].trans_count = 0;
+        }
     }
 }

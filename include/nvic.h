@@ -71,11 +71,21 @@
 #define IRQ_ADC_IRQ_FIFO            22     /* ADC_IRQ_FIFO */
 #define IRQ_I2C0_IRQ                23     /* I2C0_IRQ */
 #define IRQ_I2C1_IRQ                24     /* I2C1_IRQ */
-#define IRQ_RTC_IRQ                 25     /* RTC_IRQ */
+#define IRQ_RTC_IRQ                 25     /* RTC_IRQ (RP2040) */
 
-#define NUM_EXTERNAL_IRQS           26     /* RP2040 has 26 external IRQs */
+#define NUM_EXTERNAL_IRQS           26     /* RP2040 external IRQ count */
+#define NUM_EXTERNAL_IRQS_RP2350      52     /* RP2350 external IRQ count */
+#define NUM_EXTERNAL_IRQS_MAX         NUM_EXTERNAL_IRQS_RP2350
+
 #define NUM_EXCEPTIONS              16     /* System exceptions (0-15) */
-#define NUM_TOTAL_IRQS              (NUM_EXCEPTIONS + NUM_EXTERNAL_IRQS)  /* 42 total */
+#define NUM_TOTAL_IRQS              (NUM_EXCEPTIONS + NUM_EXTERNAL_IRQS_MAX)
+
+/* Active external IRQ count (26 on RP2040, 52 on RP2350) */
+uint32_t nvic_num_external_irqs(void);
+
+static inline int nvic_irq_valid(uint32_t irq) {
+    return irq < nvic_num_external_irqs();
+}
 
 /* Priority levels (Cortex-M0+ supports 4 levels, using bits 6-7 of IPR) */
 #define IRQ_PRIORITY_0              0      /* Highest priority */
@@ -103,11 +113,11 @@ typedef struct {
 
 /* NVIC State Structure */
 typedef struct {
-    uint32_t enable;                /* ISER - Interrupt enable bits */
-    uint32_t pending;               /* ISPR - Pending interrupt bits */
-    uint8_t priority[NUM_EXTERNAL_IRQS];  /* IPR - Priority for each IRQ */
+    uint64_t enable;                /* ISER - Interrupt enable bits (IRQ 0-51 on RP2350) */
+    uint64_t pending;               /* ISPR - Pending interrupt bits */
+    uint8_t priority[NUM_EXTERNAL_IRQS_MAX];  /* IPR - Priority for each IRQ */
     uint32_t active_exceptions;     /* Bitmask of currently executing exceptions */
-    uint32_t iabr;                  /* IABR - Active Bit Register */
+    uint64_t iabr;                  /* IABR - Active Bit Register */
     uint32_t shpr2;                 /* System Handler Priority 2 (SVCall) */
     uint32_t shpr3;                 /* System Handler Priority 3 (PendSV, SysTick) */
     int pendsv_pending;             /* PendSV exception pending */

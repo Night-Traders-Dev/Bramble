@@ -124,7 +124,9 @@ void instr_mov_high_reg(uint16_t instr);           // MOV Rd, Rm (high registers
 // ============================================================================
 
 // Conditional Execution
-void instr_it(uint16_t instr);                     // IT{x{y{z}}} cond
+void instr_it(uint16_t instr);
+/* Returns 1 if the instruction at PC should execute, 0 to skip (IT predicate false). */
+int thumb_it_should_execute(int core_id);                     // IT{x{y{z}}} cond
 
 // Memory Barriers (32-bit instructions)
 void instr_dsb(uint32_t instr);                    // DSB (data sync barrier)

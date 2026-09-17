@@ -181,6 +181,13 @@ void timer_write32(uint32_t addr, uint32_t val) {
     case TIMER_INTE:
         /* Interrupt enable register - controls which alarms generate interrupts */
         timer_state.inte = val & 0xF; /* Only 4 alarms */
+        if (timer_state.inte != 0) {
+            static int inte_logged;
+            if (!inte_logged) {
+                fprintf(stderr, "[Init] TIMER0 INTE=0x%X (alarm IRQs armed)\n", timer_state.inte);
+                inte_logged = 1;
+            }
+        }
         if (cpu.debug_enabled)
             fprintf(stderr, "[TIMER] Interrupt enable set to: 0x%X\n", val);
         /* Signal NVIC for any newly enabled interrupts */

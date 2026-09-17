@@ -145,8 +145,8 @@ static uint32_t read_pins(uint8_t base, uint8_t count) {
     if (count == 0) return 0;
     uint32_t val = 0;
     for (int i = 0; i < count && i < 32; i++) {
-        uint8_t pin = (base + i) % 30;
-        if (gpio_get_pin(pin))
+        uint8_t pin = (uint8_t)(base + i);
+        if (pin < NUM_GPIO_PINS && gpio_get_pin(pin))
             val |= (1u << i);
     }
     return val;
@@ -154,8 +154,9 @@ static uint32_t read_pins(uint8_t base, uint8_t count) {
 
 static void write_pins(uint8_t base, uint8_t count, uint32_t val) {
     for (int i = 0; i < count && i < 32; i++) {
-        uint8_t pin = (base + i) % 30;
-        gpio_set_pin(pin, (val >> i) & 1);
+        uint8_t pin = (uint8_t)(base + i);
+        if (pin < NUM_GPIO_PINS)
+            gpio_set_pin(pin, (val >> i) & 1);
     }
 }
 
@@ -236,10 +237,15 @@ void pio_sm_exec(int pio_num, int sm_num, uint16_t instr) {
 
         switch (source) {
         case 0: /* GPIO (absolute pin number) */
-            condition_met = (gpio_get_pin(index % 30) == polarity);
+            condition_met = (index < NUM_GPIO_PINS &&
+                             gpio_get_pin(index) == polarity);
             break;
         case 1: /* PIN (relative to IN_BASE) */
-            condition_met = (gpio_get_pin((sm_in_base(s) + index) % 30) == polarity);
+            {
+                uint8_t pin = (uint8_t)(sm_in_base(s) + index);
+                condition_met = (pin < NUM_GPIO_PINS &&
+                                 gpio_get_pin(pin) == polarity);
+            }
             break;
         case 2: /* IRQ flag */
             condition_met = ((p->irq >> (index & 0x07)) & 1) == polarity;
@@ -511,6 +517,29 @@ void pio_sm_exec(int pio_num, int sm_num, uint16_t instr) {
  * PIO Step: execute one cycle for all enabled SMs
  * ======================================================================== */
 
+void pio_inject_rx(int pio_num, int sm_num, uint32_t word)
+{
+    if (pio_num < 0 || pio_num >= PIO_NUM_BLOCKS || sm_num < 0 || sm_num >= PIO_NUM_SM) {
+        return;
+    }
+    pio_block_t *p = &pio_state[pio_num];
+    if (!fifo_push(&p->sm[sm_num].rx_fifo, word)) {
+        return;
+    }
+    pio_check_irq(pio_num);
+}
+
+void pio_drain_rx(int pio_num, int sm_num)
+{
+    if (pio_num < 0 || pio_num >= PIO_NUM_BLOCKS || sm_num < 0 || sm_num >= PIO_NUM_SM) {
+        return;
+    }
+    pio_block_t *p = &pio_state[pio_num];
+    uint32_t val;
+    while (fifo_pop(&p->sm[sm_num].rx_fifo, &val)) {
+    }
+}
+
 void pio_step(void) {
     for (int b = 0; b < PIO_NUM_BLOCKS; b++) {
         pio_block_t *p = &pio_state[b];
@@ -739,6 +768,7 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
 
     switch (offset) {
     case PIO_CTRL: {
+        uint32_t prev_ctrl = p->ctrl;
         /* SM_ENABLE bits [3:0] */
         p->ctrl = val & PIO_CTRL_SM_ENABLE_MASK;
 
@@ -763,6 +793,14 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
                 if (cyw43.enabled && pio_num == cyw43.pio_num && sm == cyw43.pio_sm)
                     cyw43_pio_sm_restart();
             }
+        }
+
+        /* cyw43_spi_transfer disables the SM then pio_sm_put(X/Y) before DMA.
+         * Arm pre-DMA skip on enable falling edge too (covers missed RESTART). */
+        if (cyw43.enabled && pio_num == cyw43.pio_num && cyw43.pio_sm >= 0) {
+            int sm = cyw43.pio_sm;
+            if ((prev_ctrl & (1u << sm)) && !(p->ctrl & (1u << sm)))
+                cyw43_pio_sm_restart();
         }
 
         /* CLKDIV_RESTART [11:8]: restart clock dividers (strobe, self-clearing) */

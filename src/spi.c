@@ -12,6 +12,8 @@
 #include <string.h>
 #include "spi.h"
 #include "nvic.h"
+#include "emulator.h"
+#include "rp2350_rv/rp2350_memmap.h"
 
 spi_state_t spi_state[2];
 
@@ -26,7 +28,15 @@ void spi_init(void) {
 }
 
 int spi_match(uint32_t addr) {
-    uint32_t base = addr & ~0x3000;
+    uint32_t base = addr & ~0x3FFFu;
+    if (membus_rp2350_mode) {
+        if (base == RP2350_SPI0_BASE)
+            return 0;
+        if (base == RP2350_SPI1_BASE)
+            return 1;
+        return -1;
+    }
+    base = addr & ~0x3000u;
     if (base >= SPI0_BASE && base < SPI0_BASE + SPI_BLOCK_SIZE)
         return 0;
     if (base >= SPI1_BASE && base < SPI1_BASE + SPI_BLOCK_SIZE)
@@ -83,6 +93,8 @@ static void spi_execute_transfers(spi_state_t *s) {
 
         if (s->device.xfer) {
             miso = s->device.xfer(s->device.ctx, (uint8_t)mosi);
+        } else {
+            miso = 0xFF; /* idle MISO — flash read/poll without an attached device model */
         }
 
         rx_push(s, miso);
@@ -127,8 +139,12 @@ uint32_t spi_read32(int spi_num, uint32_t offset) {
         return s->cr1;
 
     case SPI_SSPDR:
-        /* Read pops from RX FIFO */
+        /* Read pops from RX FIFO; clock a dummy byte if empty (SDK poll loops). */
         {
+            if (s->rx_count == 0 && (s->cr1 & SPI_CR1_SSE) && !s->device.xfer) {
+                tx_push(s, 0xFF);
+                spi_execute_transfers(s);
+            }
             uint16_t val = rx_pop(s);
             spi_update_irq(spi_num);
             return val;

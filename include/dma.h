@@ -1,7 +1,7 @@
 /*
- * RP2040 DMA Controller Emulation
+ * RP2040 / RP2350 DMA Controller Emulation
  *
- * 12 independent DMA channels with:
+ * Up to 16 DMA channels (12 on RP2040, 16 on RP2350) with:
  * - READ_ADDR, WRITE_ADDR, TRANS_COUNT, CTRL_TRIG per channel
  * - 4 alias register blocks per channel (AL1-AL3 reorder fields)
  * - Immediate (synchronous) transfer on trigger
@@ -10,6 +10,10 @@
  * - CHAIN_TO for channel chaining
  * - Global interrupt registers (INTR, INTE0/1, INTF0/1, INTS0/1)
  * - Atomic register aliases (SET/CLR/XOR)
+ *
+ * CTRL_TRIG bit positions and some global register offsets differ between
+ * RP2040 and RP2350. Macros below are the RP2040 layout (used by unit tests);
+ * dma.c selects the active layout from membus_rp2350_mode at runtime.
  */
 
 #ifndef DMA_H
@@ -22,9 +26,11 @@
  * ======================================================================== */
 
 #define DMA_BASE            0x50000000
-#define DMA_NUM_CHANNELS    12
+#define DMA_NUM_CHANNELS_RP2040  12
+#define DMA_NUM_CHANNELS_RP2350  16
+#define DMA_NUM_CHANNELS    DMA_NUM_CHANNELS_RP2350  /* storage covers both */
 #define DMA_CH_STRIDE       0x40    /* 64 bytes per channel */
-#define DMA_BLOCK_SIZE      0x4C0   /* channels (0x300) + global regs */
+#define DMA_BLOCK_SIZE      0x500   /* channels (0x400) + RP2350 global regs */
 
 /* ========================================================================
  * Per-Channel Register Offsets (within 0x40-byte channel block)
@@ -55,7 +61,7 @@
 #define DMA_CH_AL3_READ_ADDR_TRIG   0x3C
 
 /* ========================================================================
- * CTRL_TRIG Bitfields
+ * CTRL_TRIG Bitfields — RP2040 layout (unit tests / default macros)
  * ======================================================================== */
 
 #define DMA_CTRL_EN             (1 << 0)
@@ -79,6 +85,15 @@
 #define DMA_CTRL_READ_ERROR     (1 << 30)   /* W1C */
 #define DMA_CTRL_AHB_ERROR      (1 << 31)   /* read-only */
 
+/* RP2350 CTRL_TRIG differences (BUSY/BSWAP/CHAIN_TO/INCR_WRITE shifted) */
+#define DMA_CTRL_INCR_WRITE_RP2350     (1u << 6)
+#define DMA_CTRL_CHAIN_TO_MASK_RP2350  (0xFu << 13)
+#define DMA_CTRL_CHAIN_TO_SHIFT_RP2350 13
+#define DMA_CTRL_IRQ_QUIET_RP2350      (1u << 23)
+#define DMA_CTRL_BSWAP_RP2350          (1u << 24)
+#define DMA_CTRL_SNIFF_EN_RP2350       (1u << 25)
+#define DMA_CTRL_BUSY_RP2350           (1u << 26)
+
 /* DATA_SIZE values */
 #define DMA_SIZE_BYTE           0
 #define DMA_SIZE_HALFWORD       1
@@ -100,12 +115,20 @@
 #define DMA_TIMER1              0x424
 #define DMA_TIMER2              0x428
 #define DMA_TIMER3              0x42C
+/* RP2040 globals */
 #define DMA_MULTI_CHAN_TRIGGER  0x430
 #define DMA_SNIFF_CTRL          0x434
 #define DMA_SNIFF_DATA          0x438
 #define DMA_FIFO_LEVELS         0x440
 #define DMA_CHAN_ABORT           0x444
 #define DMA_N_CHANNELS          0x448
+/* RP2350 globals (shifted after extra timer/MPU regs) */
+#define DMA_MULTI_CHAN_TRIGGER_RP2350  0x450
+#define DMA_SNIFF_CTRL_RP2350          0x454
+#define DMA_SNIFF_DATA_RP2350          0x458
+#define DMA_FIFO_LEVELS_RP2350         0x460
+#define DMA_CHAN_ABORT_RP2350           0x464
+#define DMA_N_CHANNELS_RP2350          0x468
 
 /* ========================================================================
  * Per-Channel State

@@ -6,6 +6,8 @@
 #include "wire.h"
 #include "usb.h"
 #include "devtools.h"
+#include "emulator.h"
+#include "rp2350_rv/rp2350_memmap.h"
 
 /* Two UART instances */
 uart_state_t uart_state[2];
@@ -24,8 +26,16 @@ void uart_init(void) {
 }
 
 int uart_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3FFFu;
+    if (membus_rp2350_mode) {
+        if (base == RP2350_UART0_BASE)
+            return 0;
+        if (base == RP2350_UART1_BASE)
+            return 1;
+        return -1;
+    }
     /* Strip atomic alias bits to get base peripheral address */
-    uint32_t base = addr & ~0x3000;
+    base = addr & ~0x3000u;
     if (base >= UART0_BASE && base < UART0_BASE + UART_BLOCK_SIZE)
         return 0;
     if (base >= UART1_BASE && base < UART1_BASE + UART_BLOCK_SIZE)
@@ -189,6 +199,10 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
             }
             if (net_bridge_uart_active(uart_num)) {
                 net_bridge_uart_tx(uart_num, ch);
+                if (net_bridge_mirror_stdio) {
+                    fputc((int)ch, stderr);
+                    fflush(stderr);
+                }
             } else if (wire_uart_active(uart_num)) {
                 wire_send_uart(uart_num, ch);
             } else if (!usb_cdc_stdout_enabled) {

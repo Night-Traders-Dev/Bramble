@@ -16,4 +16,7 @@
  */
 int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower);
 
+/* Clear local exclusive monitor after any store (ARM STREX semantics). */
+void thumb32_exclusive_monitor_clear(uint32_t addr);
+
 #endif /* THUMB32_H */
