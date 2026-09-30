@@ -44,6 +44,7 @@
 #include "rp2350_rv/rv_bootrom.h"
 #include "rp2350_rv/rp2350_periph.h"
 #include "rp2350_rv/rv_icache.h"
+#include "rp2350_rv/rp2350_memmap.h"
 #include "rp2350_arm/m33_cpu.h"
 #include "thumb32.h"
 #include "vnet.h"
@@ -4711,6 +4712,42 @@ TEST(test_rv_membus_sram) {
     PASS();
 }
 
+TEST(test_rv_shared_periph_translated_base) {
+    /* Regression for issue #16. rv_translate_shared_addr() rewrites RP2350
+     * peripheral bases back to their RP2040 equivalents before delegating to
+     * the shared membus, but uart_match()/spi_match() only recognised the
+     * RP2350 base while membus_rp2350_mode was set. Every RISC-V UART/SPI
+     * access therefore fell through to "unmapped" and was silently dropped. */
+    int saved_mode = membus_rp2350_mode;
+    membus_rp2350_mode = 1;
+    uart_init();
+    spi_init();
+
+    /* Both address spaces must resolve to the same emulated peripheral. */
+    ASSERT_EQ(0, uart_match(RP2350_UART0_BASE), "RP2350 UART0 base should match");
+    ASSERT_EQ(1, uart_match(RP2350_UART1_BASE), "RP2350 UART1 base should match");
+    ASSERT_EQ(0, uart_match(UART0_BASE), "translated RP2040 UART0 base should match");
+    ASSERT_EQ(1, uart_match(UART1_BASE), "translated RP2040 UART1 base should match");
+    ASSERT_EQ(0, uart_match(RP2350_UART0_BASE | 0x2000), "RP2350 UART0 SET alias should match");
+    ASSERT_EQ(0, uart_match(UART0_BASE | 0x3000), "RP2040 UART0 CLR alias should match");
+    ASSERT_EQ(0, spi_match(RP2350_SPI0_BASE), "RP2350 SPI0 base should match");
+    ASSERT_EQ(0, spi_match(SPI0_BASE), "translated RP2040 SPI0 base should match");
+    ASSERT_EQ((uint32_t)-1, (uint32_t)uart_match(RP2350_PADS_QSPI_BASE),
+              "PADS_QSPI must not be claimed by the UART");
+
+    /* End-to-end: an RISC-V store to the RP2350 UART0 DR must reach UART0. */
+    rv_membus_state_t bus;
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv_mem_write32(&bus, RP2350_UART0_BASE + UART_DR, 0x41);
+    ASSERT_EQ(0x41, uart_state[0].dr, "RISC-V UART0 DR write should reach UART0");
+    ASSERT_EQ(0, uart_state[1].dr, "RISC-V UART0 write must not land on UART1");
+
+    uart_init();
+    spi_init();
+    membus_rp2350_mode = saved_mode;
+    PASS();
+}
+
 TEST(test_rv_bootrom_init) {
     rv_membus_state_t bus;
     rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
@@ -5308,6 +5345,7 @@ int main(void) {
 
     BEGIN_CATEGORY("RISC-V Memory Bus");
     RUN_TEST(test_rv_membus_sram);
+    RUN_TEST(test_rv_shared_periph_translated_base);
     RUN_TEST(test_rv_bootrom_init);
     END_CATEGORY("RISC-V Memory Bus");
 

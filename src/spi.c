@@ -30,9 +30,12 @@ void spi_init(void) {
 int spi_match(uint32_t addr) {
     uint32_t base = addr & ~0x3FFFu;
     if (membus_rp2350_mode) {
-        if (base == RP2350_SPI0_BASE)
+        /* See uart_match(): the Hazard3 path rewrites RP2350 bases back to
+         * their RP2040 equivalents before delegating to the shared bus, so
+         * both address spaces have to be recognised here. */
+        if (base == RP2350_SPI0_BASE || base == SPI0_BASE)
             return 0;
-        if (base == RP2350_SPI1_BASE)
+        if (base == RP2350_SPI1_BASE || base == SPI1_BASE)
             return 1;
         return -1;
     }

@@ -210,14 +210,17 @@ static void io_qspi_write(uint32_t offset, uint32_t val) {
 
 static uint32_t pads_qspi_regs[8];  /* VOLTAGE_SELECT + 6 pads + spare */
 
-static uint32_t pads_qspi_active_base(void) {
-    return membus_rp2350_mode ? PADS_QSPI_BASE_RP2350 : PADS_QSPI_BASE_RP2040;
-}
-
 static int pads_qspi_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
-    uint32_t pbase = pads_qspi_active_base();
-    return (base >= pbase && base < pbase + PADS_QSPI_BLOCK_SIZE);
+    if (base >= PADS_QSPI_BASE_RP2040 && base < PADS_QSPI_BASE_RP2040 + PADS_QSPI_BLOCK_SIZE)
+        return 1;
+    /* The Hazard3 path rewrites the RP2350 PADS_QSPI base back to the RP2040
+     * one in rv_translate_shared_addr() before delegating here, so the RP2350
+     * base only ever reaches us on the Cortex-M33 path. */
+    if (membus_rp2350_mode &&
+        base >= PADS_QSPI_BASE_RP2350 && base < PADS_QSPI_BASE_RP2350 + PADS_QSPI_BLOCK_SIZE)
+        return 1;
+    return 0;
 }
 
 static int gpio_bus_match(uint32_t addr) {

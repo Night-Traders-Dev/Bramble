@@ -28,9 +28,14 @@ void uart_init(void) {
 int uart_match(uint32_t addr) {
     uint32_t base = addr & ~0x3FFFu;
     if (membus_rp2350_mode) {
-        if (base == RP2350_UART0_BASE)
+        /* Two callers reach the UART with membus_rp2350_mode set but using
+         * different bases. The Cortex-M33 path passes RP2350 addresses
+         * through untouched, while the Hazard3 path rewrites them back to
+         * their RP2040 equivalents in rv_translate_shared_addr() before it
+         * delegates to the shared bus. Accept both address spaces. */
+        if (base == RP2350_UART0_BASE || base == UART0_BASE)
             return 0;
-        if (base == RP2350_UART1_BASE)
+        if (base == RP2350_UART1_BASE || base == UART1_BASE)
             return 1;
         return -1;
     }
