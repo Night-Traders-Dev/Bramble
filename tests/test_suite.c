@@ -38,6 +38,7 @@
 #include "storage.h"
 #include "corepool.h"
 #include "wire.h"
+#include "devtools.h"
 #include "rp2350_rv/rv_cpu.h"
 #include "rp2350_rv/rv_clint.h"
 #include "rp2350_rv/rv_membus.h"
@@ -4748,6 +4749,89 @@ TEST(test_rv_shared_periph_translated_base) {
     PASS();
 }
 
+TEST(test_rv_step_advances_devtools_cycle_count) {
+    /* Regression for issue #15. gpio_trace_record() timestamps events from
+     * global_cycle_count, but the Hazard3 engine never advanced it, so a
+     * RISC-V -gpio-trace recording was stamped entirely with #0. */
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+
+    /* 64 x "ADDI x0, x0, 0" (0x00000013), a four-byte NOP. */
+    uint32_t nop = 0x00000013;
+    for (int i = 0; i < 64; i++)
+        memcpy(&cpu.flash[i * 4], &nop, 4);
+
+    uint64_t before = global_cycle_count;
+    for (int i = 0; i < 64; i++)
+        rv_cpu_step(&rv);
+    ASSERT_EQ(64, (uint32_t)(global_cycle_count - before),
+              "each rv_cpu_step must advance global_cycle_count");
+    PASS();
+}
+
+TEST(test_vcd_timestamps_advance) {
+    /* Regression for issue #15. gpio_trace_record() stamps events from
+     * global_cycle_count, so the timeline only moves if cpu_step() advances
+     * that counter -- it used to do so only under irq_latency_enabled, which
+     * left -gpio-trace with an all-#0 recording. VCD timestamps are also
+     * 64-bit, so a long run must not wrap back to zero. */
+    const char *path = "/tmp/bramble_test_gpio.vcd";
+    uint32_t saved_cpu = timing_config.cycles_per_us;
+    uint64_t saved_cycles = global_cycle_count;
+
+    unlink(path);
+    timing_config.cycles_per_us = 1;
+    gpio_trace_init(path);
+    ASSERT_TRUE(gpio_trace_enabled, "gpio_trace_init should enable tracing");
+
+    /* Execute a real instruction through cpu_step(), then toggle a pin the way
+     * firmware would. No -irq-latency here: the counter must advance anyway. */
+    reset_cpu();
+    gpio_init();
+    uint16_t movs = 0x2042;  /* MOVS R0, #0x42 */
+    memcpy(&cpu.flash[0x100], &movs, 2);
+    cpu.r[15] = FLASH_BASE + 0x100;
+    cpu_step();
+    ASSERT_TRUE(global_cycle_count > 0,
+                "cpu_step must advance global_cycle_count without -irq-latency");
+
+    gpio_write32(SIO_GPIO_OUT, 0x1);
+    global_cycle_count = 500;
+    gpio_trace_record(1, 1);
+    global_cycle_count = 1000;
+    gpio_trace_record(0, 0);
+    /* Past 2^32: a 32-bit stamp would wrap back to 7056. */
+    global_cycle_count = 5000000000ULL;
+    gpio_trace_record(2, 1);
+    gpio_trace_cleanup();
+
+    FILE *f = fopen(path, "r");
+    ASSERT_TRUE(f != NULL, "VCD file should have been written");
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    /* The first change came straight after a real instruction retired, so pin0
+     * going high must not be stamped #0 (the header's own all-low dump at #0
+     * emits "0!", so the "1!" change is the one to look for). */
+    ASSERT_TRUE(strstr(buf, "#0\n1!") == NULL, "VCD must not stamp pin0 high at #0");
+    ASSERT_TRUE(strstr(buf, "1!") != NULL, "VCD should record pin0 going high");
+    ASSERT_TRUE(strstr(buf, "#500\n") != NULL, "VCD should carry a #500 stamp");
+    ASSERT_TRUE(strstr(buf, "#1000\n") != NULL, "VCD should carry a #1000 stamp");
+    ASSERT_TRUE(strstr(buf, "#5000000000\n") != NULL,
+                "VCD timestamps must be 64-bit, not truncated at 2^32");
+
+    unlink(path);
+    timing_config.cycles_per_us = saved_cpu;
+    global_cycle_count = saved_cycles;
+    PASS();
+}
+
 TEST(test_rv_bootrom_init) {
     rv_membus_state_t bus;
     rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
@@ -5336,6 +5420,7 @@ int main(void) {
     RUN_TEST(test_rv_compressed_c_addi);
     RUN_TEST(test_rv_csr_mhartid);
     RUN_TEST(test_rv_trap_enter_return);
+    RUN_TEST(test_rv_step_advances_devtools_cycle_count);
     END_CATEGORY("RISC-V CPU");
 
     BEGIN_CATEGORY("RISC-V CLINT");
@@ -5358,6 +5443,10 @@ int main(void) {
     RUN_TEST(test_rv_periph_timer1);
     RUN_TEST(test_rv_hazard3_csrs);
     END_CATEGORY("RP2350 Peripherals");
+
+    BEGIN_CATEGORY("GPIO VCD Trace");
+    RUN_TEST(test_vcd_timestamps_advance);
+    END_CATEGORY("GPIO VCD Trace");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

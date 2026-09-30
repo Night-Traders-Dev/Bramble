@@ -450,6 +450,10 @@ done:
     jit_block_exec++;
     jit_insns_saved += i > 1 ? (uint64_t)(i - 1) : 0;
     timing_tick(total_cycles);
+    /* JIT blocks bypass the devtools block in cpu_step(), so the shared
+     * developer-tool time base has to be advanced here too -- otherwise
+     * -gpio-trace/-script/-irq-latency stall for as long as the JIT runs. */
+    global_cycle_count += total_cycles;
 }
 
 /* Invalidate JIT blocks that overlap a written address.
@@ -1410,8 +1414,13 @@ pc_valid:
     if (__builtin_expect(profile_enabled, 0))   profile_record(pc, cycles);
     if (__builtin_expect(stack_check_enabled, 0))
         stack_check_record(get_active_core(), cpu.r[13]);
-    if (__builtin_expect(irq_latency_enabled, 0))
-        global_cycle_count += cycles;
+    /* global_cycle_count is the shared time base for every developer tool
+     * that needs a cycle stamp (IRQ latency, VCD trace, -script scheduling,
+     * fault injection). It must advance whenever any of them is enabled, so
+     * it is tracked unconditionally rather than under irq_latency_enabled --
+     * gating it there made -gpio-trace and -script emit an all-#0 timeline
+     * unless -irq-latency was also passed. */
+    global_cycle_count += cycles;
 }
 
 /* ========================================================================

@@ -1241,6 +1241,11 @@ decode:
     cpu->step_count++;
     cpu->cycle_count++;
     cpu->instret_count++;
+    /* Advance the shared developer-tool time base as well. The RISC-V engine
+     * has no other writer for global_cycle_count, so without this the cycle
+     * stamp read by the GPIO VCD trace (-gpio-trace), -script scheduling and
+     * -inject-fault triggers never moves and every VCD timestamp is #0. */
+    global_cycle_count++;
     return 0;
 
 illegal:

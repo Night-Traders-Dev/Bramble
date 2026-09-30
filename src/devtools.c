@@ -9,6 +9,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <inttypes.h>
 #include "emulator.h"
 #include "devtools.h"
 
@@ -1020,12 +1021,14 @@ void gpio_trace_record(uint8_t pin, uint8_t value) {
     uint32_t new_pins = (vcd_prev_pins & ~mask) | ((value ? 1u : 0u) << pin);
     if (new_pins == vcd_prev_pins) return;
 
-    /* Timestamp in microseconds from global cycle count */
-    uint32_t us = (timing_config.cycles_per_us > 0)
-        ? (uint32_t)(global_cycle_count / timing_config.cycles_per_us)
-        : (uint32_t)global_cycle_count;
+    /* Timestamp in microseconds from the shared cycle counter. VCD timestamps
+     * are 64-bit, and the counter is 64-bit too: truncating to uint32_t
+     * wrapped the timeline back to zero part-way through a long run. */
+    uint64_t us = (timing_config.cycles_per_us > 0)
+        ? (global_cycle_count / timing_config.cycles_per_us)
+        : global_cycle_count;
 
-    fprintf(vcd_file, "#%u\n%d%c\n", us, value ? 1 : 0, (char)('!' + pin));
+    fprintf(vcd_file, "#%" PRIu64 "\n%d%c\n", us, value ? 1 : 0, (char)('!' + pin));
     vcd_prev_pins = new_pins;
 }
 
