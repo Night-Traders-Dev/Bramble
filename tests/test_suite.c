@@ -4740,7 +4740,11 @@ TEST(test_rv_trap_enter_return) {
     rv_trap_enter(&rv, MCAUSE_ILLEGAL_INSTR, 0xDEADBEEF);
     ASSERT_EQ(0x10000100, rv.csr[CSR_MEPC], "MEPC should be saved PC");
     ASSERT_EQ(MCAUSE_ILLEGAL_INSTR, rv.csr[CSR_MCAUSE], "MCAUSE should be illegal instr");
-    ASSERT_EQ(0xDEADBEEF, rv.csr[CSR_MTVAL], "MTVAL should be tval");
+    /* Hazard3 hardwires mtval to zero (datasheet Table 367): "Machine bad
+     * address or instruction. Hardwired to zero." It was being written with the
+     * fault data, so firmware distinguishing fault causes by mtval saw
+     * meaningless values on every trap. */
+    ASSERT_EQ(0x00000000, rv.csr[CSR_MTVAL], "MTVAL is hardwired to zero on Hazard3");
     ASSERT_EQ(0x10000200, rv.pc, "PC should be at mtvec");
     ASSERT_TRUE(!(rv.csr[CSR_MSTATUS] & MSTATUS_MIE), "MIE should be cleared");
     ASSERT_TRUE(rv.csr[CSR_MSTATUS] & MSTATUS_MPIE, "MPIE should be set (was enabled)");
@@ -4883,6 +4887,49 @@ TEST(test_gpio_chip_aware_bases) {
     ASSERT_EQ(0x00000096, gpio_read32(swclk), "SWCLK pad reset must be 0x96");
 
     membus_rp2350_mode = 0;
+    PASS();
+}
+
+/* Regression: the GPIO bases are chip-relative, but the Hazard3 membus
+ * rewrites RP2350 GPIO bases back to their RP2040 equivalents before
+ * delegating to the shared bus. When the GPIO layout was made chip-aware that
+ * delegation path stopped matching, so on the RV32 path IO_BANK0 and PADS_BANK0
+ * became unmapped and a RISC-V LittleOS image hung instead of booting. The
+ * layout view must follow the address, not just the emulated chip. */
+TEST(test_gpio_layout_follows_delegated_addresses) {
+    int saved_mode = membus_rp2350_mode;
+    int saved_delegate = membus_rv_delegate;
+
+    membus_rp2350_mode = 1;
+    membus_rv_delegate = 0;
+    ASSERT_EQ(RP2350_IO_BANK0_BASE, gpio_io_bank0_base(),
+              "M33 path must use the RP2350 IO_BANK0 base");
+    ASSERT_EQ(NUM_GPIO_PINS, gpio_num_user_pins(),
+              "M33 path must use the RP2350 pin count");
+
+    /* Hazard3 delegation: the shared bus is handed RP2040 addresses. */
+    membus_rv_delegate = 1;
+    ASSERT_EQ(IO_BANK0_BASE, gpio_io_bank0_base(),
+              "RV32 delegation must decode with the RP2040 IO_BANK0 base");
+    ASSERT_EQ(PADS_BANK0_BASE, gpio_pads_bank0_base(),
+              "RV32 delegation must decode with the RP2040 PADS_BANK0 base");
+    ASSERT_EQ(NUM_GPIO_PINS_RP2040, gpio_num_user_pins(),
+              "RV32 delegation must use the RP2040 pin count");
+
+    /* And an RP2040-format address must actually be claimed and decoded. */
+    gpio_init();
+    gpio_write32(IO_BANK0_BASE + 0x0 * 8 + GPIO_CTRL_OFFSET, GPIO_FUNC_SIO);
+    ASSERT_EQ(GPIO_FUNC_SIO, gpio_read32(IO_BANK0_BASE + 0x0 * 8 + GPIO_CTRL_OFFSET),
+              "delegated RP2040 IO_BANK0 write/read");
+    gpio_write32(IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2040 + 0x10, 0xFFFFFFFF);
+    ASSERT_EQ(0xFFFFFFFF, gpio_read32(IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2040 + 0x10),
+              "delegated PROC0_INTE0 must be writable");
+    gpio_write32(PADS_BANK0_BASE + 0x04, 0x12345678);
+    ASSERT_EQ(0x12345678, gpio_read32(PADS_BANK0_BASE + 0x04),
+              "delegated RP2040 PADS_BANK0 write/read");
+
+    membus_rp2350_mode = saved_mode;
+    membus_rv_delegate = saved_delegate;
     PASS();
 }
 
@@ -5669,6 +5716,7 @@ int main(void) {
     BEGIN_CATEGORY("RISC-V Memory Bus");
     RUN_TEST(test_gpio_interrupt_regs_are_decoded_not_pins);
     RUN_TEST(test_gpio_chip_aware_bases);
+    RUN_TEST(test_gpio_layout_follows_delegated_addresses);
     RUN_TEST(test_rp2350_irq_renumbering);
     RUN_TEST(test_rv_membus_sram);
     RUN_TEST(test_rv_shared_periph_translated_base);

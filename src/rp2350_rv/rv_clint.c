@@ -47,16 +47,28 @@ int rv_clint_match(uint32_t addr) {
  * Register Access
  * ======================================================================== */
 
+/* hart currently accessing the shared CLINT registers */
+static int cur_hart = 0;
+
+void rv_clint_set_current_hart(int hart_id) {
+    cur_hart = (hart_id < 0 || hart_id > 1) ? 0 : hart_id;
+}
+
+int rv_clint_current_hart(void) {
+    return cur_hart;
+}
+
 uint32_t rv_clint_read(rv_clint_state_t *clint, uint32_t offset) {
+    int h = cur_hart ? 1 : 0;
     switch (offset) {
     case RV_CLINT_MTIME_LO:     return (uint32_t)clint->mtime;
     case RV_CLINT_MTIME_HI:     return (uint32_t)(clint->mtime >> 32);
-    case RV_CLINT_MTIMECMP0_LO: return (uint32_t)clint->mtimecmp[0];
-    case RV_CLINT_MTIMECMP0_HI: return (uint32_t)(clint->mtimecmp[0] >> 32);
-    case RV_CLINT_MTIMECMP1_LO: return (uint32_t)clint->mtimecmp[1];
-    case RV_CLINT_MTIMECMP1_HI: return (uint32_t)(clint->mtimecmp[1] >> 32);
-    case RV_CLINT_MSIP0:        return clint->msip[0] & 1;
-    case RV_CLINT_MSIP1:        return clint->msip[1] & 1;
+    case RV_CLINT_MTIME_CTRL:   return clint->mtime_ctrl;
+    /* RISCV_SOFTIRQ reports this hart's software-interrupt pending bit. */
+    case RV_CLINT_MSIP:         return clint->msip[h] & 1;
+    /* MTIMECMP is per-hart at the same address. */
+    case RV_CLINT_MTIMECMP0_LO: return (uint32_t)clint->mtimecmp[h];
+    case RV_CLINT_MTIMECMP0_HI: return (uint32_t)(clint->mtimecmp[h] >> 32);
     default: return 0;
     }
 }
@@ -69,23 +81,19 @@ void rv_clint_write(rv_clint_state_t *clint, uint32_t offset, uint32_t val) {
     case RV_CLINT_MTIME_HI:
         clint->mtime = (clint->mtime & 0xFFFFFFFF) | ((uint64_t)val << 32);
         break;
+    case RV_CLINT_MTIME_CTRL:
+        clint->mtime_ctrl = val;
+        break;
     case RV_CLINT_MTIMECMP0_LO:
-        clint->mtimecmp[0] = (clint->mtimecmp[0] & 0xFFFFFFFF00000000ULL) | val;
+        clint->mtimecmp[cur_hart ? 1 : 0] =
+            (clint->mtimecmp[cur_hart ? 1 : 0] & 0xFFFFFFFF00000000ULL) | val;
         break;
     case RV_CLINT_MTIMECMP0_HI:
-        clint->mtimecmp[0] = (clint->mtimecmp[0] & 0xFFFFFFFF) | ((uint64_t)val << 32);
+        clint->mtimecmp[cur_hart ? 1 : 0] =
+            (clint->mtimecmp[cur_hart ? 1 : 0] & 0xFFFFFFFF) | ((uint64_t)val << 32);
         break;
-    case RV_CLINT_MTIMECMP1_LO:
-        clint->mtimecmp[1] = (clint->mtimecmp[1] & 0xFFFFFFFF00000000ULL) | val;
-        break;
-    case RV_CLINT_MTIMECMP1_HI:
-        clint->mtimecmp[1] = (clint->mtimecmp[1] & 0xFFFFFFFF) | ((uint64_t)val << 32);
-        break;
-    case RV_CLINT_MSIP0:
-        clint->msip[0] = val & 1;
-        break;
-    case RV_CLINT_MSIP1:
-        clint->msip[1] = val & 1;
+    case RV_CLINT_MSIP:
+        clint->msip[cur_hart ? 1 : 0] = val & 1;
         break;
     default:
         break;
@@ -139,15 +147,20 @@ int rv_clint_check_interrupts(rv_clint_state_t *clint, rv_cpu_state_t *hart) {
     /* Update mip CSR so firmware can read it */
     hart->csr[CSR_MIP] = mip;
 
-    /* Check if interrupts are globally enabled */
-    if (!(mstatus & MSTATUS_MIE))
-        return 0;
-
-    /* WFI wake: any pending+enabled interrupt wakes the hart */
+    /* WFI ignores the global interrupt enable. Per datasheet 3.8.1.23: "wfi
+     * ignores the global interrupt enable, MSTATUS.MIE. It respects all other
+     * interrupt controls... If MIP.MEIP is 1, MIE.MEIE is 1, and MSTATUS.MIE is
+     * 0, a wfi instruction falls through immediately without pausing." The
+     * MIE test used to come first, so a hart that had cleared MSTATUS.MIE --
+     * the canonical idle-loop idiom -- could never wake and hung permanently. */
     if (hart->is_wfi && (mip & mie_csr)) {
         hart->is_wfi = 0;
-        /* Fall through to deliver if MIE is set */
+        /* Fall through; delivery is still gated on MIE below. */
     }
+
+    /* Only then does the global enable gate delivery. */
+    if (!(mstatus & MSTATUS_MIE))
+        return 0;
 
     /* Determine which interrupt to deliver (priority: MEI > MSI > MTI) */
     uint32_t deliverable = mip & mie_csr;

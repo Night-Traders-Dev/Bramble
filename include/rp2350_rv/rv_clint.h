@@ -23,18 +23,24 @@
 #include <stdint.h>
 #include "rp2350_rv/rv_cpu.h"
 
-/* CLINT register offsets from base (0xD0000100) */
-#define RV_CLINT_BASE       0xD0000100
-#define RV_CLINT_SIZE       0x30
+/* The RP2350 machine timer lives in SIO space. The old base of 0xD0000100
+ * shadowed SPINLOCK0..SPINLOCK11 -- SIO 0x100..0x17C is SPINLOCK0..SPINLOCK31
+ * (datasheet Table 17) -- while the real registers were never implemented, so
+ * SDK spin_lock_primitive() on SIO was broken and mtime/mtimecmp/msip were
+ * unreachable by firmware. Datasheet Table 17:
+ *   0x1a0 RISCV_SOFTIRQ   0x1a4 MTIME_CTRL
+ *   0x1b0 MTIME  0x1b4 MTIMEH  0x1b8 MTIMECMP  0x1bc MTIMECMPH
+ * RISCV_SOFTIRQ is a single register shared by both harts, so the per-hart
+ * msip pair collapses into one location with hart select. */
+#define RV_CLINT_BASE       0xD00001A0
+#define RV_CLINT_SIZE       0x20
 
-#define RV_CLINT_MTIME_LO      0x00
-#define RV_CLINT_MTIME_HI      0x04
-#define RV_CLINT_MTIMECMP0_LO  0x08
-#define RV_CLINT_MTIMECMP0_HI  0x0C
-#define RV_CLINT_MTIMECMP1_LO  0x10
-#define RV_CLINT_MTIMECMP1_HI  0x14
-#define RV_CLINT_MSIP0         0x20
-#define RV_CLINT_MSIP1         0x24
+#define RV_CLINT_MSIP         0x00  /* RISCV_SOFTIRQ: MIP.MSIP of the reading hart */
+#define RV_CLINT_MTIME_CTRL   0x04  /* MTIME_CTRL */
+#define RV_CLINT_MTIME_LO     0x10
+#define RV_CLINT_MTIME_HI     0x14
+#define RV_CLINT_MTIMECMP0_LO 0x18
+#define RV_CLINT_MTIMECMP0_HI 0x1C
 
 /* mip CSR bit positions */
 #define MIP_MSIP    (1u << 3)   /* Machine Software Interrupt Pending */
@@ -60,6 +66,7 @@ typedef struct {
 
     /* Per-hart timer compare (2 harts) */
     uint64_t mtimecmp[2];
+    uint32_t mtime_ctrl;
 
     /* Per-hart software interrupt pending (bit 0 only) */
     uint32_t msip[2];
@@ -89,6 +96,12 @@ void rv_clint_write(rv_clint_state_t *clint, uint32_t offset, uint32_t val);
 
 /* Check if address is in CLINT range */
 int rv_clint_match(uint32_t addr);
+
+/* The hart currently issuing a bus access. RISCV_SOFTIRQ and the MTIMECMP
+ * pair are per-hart but occupy the same address, so the bus must know the
+ * caller. Published by the CPU engine before each memory wrapper runs. */
+void rv_clint_set_current_hart(int hart_id);
+int  rv_clint_current_hart(void);
 
 /* Signal an external interrupt (from peripheral) */
 void rv_clint_set_ext_pending(rv_clint_state_t *clint, uint32_t irq_num);

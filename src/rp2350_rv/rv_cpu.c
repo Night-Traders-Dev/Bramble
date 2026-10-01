@@ -27,12 +27,16 @@
  * ======================================================================== */
 
 static inline uint32_t rv_read32(rv_cpu_state_t *cpu, uint32_t addr) {
+    /* RISCV_SOFTIRQ and MTIMECMP are per-hart but live at the same address, so
+     * the bus needs to know which hart is issuing the access. */
+    rv_clint_set_current_hart(cpu->hart_id);
     if (cpu->bus)
         return rv_mem_read32((rv_membus_state_t *)cpu->bus, addr);
     return mem_read32(addr);
 }
 
 static inline void rv_write32(rv_cpu_state_t *cpu, uint32_t addr, uint32_t val) {
+    rv_clint_set_current_hart(cpu->hart_id);
     if (cpu->bus)
         rv_mem_write32((rv_membus_state_t *)cpu->bus, addr, val);
     else
@@ -40,12 +44,14 @@ static inline void rv_write32(rv_cpu_state_t *cpu, uint32_t addr, uint32_t val) 
 }
 
 static inline uint16_t rv_read16(rv_cpu_state_t *cpu, uint32_t addr) {
+    rv_clint_set_current_hart(cpu->hart_id);
     if (cpu->bus)
         return rv_mem_read16((rv_membus_state_t *)cpu->bus, addr);
     return mem_read16(addr);
 }
 
 static inline void rv_write16(rv_cpu_state_t *cpu, uint32_t addr, uint16_t val) {
+    rv_clint_set_current_hart(cpu->hart_id);
     if (cpu->bus)
         rv_mem_write16((rv_membus_state_t *)cpu->bus, addr, val);
     else
@@ -53,12 +59,14 @@ static inline void rv_write16(rv_cpu_state_t *cpu, uint32_t addr, uint16_t val) 
 }
 
 static inline uint8_t rv_read8(rv_cpu_state_t *cpu, uint32_t addr) {
+    rv_clint_set_current_hart(cpu->hart_id);
     if (cpu->bus)
         return rv_mem_read8((rv_membus_state_t *)cpu->bus, addr);
     return mem_read8(addr);
 }
 
 static inline void rv_write8(rv_cpu_state_t *cpu, uint32_t addr, uint8_t val) {
+    rv_clint_set_current_hart(cpu->hart_id);
     if (cpu->bus)
         rv_mem_write8((rv_membus_state_t *)cpu->bus, addr, val);
     else
@@ -241,7 +249,11 @@ void rv_trap_enter(rv_cpu_state_t *cpu, uint32_t cause, uint32_t tval) {
     /* Save current state */
     cpu->csr[CSR_MEPC] = cpu->pc;
     cpu->csr[CSR_MCAUSE] = cause;
-    cpu->csr[CSR_MTVAL] = tval;
+    /* mtval is hardwired to zero on Hazard3 (datasheet Table 367: "Machine bad
+     * address or instruction. Hardwired to zero."). It was being written with
+     * the fault data, so firmware that trusted mtval to distinguish fault causes
+     * mis-handled every trap. */
+    cpu->csr[CSR_MTVAL] = 0;
 
     /* Always log traps to stderr for debugging */
     fprintf(stderr, "[RV-CORE%d] TRAP: cause=0x%08X mepc=0x%08X tval=0x%08X -> handler=0x%08X\n",
@@ -617,37 +629,58 @@ decode:
                         cpu->step_count++; cpu->cycle_count++; cpu->instret_count++;
                         return 0;
                     } else if (rd == 0) {
-                        /* Zcmp: cm.push, cm.pop, cm.popret, cm.popretz */
-                        uint32_t op = (ci >> 8) & 0x7;
-                        if (op == 6) { /* cm.push */
-                            uint32_t rlist = (ci >> 4) & 0xF;
+                        /* Zcmp: cm.push, cm.pop, cm.popret, cm.popretz.
+                         *
+                         * cm.push is quadrant 2 with funct5 == 0b11010
+                         * (inst[15:11] == 0b11010), and cm.pop/cm.popret/
+                         * cm.popretz are quadrant 0 with funct5 == 0b11110
+                         * (inst[15:11] == 0b11110). The previous decode read
+                         * inst[10:8] as the opcode, but this branch is only
+                         * reachable when inst[11:7] == 0, which makes
+                         * inst[10:8] necessarily 0 -- so every Zcmp encoding
+                         * took the c_illegal path.
+                         *
+                         * cm.push: push ra, then rlist of s0..s11; frame is
+                         * rounded to a multiple of 16 bytes.
+                         * cm.pop: restore, optionally returning.
+                         */
+                        uint32_t funct5 = (ci >> 11) & 0x1F;
+                        if (funct5 == 0x1A) { /* cm.push */
+                            /* rlist[3:2] is the number of s-registers saved
+                             * (s0 upward); ra is always saved as well. */
+                            uint32_t rlist = (ci >> 4) & 0x3;
                             uint32_t sp_adj = (ci >> 2) & 0x3;
-                            if (rlist >= 4) {
-                                uint32_t regs[] = {1, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27};
-                                uint32_t num_to_push = rlist - 3;
-                                for (uint32_t i = 0; i < num_to_push && i < 13; i++) {
-                                    cpu->x[2] -= 4;
-                                    rv_write32(cpu, cpu->x[2], cpu->x[regs[i]]);
-                                }
+                            static const uint8_t sregs[12] = {
+                                8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27
+                            };
+                            /* round(4 + 4*rlist up to a multiple of 16) */
+                            cpu->x[2] -= 4;                 /* ra */
+                            rv_write32(cpu, cpu->x[2], cpu->x[1]);
+                            if (rlist) {
+                                cpu->x[2] -= 4 * rlist;
+                                for (uint32_t i = 0; i < rlist; i++)
+                                    rv_write32(cpu, cpu->x[2] + 4 * i, cpu->x[sregs[i]]);
                             }
+                            /* Keep sp 16-byte aligned. */
+                            if (cpu->x[2] & 0xF) cpu->x[2] -= 16 - (cpu->x[2] & 0xF);
                             cpu->x[2] -= (sp_adj * 16);
-                        } else if (op == 7) { /* cm.pop / cm.popret */
-                            uint32_t rlist = (ci >> 4) & 0xF;
+                        } else if (funct5 == 0x1E) { /* cm.pop / cm.popret */
+                            /* Mirror of cm.push: rlist[3:2] s-registers plus ra. */
+                            uint32_t rlist = (ci >> 4) & 0x3;
                             uint32_t sp_adj = (ci >> 2) & 0x3;
                             uint32_t ret = (ci & 0x3); /* 0: pop, 1: popret, 2: popretz */
-                            if (rlist >= 4) {
-                                uint32_t regs[] = {1, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27};
-                                uint32_t num_to_pop = rlist - 3;
-                                uint32_t current_sp = cpu->x[2] + (sp_adj * 16);
-                                uint32_t total_sp = current_sp + (num_to_pop * 4);
-                                for (uint32_t i = 0; i < num_to_pop && i < 13; i++) {
-                                    cpu->x[regs[i]] = rv_read32(cpu, current_sp);
-                                    current_sp += 4;
-                                }
-                                cpu->x[2] = total_sp;
-                            } else {
-                                cpu->x[2] += (sp_adj * 16);
+                            static const uint8_t sregs2[12] = {
+                                8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27
+                            };
+                            cpu->x[2] += (sp_adj * 16);
+                            if (cpu->x[2] & 0xF) cpu->x[2] += 16 - (cpu->x[2] & 0xF);
+                            if (rlist) {
+                                for (uint32_t i = 0; i < rlist; i++)
+                                    cpu->x[sregs2[i]] = rv_read32(cpu, cpu->x[2] + 4 * i);
+                                cpu->x[2] += 4 * rlist;
                             }
+                            cpu->x[1] = rv_read32(cpu, cpu->x[2]);
+                            cpu->x[2] += 4;
                             if (ret == 1 || ret == 2) {
                                 if (ret == 2) cpu->x[10] = 0; /* a0 = 0 */
                                 cpu->pc = cpu->x[1];

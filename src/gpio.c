@@ -19,30 +19,40 @@ static inline void gpio_trace_changes(uint32_t old_val, uint32_t new_val) {
 /* GPIO state */
 gpio_state_t gpio_state;
 
+/* Which chip's GPIO map is in effect *for the address we are being asked
+ * about*. This is not simply membus_rp2350_mode: the Hazard3 membus rewrites
+ * RP2350 GPIO bases back to their RP2040 equivalents (rv_translate_shared_addr)
+ * before delegating, so on that path the shared bus is handed RP2040 addresses
+ * and must decode them with the RP2040 layout. membus_rv_delegate is set for
+ * exactly those accesses. */
+static int gpio_rp2350_layout(void) {
+    return membus_rp2350_mode && !membus_rv_delegate;
+}
+
 /* The emulated chip's GPIO blocks. RP2350 relocates IO_BANK0 and PADS_BANK0 and
  * those addresses hold entirely different peripherals on RP2040, so every match
  * and decode site asks which chip it is on rather than using one constant. */
 uint32_t gpio_io_bank0_base(void) {
-    return membus_rp2350_mode ? RP2350_IO_BANK0_BASE : IO_BANK0_BASE;
+    return gpio_rp2350_layout() ? RP2350_IO_BANK0_BASE : IO_BANK0_BASE;
 }
 
 uint32_t gpio_pads_bank0_base(void) {
-    return membus_rp2350_mode ? RP2350_PADS_BANK0_BASE : PADS_BANK0_BASE;
+    return gpio_rp2350_layout() ? RP2350_PADS_BANK0_BASE : PADS_BANK0_BASE;
 }
 
 int gpio_num_user_pins(void) {
-    return membus_rp2350_mode ? NUM_GPIO_PINS : NUM_GPIO_PINS_RP2040;
+    return gpio_rp2350_layout() ? NUM_GPIO_PINS : NUM_GPIO_PINS_RP2040;
 }
 
 /* Offset of the interrupt-register window within IO_BANK0. RP2040: INTR0 at
  * +0x0F0, right after GPIO29_CTRL at +0x0EC. RP2350: 48 pins, then
  * PROC0_IRQSUMMARY at +0x200 and INTR0 at +0x230. */
 static uint32_t gpio_irq_window(void) {
-    return membus_rp2350_mode ? GPIO_IRQ_WINDOW_RP2350 : GPIO_IRQ_WINDOW_RP2040;
+    return gpio_rp2350_layout() ? GPIO_IRQ_WINDOW_RP2350 : GPIO_IRQ_WINDOW_RP2040;
 }
 
 static uint32_t gpio_io_bank0_span(void) {
-    return membus_rp2350_mode ? GPIO_IO_BANK0_SPAN_RP2350 : GPIO_IO_BANK0_SPAN_RP2040;
+    return gpio_rp2350_layout() ? GPIO_IO_BANK0_SPAN_RP2350 : GPIO_IO_BANK0_SPAN_RP2040;
 }
 
 /* Interrupt banks needed for the emulated chip. */

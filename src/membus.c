@@ -254,8 +254,10 @@ static int pads_qspi_match(uint32_t addr) {
  * rewrites the bases first. */
 static int gpio_bus_match(uint32_t addr) {
     uint32_t iob = gpio_io_bank0_base();
-    uint32_t io_span = membus_rp2350_mode ? GPIO_IO_BANK0_SPAN_RP2350
-                                          : GPIO_IO_BANK0_SPAN_RP2040;
+    /* gpio_io_bank0_base() already accounts for membus_rv_delegate, so the span
+     * must use the same view. */
+    uint32_t io_span = (membus_rp2350_mode && !membus_rv_delegate)
+                        ? GPIO_IO_BANK0_SPAN_RP2350 : GPIO_IO_BANK0_SPAN_RP2040;
     uint32_t padb = gpio_pads_bank0_base();
     uint32_t pad_size = ((uint32_t)gpio_num_user_pins() + 2) * 4;
 

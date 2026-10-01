@@ -105,8 +105,13 @@ int rv_membus_check_hart1_launch(rv_membus_state_t *bus, uint32_t *entry,
 
 /* ========================================================================
  * RP2350 SIO Handler (0xD0000000)
- * Different from RP2040 SIO: CPUID returns RP2350, hart launch mailbox,
- * GPIO_HI for pins 32-47, additional spinlocks (0-31 instead of 0-31).
+ * Different from RP2040 SIO: CPUID returns a hart-dependent value, and
+ * GPIO_HI (pins 32-47 plus the QSPI/USB IOs) is interleaved with the low bank
+ * at +0x14/+0x1c/+0x24/+0x2c and +0x34..+0x4c.
+ *
+ * Note SIO +0x100..+0x17c is SPINLOCK0..31 on both chips and is deliberately
+ * NOT handled here -- it falls through to the shared membus, which owns the
+ * spinlock state. The machine timer lives at +0x1a0..+0x1bc (see rv_clint.h).
  * ======================================================================== */
 
 static uint32_t rv_sio_read(rv_membus_state_t *bus, uint32_t offset) {
