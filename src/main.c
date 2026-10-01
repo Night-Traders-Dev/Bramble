@@ -103,6 +103,16 @@ static rv_cpu_state_t rv_cores[2];
 static rv_membus_state_t rv_bus;
 static rv_icache_t rv_icache;
 
+/* Fan peripheral IRQs into the Xh3irq external-interrupt controller. Called by
+ * nvic.c with the already-renumbered RP2350 vector, which is the same index
+ * MEIPA exposes, so the two views of "IRQ n is pending" cannot drift. */
+static void rv_ext_irq_sink(uint32_t irq, int asserted) {
+    if (asserted)
+        rv_clint_set_ext_pending(&rv_bus.clint, irq);
+    else
+        rv_clint_clear_ext_pending(&rv_bus.clint, irq);
+}
+
 static int stdin_pending_push(uint8_t byte) {
     if (stdin_pending_count >= STDIN_PENDING_SIZE) {
         if (!stdin_pending_overflow_reported) {
@@ -1202,6 +1212,12 @@ skip_fuse:
         gdb_rv_harts[0] = &rv_cores[0];
         gdb_rv_harts[1] = &rv_cores[1];
         gdb_is_riscv = 1;
+
+        /* Route peripheral IRQs into the Xh3irq controller. Without this the
+         * NVIC latched the pending bit and nobody read it, so mip.MEIP was
+         * never set and RV firmware waiting on any peripheral interrupt hung
+         * for good. */
+        nvic_set_ext_irq_sink(rv_ext_irq_sink);
 
         /* Attach memory bus and icache to both harts */
         rv_cores[0].bus = &rv_bus;

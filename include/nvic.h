@@ -208,6 +208,22 @@ void nvic_write_register(uint32_t addr, uint32_t val);
 
 /* Signal from peripherals that interrupt occurred */
 void nvic_signal_irq(uint32_t irq);
+void nvic_clear_pending(uint32_t irq);
+
+/* Hook for the Hazard3 Xh3irq controller.
+ *
+ * The NVIC is the Cortex-M interrupt controller; on RP2350-RV the machine-mode
+ * core reads mip.MEIP from the CLINT's Xh3irq block instead. rv_clint_set_ext_
+ * pending() was only ever called from the test suite, so no peripheral
+ * interrupt could ever set mip.MEIP and RISC-V firmware that enabled, say, a
+ * UART receive interrupt would spin forever waiting for a trap that the hardware
+ * could not deliver.
+ *
+ * Rather than make every peripheral model know which core is running, nvic.c
+ * fans the already-renumbered vector out to a registered sink. main.c installs
+ * the Xh3irq bridge when the machine boots as ARCH_RV32. */
+typedef void (*nvic_ext_irq_sink_fn)(uint32_t irq, int asserted);
+void nvic_set_ext_irq_sink(nvic_ext_irq_sink_fn fn);
 
 /* Get effective priority of an exception vector number */
 uint8_t nvic_get_exception_priority(uint32_t vector_num);

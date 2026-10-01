@@ -5246,6 +5246,101 @@ TEST(test_rv_hazard3_csrs) {
     PASS();
 }
 
+/* C10: a peripheral IRQ has to reach mip.MEIP. Before the nvic.c -> Xh3irq
+ * bridge, nvic_signal_irq() latched the bit in the NVIC, which the RV core
+ * never reads, so mip.MEIP stayed 0 and firmware blocking on a UART receive
+ * interrupt hung forever.
+ *
+ * main.c's bridge is a static function over its own bus, so the test installs
+ * an equivalent sink over a local bus. What is under test is the nvic.c fan-out
+ * itself: whatever vector nvic renames to must land in the Xh3irq pending
+ * array, and be acknowledged on clear. */
+static rv_clint_state_t *test_irq_bridge_clint = NULL;
+
+static void test_irq_bridge_sink(uint32_t irq, int asserted) {
+    if (!test_irq_bridge_clint) return;
+    if (asserted)
+        rv_clint_set_ext_pending(test_irq_bridge_clint, irq);
+    else
+        rv_clint_clear_ext_pending(test_irq_bridge_clint, irq);
+}
+
+TEST(test_rv_peripheral_irq_reaches_mip_meip) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+
+    test_irq_bridge_clint = &bus.clint;
+    nvic_set_ext_irq_sink(test_irq_bridge_sink);
+
+    /* A peripheral asserting its line, exactly as uart.c does. */
+    nvic_signal_irq(IRQ_UART0_IRQ);
+
+    /* Take the vector nvic actually delivered, whatever chip mapping is active. */
+    uint32_t irq = nvic_irq_number(IRQ_UART0_IRQ);
+    ASSERT_TRUE(irq < RV_NUM_EXT_IRQS, "the vector must be representable in Xh3irq");
+
+    /* It must be visible in the Xh3irq pending array... */
+    rv_csr_write(&rv, CSR_MEIEA, irq / 16);   /* select the containing window */
+    ASSERT_TRUE((rv_csr_read(&rv, CSR_MEIPA) & (1u << (irq % 16))) != 0,
+                "MEIPA must show the peripheral IRQ as pending");
+
+    /* Acknowledging must deassert the line again. */
+    nvic_clear_pending(irq);
+    rv_csr_write(&rv, CSR_MEIEA, irq / 16);
+    ASSERT_EQ(0, rv_csr_read(&rv, CSR_MEIPA) & (1u << (irq % 16)),
+              "clearing the pending bit must clear MEIPA too");
+
+    nvic_set_ext_irq_sink(NULL);
+    test_irq_bridge_clint = NULL;
+    PASS();
+}
+
+/* With the line asserted, enabling it must make mip.MEIP set and trap. */
+TEST(test_rv_peripheral_irq_traps) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+
+    test_irq_bridge_clint = &bus.clint;
+    nvic_set_ext_irq_sink(test_irq_bridge_sink);
+
+    nvic_signal_irq(IRQ_UART0_IRQ);
+    uint32_t irq = nvic_irq_number(IRQ_UART0_IRQ);
+
+    /* Nothing is enabled yet, so mip.MEIP must stay clear. */
+    rv_clint_check_interrupts(&bus.clint, &rv);
+    ASSERT_EQ(0, rv.csr[CSR_MIP] & MIP_MEIP, "MEIP must stay clear while disabled");
+
+    /* Enable the interrupt and unmask it, then it must trap. */
+    /* Enable the one bit for this IRQ: mask bit (irq % 16) in window irq/16. */
+    rv_csr_write(&rv, CSR_MEIEA, ((1u << (irq % 16)) << 16) | (irq / 16));
+    rv.csr[CSR_MIE] |= MIP_MEIP;
+    rv.csr[CSR_MSTATUS] |= MSTATUS_MIE;
+
+    /* Point mtvec at a recognisable handler: rv_cpu_init() leaves it 0, so
+     * without this the trap "redirects" to address 0 and looks like a no-op. */
+    rv.csr[CSR_MTVEC] = 0x00000200;
+    uint32_t pc_before = rv.pc;
+    int delivered = rv_clint_check_interrupts(&bus.clint, &rv);
+
+    ASSERT_TRUE((rv.csr[CSR_MIP] & MIP_MEIP) != 0, "the enabled IRQ must set mip.MEIP");
+    ASSERT_TRUE(delivered == 1, "the external interrupt must be delivered");
+    ASSERT_EQ(MCAUSE_MEI, rv.csr[CSR_MCAUSE],
+              "mcause must be the machine external-interrupt cause");
+    ASSERT_TRUE(rv.pc != pc_before, "the trap must redirect control via mtvec");
+    ASSERT_TRUE((rv.csr[CSR_MSTATUS] & MSTATUS_MIE) == 0,
+                "entering the trap must clear MSTATUS.MIE");
+
+    nvic_set_ext_irq_sink(NULL);
+    test_irq_bridge_clint = NULL;
+    PASS();
+}
+
 /* ========================================================================
  * Main Entry Point
  * ======================================================================== */
@@ -5798,6 +5893,8 @@ int main(void) {
     RUN_TEST(test_rv_periph_bootram);
     RUN_TEST(test_rv_periph_timer1);
     RUN_TEST(test_rv_hazard3_csrs);
+    RUN_TEST(test_rv_peripheral_irq_reaches_mip_meip);
+    RUN_TEST(test_rv_peripheral_irq_traps);
     END_CATEGORY("RP2350 Peripherals");
 
     BEGIN_CATEGORY("GPIO VCD Trace");

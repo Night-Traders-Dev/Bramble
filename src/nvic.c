@@ -38,6 +38,13 @@ systick_state_t systick_states[2] = {{0}};
 static uint32_t last_irq_signal = 0xFFFFFFFF;
 static uint32_t irq_signal_count = 0;
 
+/* Optional fan-out to the Hazard3 Xh3irq block (see nvic.h). NULL on ARM. */
+static nvic_ext_irq_sink_fn ext_irq_sink = NULL;
+
+void nvic_set_ext_irq_sink(nvic_ext_irq_sink_fn fn) {
+    ext_irq_sink = fn;
+}
+
 /* Helper: get current core's NVIC state */
 static inline nvic_state_t *nvic_cur(void) {
     return &nvic_states[get_active_core()];
@@ -235,6 +242,8 @@ void nvic_clear_pending(uint32_t irq) {
     if (nvic_irq_valid(irq)) {
         nvic_state_t *ns = nvic_cur();
         ns->pending &= ~(1ULL << irq);
+        if (ext_irq_sink)
+            ext_irq_sink(irq, 0);
         if (cpu.debug_enabled)
             printf("[NVIC] Core %d: Cleared pending IRQ %u (pending now=0x%llX)\n",
                    get_active_core(), irq, (unsigned long long)ns->pending);
@@ -572,6 +581,8 @@ void nvic_signal_irq(uint32_t irq) {
         for (int c = 0; c < 2; c++) {
             nvic_states[c].pending |= (1ULL << irq);
         }
+        if (ext_irq_sink)
+            ext_irq_sink(irq, 1);
         corepool_wake_cores();
     }
 }
