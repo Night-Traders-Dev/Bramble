@@ -225,8 +225,12 @@ uint32_t rv_mem_read32(rv_membus_state_t *bus, uint32_t addr) {
         /* Otherwise fall through to RP2040 SIO */
     }
 
-    /* Fall through to shared RP2040 peripheral bus */
-    return mem_read32(rv_translate_shared_addr(addr));
+    /* Fall through to shared RP2040 peripheral bus. The flag tells the
+     * shared matchers these are already-translated RP2040 addresses. */
+    membus_rv_delegate = 1;
+    uint32_t v = mem_read32(rv_translate_shared_addr(addr));
+    membus_rv_delegate = 0;
+    return v;
 }
 
 void rv_mem_write32(rv_membus_state_t *bus, uint32_t addr, uint32_t val) {
@@ -266,7 +270,9 @@ void rv_mem_write32(rv_membus_state_t *bus, uint32_t addr, uint32_t val) {
     }
 
     /* Fall through to shared peripheral bus */
+    membus_rv_delegate = 1;
     mem_write32(rv_translate_shared_addr(addr), val);
+    membus_rv_delegate = 0;
 }
 
 /* ========================================================================
@@ -295,7 +301,10 @@ uint16_t rv_mem_read16(rv_membus_state_t *bus, uint32_t addr) {
         memcpy(&val, &bus->flash[addr - RP2350_XIP_NOCACHE_NOALLOC_BASE], 2);
         return val;
     }
-    return mem_read16(rv_translate_shared_addr(addr));
+    membus_rv_delegate = 1;
+    uint16_t v16 = mem_read16(rv_translate_shared_addr(addr));
+    membus_rv_delegate = 0;
+    return v16;
 }
 
 void rv_mem_write16(rv_membus_state_t *bus, uint32_t addr, uint16_t val) {
@@ -309,7 +318,9 @@ void rv_mem_write16(rv_membus_state_t *bus, uint32_t addr, uint16_t val) {
     }
     if (addr < bus->rom_size) return;
     if (addr >= RP2350_FLASH_BASE && addr < RP2350_FLASH_BASE + bus->flash_size) return;
+    membus_rv_delegate = 1;
     mem_write16(rv_translate_shared_addr(addr), val);
+    membus_rv_delegate = 0;
 }
 
 /* ========================================================================
@@ -330,7 +341,10 @@ uint8_t rv_mem_read8(rv_membus_state_t *bus, uint32_t addr) {
     /* RP2350 peripherals byte access */
     if (rp2350_periph_match(addr))
         return rp2350_periph_read8(&bus->periph, addr);
-    return mem_read8(rv_translate_shared_addr(addr));
+    membus_rv_delegate = 1;
+    uint8_t v8 = mem_read8(rv_translate_shared_addr(addr));
+    membus_rv_delegate = 0;
+    return v8;
 }
 
 void rv_mem_write8(rv_membus_state_t *bus, uint32_t addr, uint8_t val) {
@@ -349,5 +363,7 @@ void rv_mem_write8(rv_membus_state_t *bus, uint32_t addr, uint8_t val) {
         rp2350_periph_write8(&bus->periph, addr, val);
         return;
     }
+    membus_rv_delegate = 1;
     mem_write8(rv_translate_shared_addr(addr), val);
+    membus_rv_delegate = 0;
 }

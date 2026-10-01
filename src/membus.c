@@ -52,6 +52,19 @@ int mem_debug_unmapped = 0;  /* Set via -debug-mem flag */
  * Set by main.c when -arch m33 or -arch rv32. */
 int membus_rp2350_mode = 0;
 
+/* Hazard3 delegation: set only for the duration of a shared-bus access that
+ * the RISC-V membus has already rewritten from an RP2350 address to its
+ * RP2040 equivalent (see rv_translate_shared_addr). membus_rp2350_mode is
+ * also set on the RV32 path, so matchers cannot tell the two callers apart by
+ * that flag alone -- and guessing from the address is unsafe, because the
+ * RP2040 and RP2350 maps overlap:
+ *     RP2040 UART1_BASE 0x40038000 == RP2350 PADS_BANK0_BASE
+ *     RP2040 SPI1_BASE  0x40040000 == RP2350 PADS_QSPI_BASE
+ * Accepting both address spaces in one matcher therefore hands the RP2350 pad
+ * blocks to the UART/SPI models. With this flag the matchers keep their exact
+ * original per-chip semantics. */
+int membus_rv_delegate = 0;
+
 /* RP2350 peripheral state pointer (set by main.c for M33 mode) */
 #include "rp2350_rv/rp2350_periph.h"
 #include "rp2350_rv/rp2350_memmap.h"
@@ -212,15 +225,13 @@ static uint32_t pads_qspi_regs[8];  /* VOLTAGE_SELECT + 6 pads + spare */
 
 static int pads_qspi_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
-    if (base >= PADS_QSPI_BASE_RP2040 && base < PADS_QSPI_BASE_RP2040 + PADS_QSPI_BLOCK_SIZE)
-        return 1;
-    /* The Hazard3 path rewrites the RP2350 PADS_QSPI base back to the RP2040
-     * one in rv_translate_shared_addr() before delegating here, so the RP2350
-     * base only ever reaches us on the Cortex-M33 path. */
-    if (membus_rp2350_mode &&
-        base >= PADS_QSPI_BASE_RP2350 && base < PADS_QSPI_BASE_RP2350 + PADS_QSPI_BLOCK_SIZE)
-        return 1;
-    return 0;
+    /* M33 supplies the RP2350 PADS_QSPI base; Hazard3 supplies the RP2040 one
+     * after rv_translate_shared_addr() rewrites it. The two maps overlap
+     * (RP2040 PADS_QSPI 0x40020000 == RP2350 RESETS_BASE), so the bases must
+     * stay separate -- membus_rv_delegate tells the two apart. */
+    uint32_t pbase = (membus_rp2350_mode && !membus_rv_delegate)
+                   ? PADS_QSPI_BASE_RP2350 : PADS_QSPI_BASE_RP2040;
+    return (base >= pbase && base < pbase + PADS_QSPI_BLOCK_SIZE);
 }
 
 static int gpio_bus_match(uint32_t addr) {

@@ -118,6 +118,7 @@ extern cpu_state_t cpu;
 
 /* RP2350 mode flags and peripheral state */
 extern int membus_rp2350_mode;
+extern int membus_rv_delegate;
 extern void *membus_rp2350_periph;
 extern uint8_t *rp2350_sram_ptr;
 
@@ -242,6 +243,7 @@ uint32_t mem_read32(uint32_t addr);
 
 /* RP2350 mode flag: enables RP2350 SYSINFO, peripheral routing, 520KB SRAM */
 extern int membus_rp2350_mode;
+extern int membus_rv_delegate;
 /* RP2350 peripheral state for M33 mode (set by main.c) — void* to avoid header dependency */
 extern void *membus_rp2350_periph;
 /* RP2350 SRAM pointer (520KB, set by main.c for M33 mode) */

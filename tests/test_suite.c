@@ -4717,24 +4717,40 @@ TEST(test_rv_shared_periph_translated_base) {
     /* Regression for issue #16. rv_translate_shared_addr() rewrites RP2350
      * peripheral bases back to their RP2040 equivalents before delegating to
      * the shared membus, but uart_match()/spi_match() only recognised the
-     * RP2350 base while membus_rp2350_mode was set. Every RISC-V UART/SPI
-     * access therefore fell through to "unmapped" and was silently dropped. */
+     * RP2350 base while membus_rp2350_mode was set. Every RISC-V UART and SPI
+     * access therefore fell through to "unmapped" and was silently dropped --
+     * a Hazard3 image produced no console output and never reached its shell. */
     int saved_mode = membus_rp2350_mode;
+    int saved_delegate = membus_rv_delegate;
     membus_rp2350_mode = 1;
     uart_init();
     spi_init();
 
-    /* Both address spaces must resolve to the same emulated peripheral. */
-    ASSERT_EQ(0, uart_match(RP2350_UART0_BASE), "RP2350 UART0 base should match");
-    ASSERT_EQ(1, uart_match(RP2350_UART1_BASE), "RP2350 UART1 base should match");
+    /* Hazard3 delegation: the RV path supplies already-translated addresses. */
+    membus_rv_delegate = 1;
     ASSERT_EQ(0, uart_match(UART0_BASE), "translated RP2040 UART0 base should match");
     ASSERT_EQ(1, uart_match(UART1_BASE), "translated RP2040 UART1 base should match");
-    ASSERT_EQ(0, uart_match(RP2350_UART0_BASE | 0x2000), "RP2350 UART0 SET alias should match");
-    ASSERT_EQ(0, uart_match(UART0_BASE | 0x3000), "RP2040 UART0 CLR alias should match");
-    ASSERT_EQ(0, spi_match(RP2350_SPI0_BASE), "RP2350 SPI0 base should match");
     ASSERT_EQ(0, spi_match(SPI0_BASE), "translated RP2040 SPI0 base should match");
-    ASSERT_EQ((uint32_t)-1, (uint32_t)uart_match(RP2350_PADS_QSPI_BASE),
-              "PADS_QSPI must not be claimed by the UART");
+    ASSERT_EQ(1, spi_match(SPI1_BASE), "translated RP2040 SPI1 base should match");
+    ASSERT_EQ((uint32_t)-1, (uint32_t)uart_match(RP2350_UART0_BASE),
+              "a translated address must not match the RP2350 UART base");
+    membus_rv_delegate = 0;
+
+    /* Cortex-M33: RP2350 addresses reach the shared bus untouched. */
+    ASSERT_EQ(0, uart_match(RP2350_UART0_BASE), "RP2350 UART0 base should match");
+    ASSERT_EQ(1, uart_match(RP2350_UART1_BASE), "RP2350 UART1 base should match");
+    ASSERT_EQ(0, uart_match(RP2350_UART0_BASE | 0x2000), "RP2350 UART0 SET alias should match");
+    ASSERT_EQ(0, spi_match(RP2350_SPI0_BASE), "RP2350 SPI0 base should match");
+    ASSERT_EQ(1, spi_match(RP2350_SPI1_BASE), "RP2350 SPI1 base should match");
+    ASSERT_EQ((uint32_t)-1, (uint32_t)uart_match(UART0_BASE),
+              "M33 path must not claim the RP2040 UART0 base");
+
+    /* The two chip maps overlap, so a matcher accepting both address spaces
+     * hands the RP2350 pad blocks to the UART/SPI models. */
+    ASSERT_EQ((uint32_t)-1, (uint32_t)uart_match(RP2350_PADS_BANK0_BASE),
+              "RP2350 PADS_BANK0 must not be claimed by the UART");
+    ASSERT_EQ((uint32_t)-1, (uint32_t)spi_match(RP2350_PADS_QSPI_BASE),
+              "RP2350 PADS_QSPI must not be claimed by the SPI");
 
     /* End-to-end: an RISC-V store to the RP2350 UART0 DR must reach UART0. */
     rv_membus_state_t bus;
@@ -4743,9 +4759,15 @@ TEST(test_rv_shared_periph_translated_base) {
     ASSERT_EQ(0x41, uart_state[0].dr, "RISC-V UART0 DR write should reach UART0");
     ASSERT_EQ(0, uart_state[1].dr, "RISC-V UART0 write must not land on UART1");
 
+    /* ...and an RISC-V store to the RP2350 PADS_BANK0 must not reach UART1. */
+    uart_init();
+    rv_mem_write32(&bus, RP2350_PADS_BANK0_BASE + 0x30, 0x301);
+    ASSERT_EQ(0, uart_state[1].cr, "RP2350 PADS_BANK0 write must not land in UART1 CR");
+
     uart_init();
     spi_init();
     membus_rp2350_mode = saved_mode;
+    membus_rv_delegate = saved_delegate;
     PASS();
 }
 
