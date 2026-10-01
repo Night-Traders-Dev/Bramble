@@ -438,10 +438,30 @@ tests that asserted nothing, but the gap is structural: eleven source files
 still have no test references. Closing it needs a deliberate effort per file,
 not opportunistic additions.
 
+### F1 — largely fixed in `e810fe4`, plus `f57db6b`
+Now fixed: the instruction cache is invalidated after `flash_range_program` and
+`flash_range_erase` (a firmware flash update used to write the bytes and then
+jump into the stale decoded instructions); `misa` advertises X, so firmware can
+see the Zb\* extensions this core implements; `mvendorid`/`marchid`/`mimpid`
+report real values instead of an "unimplemented" zero; `MRET` clears `MPP`; and
+`CSRRW` no longer reads the CSR when `rd == x0` -- which mattered because
+reading `MEINEXT` clears the force bits it samples. `f57db6b` makes SIO `CPUID`
+return the hart id.
+
+Still open from F1: bus-fault exceptions are not raised (mcause 1/5/7), and
+U-mode/PMP are absent -- so `misa.U` is deliberately *not* set, which is the one
+deliberate divergence from the datasheet's `0x40901105`.
+
+The Zcb quadrant-0 byte/halfword stores (`C.SB`, `C.SH`, `C.SBSP`, `C.SHSP`)
+compute a base register and **no offset**, so they always write to base+0.
+Attempted and reverted: the Zcb bit layout for these forms could not be
+confirmed offline, and a wrong decode is worse than a known-bad one. Needs the
+RISC-V unprivileged spec.
+
 ### Remaining datasheet-audit items
-The Hazard3 work covered the critical and high items: CLINT relocation, the
-Xh3irq CSRs and their array semantics, peripheral interrupt delivery, mtval,
-WFI/MIE, and Zcmp. Still open there: hart-1 launch uses invented SIO registers
-instead of the FIFO handshake, SIO CPUID returns a constant rather than a
-hart-dependent value, bus-fault exceptions are not raised, the I-cache is not
-invalidated after RISC-V flash programming, and U-mode/PMP are absent.
+The Hazard3 work now covers: CLINT relocation, the Xh3irq CSRs and their array
+semantics, peripheral interrupt delivery, mtval, WFI/MIE, Zcmp, icache
+coherence on flash writes, the identity CSRs, `MRET`/`MPP`, `CSRRW` semantics
+and hart-dependent `CPUID`. Still open: hart-1 launch uses invented SIO
+registers (`0x1c0`-`0x1cc`, which on RP2350 are TMDS) instead of the FIFO
+handshake, bus-fault exceptions, and U-mode/PMP.
