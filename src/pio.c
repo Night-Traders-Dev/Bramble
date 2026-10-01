@@ -122,7 +122,9 @@ static uint8_t sm_set_count(pio_sm_t *s) {
 }
 
 static uint8_t sm_set_base(pio_sm_t *s) {
-    return (s->pinctrl >> 5) & 0x1F;
+    /* PINCTRL.SIDESET_BASE is bits 14:10; reading bits 9:5 (reserved) made
+     * every side-set driven onto the wrong pin. */
+    return (s->pinctrl >> 10) & 0x1F;
 }
 
 static uint8_t sm_out_count(pio_sm_t *s) {
@@ -162,7 +164,7 @@ static void write_pins(uint8_t base, uint8_t count, uint32_t val) {
 
 static void write_pindirs(uint8_t base, uint8_t count, uint32_t val) {
     for (int i = 0; i < count && i < 32; i++) {
-        uint8_t pin = (base + i) % 30;
+        uint8_t pin = (uint8_t)((base + i) & 31);  /* datasheet: modulo 32 */
         gpio_set_direction(pin, (val >> i) & 1);
     }
 }
@@ -611,13 +613,20 @@ void pio_init(void) {
  * ======================================================================== */
 
 int pio_match(uint32_t addr) {
+    /* Declared locally: emulator.h redeclares fifo_push/fifo_pop with
+     * incompatible signatures that this file also defines. */
+    extern int membus_rp2350_mode;
     uint32_t base = addr & ~0x3000;  /* Strip atomic alias bits */
     if (base >= PIO0_BASE && base < PIO0_BASE + PIO_BLOCK_SIZE)
         return 0;
     if (base >= PIO1_BASE && base < PIO1_BASE + PIO_BLOCK_SIZE)
         return 1;
-    if (base >= PIO2_BASE && base < PIO2_BASE + PIO_BLOCK_SIZE)
-        return 2;  /* PIO2: RP2350 only */
+    /* PIO2 exists on RP2350 only. On RP2040 that address is XIP_AUX_BASE, so
+     * matching it unconditionally captured the XIP auxiliary register block
+     * (including the boot2/bootrom-adjacent XIP_AUX registers). */
+    if (membus_rp2350_mode &&
+        base >= PIO2_BASE && base < PIO2_BASE + PIO_BLOCK_SIZE)
+        return 2;
     return -1;
 }
 

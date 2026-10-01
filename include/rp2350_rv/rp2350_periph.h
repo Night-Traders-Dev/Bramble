@@ -111,6 +111,7 @@ typedef struct {
     uint32_t intr;
     uint32_t inte;
     uint32_t intf;
+    uint32_t fired;   /* alarms that fired since the last NVIC signal */
     uint32_t paused;
     uint32_t latched_high;     /* For atomic 64-bit reads */
 } rp2350_timer1_state_t;

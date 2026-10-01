@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "rp2350_rv/rp2350_periph.h"
+#include "nvic.h"
 #include "rp2350_rv/rp2350_memmap.h"
 
 /* ========================================================================
@@ -294,10 +295,14 @@ static uint32_t timer1_read(rp2350_timer1_state_t *t, uint32_t offset) {
     case 0x24: return (uint32_t)(t->time_us >> 32);  /* TIMERAWH */
     case 0x28: return (uint32_t)t->time_us;           /* TIMERAWL */
     case 0x30: return t->paused;
-    case 0x34: return t->intr;
-    case 0x38: return t->inte;
-    case 0x3C: return t->intf;
-    case 0x40: return (t->intr | t->intf) & t->inte;  /* INTS */
+    /* RP2350 adds LOCKED (0x34) and SOURCE (0x38) ahead of the interrupt
+     * registers (datasheet: "RP2350 added two new registers"), so INTR..INTS
+     * sit at 0x3c..0x48 here rather than the RP2040 0x34..0x40. Using the
+     * RP2040 offsets made an INTE write land on INTS and be dropped. */
+    case 0x3C: return t->intr;
+    case 0x40: return t->inte;
+    case 0x44: return t->intf;
+    case 0x48: return (t->intr | t->intf) & t->inte;  /* INTS */
     default: return 0;
     }
 }
@@ -312,9 +317,11 @@ static void timer1_write(rp2350_timer1_state_t *t, uint32_t offset, uint32_t val
     case 0x1C: t->alarm[3] = val; t->armed |= 8; break;
     case 0x20: t->armed &= ~val; break;  /* W1C */
     case 0x30: t->paused = val & 1; break;
-    case 0x34: t->intr &= ~val; break;   /* W1C */
-    case 0x38: t->inte = val & 0xF; break;
-    case 0x3C: t->intf = val & 0xF; break;
+    case 0x34: break;                     /* LOCKED (RO) */
+    case 0x38: break;                     /* SOURCE */
+    case 0x3C: t->intr &= ~val; break;    /* W1C */
+    case 0x40: t->inte = val & 0xF; break;
+    case 0x44: t->intf = val & 0xF; break;
     default: break;
     }
 }
@@ -329,7 +336,20 @@ void rp2350_timer1_tick(rp2350_periph_state_t *state, uint32_t us) {
         if ((t->armed & (1u << i)) && (int32_t)(time_lo - t->alarm[i]) >= 0) {
             t->intr |= (1u << i);
             t->armed &= ~(1u << i);
+            /* Raise the matching TIMER1 interrupt. These were never signalled
+             * before, so any firmware using timer1 hung forever waiting for a
+             * callback. RP2350 vectors are 4..7 (TIMER1_IRQ_0..3); nvic_
+             * irq_number maps the RP2040 TIMER_IRQ_0..3 onto them. */
+            t->fired |= (1u << i);
         }
+    }
+    if (t->fired) {
+        uint32_t mask = t->fired & t->inte;
+        if (mask) {
+            uint32_t line = (uint32_t)__builtin_ctz(mask);
+            nvic_signal_irq(IRQ_TIMER_IRQ_0 + line);
+        }
+        t->fired = 0;
     }
 }
 
