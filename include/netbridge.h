@@ -43,6 +43,9 @@ typedef struct {
 extern net_bridge_t net_bridge;
 
 /* Initialize network bridge (call after argument parsing) */
+/* Bind UART bridges to loopback only (default). Set to 1 before init to expose
+ * them on all interfaces, as previous versions did. */
+extern int net_bridge_bind_all;
 int  net_bridge_init(void);
 
 /* Cleanup sockets on exit */

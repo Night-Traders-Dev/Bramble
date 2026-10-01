@@ -26,7 +26,10 @@
 
 #define WIRE_MAX_LINKS  4
 #define WIRE_MAX_PAYLOAD 8
-#define WIRE_IO_BUFFER_SIZE 256
+/* Large enough for a max-length Ethernet frame plus the 6-byte framing
+ * header. At 256 the largest frame that could ever be delivered was
+ * 250 bytes. */
+#define WIRE_IO_BUFFER_SIZE (WIRE_ETH_MAX_FRAME + 16)
 #define WIRE_ETH_MAX_FRAME 1522
 
 /* Wire message types */

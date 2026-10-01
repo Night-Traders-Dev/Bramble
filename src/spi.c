@@ -88,8 +88,26 @@ static uint16_t rx_pop(spi_state_t *s) {
  * Transfer execution
  * ======================================================================== */
 
-/* Execute all pending TX bytes through the device callback immediately */
+/* Drive the device model's chip-select line. The callback was previously stored
+ * but never invoked, so cs_active stayed 0 forever and every attached model
+ * (sdcard_spi_xfer, emmc_spi_xfer, w5500_spi_xfer) short-circuited to 0xFF on
+ * its first line -- SPI-attached SD cards, eMMC and W5500 answered nothing. */
+static void spi_drive_cs(spi_state_t *s, int active) {
+    if (!s->device.cs) return;
+    if (s->cs_active == active) return;
+    s->cs_active = active;
+    s->device.cs(s->device.ctx, active);
+}
+
+/* Execute all pending TX bytes through the device callback immediately.
+ * Chip select is asserted for the duration of the burst and released once the
+ * TX FIFO drains, which is how a real master frames a transaction. */
 static void spi_execute_transfers(spi_state_t *s) {
+    int enabled = (s->cr1 & SPI_CR1_SSE) != 0;
+    if (s->tx_count == 0) return;
+
+    if (enabled) spi_drive_cs(s, 1);
+
     while (s->tx_count > 0) {
         uint16_t mosi = tx_pop(s);
         uint16_t miso = 0;
@@ -102,6 +120,8 @@ static void spi_execute_transfers(spi_state_t *s) {
 
         rx_push(s, miso);
     }
+
+    if (enabled) spi_drive_cs(s, 0);
 }
 
 /* Update interrupt status based on FIFO state */
@@ -198,9 +218,16 @@ void spi_write32(int spi_num, uint32_t offset, uint32_t val) {
         s->cr0 = val & 0xFFFF;
         break;
 
-    case SPI_SSPCR1:
+    case SPI_SSPCR1: {
+        int was_enabled = (s->cr1 & SPI_CR1_SSE) != 0;
         s->cr1 = val & 0x0F;
+        if (was_enabled && !(s->cr1 & SPI_CR1_SSE)) {
+            /* Peripheral disabled: release the slave and discard buffered TX. */
+            spi_drive_cs(s, 0);
+            s->tx_count = 0;
+        }
         break;
+    }
 
     case SPI_SSPDR:
         /* TX write: push to TX FIFO, then execute immediately */

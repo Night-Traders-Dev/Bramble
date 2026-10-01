@@ -69,6 +69,7 @@ typedef struct {
     uint32_t imsc;      /* Interrupt mask */
     uint32_t ris;       /* Raw interrupt status */
     uint32_t dmacr;     /* DMA control */
+    int cs_active;      /* 1 while the attached device model sees CS asserted */
 
     /* TX FIFO */
     uint16_t tx_fifo[SPI_FIFO_SIZE];

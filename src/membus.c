@@ -974,7 +974,18 @@ static void sio_write32(uint32_t offset, uint32_t val) {
      * gpio_bus_match(), and both are 0xD0000000, so gpio_write32()'s SIO
      * branch is never reached from the write path. */
     if (offset >= SIO_GPIO_OUT_OFFSET && offset <= SIO_GPIO_OE_XOR_OFFSET) {
+        /* RP2350 interleaves GPIO_HI_OUT/SET/CLR/XOR into this range; routing
+         * them to the low bank would set bits in the wrong pins' output latch. */
+        if (membus_rp2350_mode && gpio_hi_offset(offset)) {
+            gpio_hi_write32(offset, val);
+            return;
+        }
         gpio_write32(SIO_BASE + offset, val);
+        return;
+    }
+    /* The rest of the RP2350 GPIO_HI bank (0x34..0x4C) is outside the low range. */
+    if (membus_rp2350_mode && offset >= SIO_GPIO_HI_OE && offset <= SIO_GPIO_HI_OE_XOR) {
+        gpio_hi_write32(offset, val);
         return;
     }
 
@@ -1027,9 +1038,13 @@ static uint32_t sio_read32(uint32_t offset) {
         (offset >= 0x30 && offset <= 0x4C)) {
         /* 0x04-0x2C = GPIO bank 0, 0x30-0x4C = GPIO_HI (QSPI) */
         if (offset == SIO_GPIO_HI_IN_OFFSET) {
-            /* QSPI GPIO input: 6 pins (SCLK=0, SS=1, SD0-3=2-5) */
-            /* Default: CS(SS) high, data lines high (pulled up) */
-            return 0x3E;
+            /* RP2350: live input state of GPIO32-47 plus the QSPI/USB IOs.
+             * RP2040: the 6 QSPI pins, defaulting to CS high and the data
+             * lines pulled up. */
+            return membus_rp2350_mode ? (gpio_hi_out & gpio_hi_oe) : 0x3E;
+        }
+        if (membus_rp2350_mode && gpio_hi_offset(offset)) {
+            return gpio_hi_read32(offset);
         }
         return gpio_read32(SIO_BASE + offset);
     }

@@ -15,6 +15,8 @@ uart_state_t uart_state[2];
 static void uart_reset_instance(uart_state_t *u) {
     memset(u, 0, sizeof(*u));
     u->ifls = 0x12;  /* Reset FIFO trigger levels */
+    /* CR resets to 0x301: TXE and RXE set, UARTEN clear (datasheet Table 433). */
+    u->cr = 0x00000301;
     u->enabled = 0;
     u->tx_activity = 0;
 }
@@ -76,6 +78,11 @@ static void uart_check_irq(int uart_num) {
 static void uart_rx_update_irq(uart_state_t *u) {
     if (u->rx_count >= rx_trigger_level(u)) {
         u->ris |= UART_INT_RX;
+    } else {
+        /* Level-triggered: the receive interrupt deasserts as soon as the FIFO
+         * drains below the trigger. It was only ever set, so a handler that read
+         * fewer bytes than were buffered never received another interrupt. */
+        u->ris &= ~UART_INT_RX;
     }
 }
 
@@ -83,8 +90,16 @@ int uart_rx_push(int uart_num, uint8_t data) {
     if (uart_num < 0 || uart_num > 1) return 0;
     uart_state_t *u = &uart_state[uart_num];
 
-    if (u->rx_count >= UART_RX_FIFO_SIZE)
-        return 0;  /* FIFO full */
+    if (u->rx_count >= UART_RX_FIFO_SIZE) {
+        /* Overrun: the datasheet sets RSR.OE (and therefore RIS.OERIS) and
+         * prevents the FIFO being overwritten. Returning 0 with no side effect
+         * left firmware polling UARTRSR after reads permanently convinced no
+         * data had been lost. */
+        u->rsr |= UART_RSR_OE;
+        u->ris |= UART_INT_OE;
+        uart_check_irq(uart_num);
+        return 0;
+    }
 
     u->rx_fifo[u->rx_head] = data;
     u->rx_head = (u->rx_head + 1) % UART_RX_FIFO_SIZE;
@@ -218,8 +233,9 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
         break;
 
     case UART_RSR:
-        /* Write clears error flags */
-        u->rsr = 0;
+        /* RSR error flags are cleared by writing a 1 to the corresponding bit. */
+        u->rsr &= ~(val & UART_RSR_OE);
+        if (!(u->rsr & UART_RSR_OE)) u->ris &= ~UART_INT_OE;
         break;
 
     case UART_IBRD:
@@ -230,15 +246,18 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
         u->fbrd = val & 0x3F;
         break;
 
-    case UART_LCR_H:
+    case UART_LCR_H: {
         u->lcr_h = val & 0xFF;
+        /* FEN changes the trigger depth, so the receive level must be
+         * re-evaluated (character mode asserts on the first byte). */
+        uart_rx_update_irq(u);
         break;
+    }
 
     case UART_CR:
         u->cr = val & 0xFFFF;
         u->enabled = (val & UART_CR_UARTEN) ? 1 : 0;
         if (u->enabled) {
-            /* TX FIFO is always empty (instant TX), so assert TX interrupt */
             u->ris |= UART_INT_TX;
         }
         break;
@@ -263,6 +282,14 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
     default:
         break;
     }
+
+    /* The transmit interrupt is a level: it reasserts whenever the TX FIFO is
+     * at or below the trigger level. Previously writing ICR=TXIC cleared it
+     * permanently, so the canonical IRQ-driven pattern (write DR, write
+     * ICR=TXIC, return) delivered exactly one TX interrupt per enable and then
+     * hung. With instant TX the FIFO is always empty, so the level always
+     * holds and the interrupt returns as soon as it is masked in. */
+    if (u->enabled) u->ris |= UART_INT_TX;
 
     /* Check if any masked interrupt is now active */
     uart_check_irq(uart_num);

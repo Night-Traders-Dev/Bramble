@@ -16,6 +16,8 @@
 #define UART_IBRD       0x024   /* Integer Baud Rate */
 #define UART_FBRD       0x028   /* Fractional Baud Rate */
 #define UART_LCR_H      0x02C   /* Line Control */
+#define UART_LCR_H_FEN  (1u << 4)  /* FIFO enable */
+#define UART_LCR_H_WLEN 0x3u     /* word length bits (1:0) */
 #define UART_CR         0x030   /* Control Register */
 #define UART_IFLS       0x034   /* Interrupt FIFO Level Select */
 #define UART_IMSC       0x038   /* Interrupt Mask Set/Clear */
@@ -48,9 +50,12 @@
 #define UART_INT_TX     (1u << 5)   /* TX interrupt */
 #define UART_INT_RX     (1u << 4)   /* RX interrupt */
 #define UART_INT_RT     (1u << 6)   /* RX timeout interrupt */
+#define UART_INT_OE     (1u << 10)  /* Overrun error */
+#define UART_RSR_OE     (1u << 3)   /* RSR overrun (write-1-to-clear) */
 
 /* RX FIFO */
-#define UART_RX_FIFO_SIZE  16  /* PL011 standard 16-deep FIFO */
+#define UART_FIFO_SIZE     32  /* PL011: both FIFOs are 32 locations deep */
+#define UART_RX_FIFO_SIZE  UART_FIFO_SIZE
 
 /* Per-UART state */
 typedef struct {

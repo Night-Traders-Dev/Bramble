@@ -123,9 +123,16 @@ static uint32_t rv_sio_read(rv_membus_state_t *bus, uint32_t offset) {
         break;  /* Will fall through */
 
     /* GPIO high (pins 32-47) — RP2350-specific */
-    case 0x30: return bus->gpio_hi_out;   /* GPIO_HI_OUT */
-    case 0x40: return bus->gpio_hi_oe;    /* GPIO_HI_OE */
-    case 0x38: return bus->gpio_hi_in;    /* GPIO_HI_IN (same offset as RP2040 QSPI in) */
+    /* GPIO_HI_OUT/OE and their SET/CLR/XOR aliases live interleaved with the
+     * low bank on RP2350 (datasheet Table 17). */
+    case 0x014: return bus->gpio_hi_out;      /* GPIO_HI_OUT */
+    case 0x01c: return bus->gpio_hi_out;      /* GPIO_HI_OUT_SET reads as the value */
+    case 0x024: return bus->gpio_hi_out;      /* GPIO_HI_OUT_CLR */
+    case 0x02c: return bus->gpio_hi_out;      /* GPIO_HI_OUT_XOR */
+    case 0x034: return bus->gpio_hi_oe;       /* GPIO_HI_OE */
+    case 0x03c: return bus->gpio_hi_oe;       /* GPIO_HI_OE_SET */
+    case 0x044: return bus->gpio_hi_oe;       /* GPIO_HI_OE_CLR */
+    case 0x04c: return bus->gpio_hi_oe;       /* GPIO_HI_OE_XOR */
 
     /* Hart 1 launch mailbox */
     case RV_SIO_HART1_BOOT_ENTRY:  return bus->hart1_entry;
@@ -141,15 +148,18 @@ static uint32_t rv_sio_read(rv_membus_state_t *bus, uint32_t offset) {
 
 static int rv_sio_write(rv_membus_state_t *bus, uint32_t offset, uint32_t val) {
     switch (offset) {
-    /* GPIO high (pins 32-47) */
-    case 0x30: bus->gpio_hi_out = val & 0xFFFF; return 1;  /* GPIO_HI_OUT */
-    case 0x34: bus->gpio_hi_out |= (val & 0xFFFF); return 1; /* GPIO_HI_OUT_SET */
-    case 0x38: bus->gpio_hi_out &= ~(val & 0xFFFF); return 1; /* GPIO_HI_OUT_CLR */
-    case 0x3C: bus->gpio_hi_out ^= (val & 0xFFFF); return 1; /* GPIO_HI_OUT_XOR */
-    case 0x40: bus->gpio_hi_oe = val & 0xFFFF; return 1;    /* GPIO_HI_OE */
-    case 0x44: bus->gpio_hi_oe |= (val & 0xFFFF); return 1; /* GPIO_HI_OE_SET */
-    case 0x48: bus->gpio_hi_oe &= ~(val & 0xFFFF); return 1; /* GPIO_HI_OE_CLR */
-    case 0x4C: bus->gpio_hi_oe ^= (val & 0xFFFF); return 1; /* GPIO_HI_OE_XOR */
+    /* GPIO high bank (pins 32-47, QSPI and USB IO). Interleaved with the low
+     * bank per datasheet Table 17 -- the previous table began at 0x30, one
+     * register too high, so a firmware write to GPIO_OE (0x30) set the HIGH
+     * bank's output latch instead of enabling outputs. */
+    case 0x014: bus->gpio_hi_out = val & 0xFFFF;  return 1; /* GPIO_HI_OUT */
+    case 0x01c: bus->gpio_hi_out |= (val & 0xFFFF); return 1; /* GPIO_HI_OUT_SET */
+    case 0x024: bus->gpio_hi_out &= ~(val & 0xFFFF); return 1; /* GPIO_HI_OUT_CLR */
+    case 0x02c: bus->gpio_hi_out ^= (val & 0xFFFF); return 1; /* GPIO_HI_OUT_XOR */
+    case 0x034: bus->gpio_hi_oe = val & 0xFFFF;   return 1; /* GPIO_HI_OE */
+    case 0x03c: bus->gpio_hi_oe |= (val & 0xFFFF); return 1; /* GPIO_HI_OE_SET */
+    case 0x044: bus->gpio_hi_oe &= ~(val & 0xFFFF); return 1; /* GPIO_HI_OE_CLR */
+    case 0x04c: bus->gpio_hi_oe ^= (val & 0xFFFF); return 1; /* GPIO_HI_OE_XOR */
 
     /* Hart 1 launch mailbox */
     case RV_SIO_HART1_BOOT_ENTRY: bus->hart1_entry = val; return 1;

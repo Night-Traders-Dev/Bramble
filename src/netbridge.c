@@ -80,7 +80,11 @@ static int create_listen_socket(int port) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    /* Bind loopback by default. INADDR_ANY exposed the emulated UART to every
+     * interface: anyone routable to the host could connect, read the guest's
+     * console output and inject bytes into its RX FIFO. Set
+     * net_bridge_bind_all = 1 to restore the old behaviour deliberately. */
+    addr.sin_addr.s_addr = net_bridge_bind_all ? INADDR_ANY : htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
@@ -128,6 +132,8 @@ static int create_connect_socket(const char *host, int port) {
     set_nodelay(fd);
     return fd;
 }
+
+int net_bridge_bind_all = 0;
 
 int net_bridge_init(void) {
     for (int i = 0; i < NET_BRIDGE_MAX_UART; i++) {

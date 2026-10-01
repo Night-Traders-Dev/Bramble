@@ -1336,8 +1336,11 @@ TEST(test_adc_start_once_triggers_conversion) {
 TEST(test_uart_registers) {
     reset_cpu();
     ASSERT_EQ(0x00000090, mem_read32(UART0_BASE + 0x018), "UART FR");
-    /* UART starts disabled per PL011 hardware reset */
-    ASSERT_EQ(0, mem_read32(UART0_BASE + 0x030), "UART CR: disabled at reset");
+    /* UARTCR resets to 0x301: TXE and RXE set, UARTEN clear. The datasheet
+     * gives both bits a reset of 1 (Table 433), so a read-modify-write of CR
+     * that skips the initial write keeps the transmit/receive enables. */
+    ASSERT_EQ(0x00000301, mem_read32(UART0_BASE + 0x030),
+              "UART CR reset = 0x301 (TXE|RXE set, UARTEN clear)");
     /* Enable UART with TXE + RXE */
     mem_write32(UART0_BASE + UART_CR, UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE);
     uint32_t cr = mem_read32(UART0_BASE + 0x030);
@@ -1390,10 +1393,22 @@ TEST(test_uart_imsc_icr) {
     /* RIS has TX set (FIFO empty), so MIS should show it */
     uint32_t mis = mem_read32(UART0_BASE + UART_MIS);
     ASSERT_TRUE(mis & UART_INT_TX, "MIS TX active");
-    /* Clear TX interrupt */
+    /* The transmit interrupt is a LEVEL: "if the transmit FIFO is equal to or
+     * lower than the programmed trigger level then the transmit interrupt is
+     * asserted HIGH". With the FIFO empty that condition always holds, so
+     * writing ICR=TXIC does not leave it low -- it deasserts and immediately
+     * reasserts. Treating the clear as permanent is what made the canonical
+     * IRQ-driven TX loop hang after one interrupt. */
     mem_write32(UART0_BASE + UART_ICR, UART_INT_TX);
-    ASSERT_EQ(0, mem_read32(UART0_BASE + UART_RIS) & UART_INT_TX, "RIS TX cleared");
-    ASSERT_EQ(0, mem_read32(UART0_BASE + UART_MIS), "MIS zero after clear");
+    ASSERT_TRUE(mem_read32(UART0_BASE + UART_RIS) & UART_INT_TX,
+               "RIS TX must reassert (level-triggered, FIFO at trigger level)");
+    /* MIS = RIS & IMSC, so it reasserts with RIS. */
+    ASSERT_TRUE(mem_read32(UART0_BASE + UART_MIS) & UART_INT_TX,
+               "MIS TX reasserts while the level condition holds");
+
+    /* Clearing the mask really does remove it: MIS = RIS & IMSC. */
+    mem_write32(UART0_BASE + UART_IMSC, 0);
+    ASSERT_EQ(0, mem_read32(UART0_BASE + UART_MIS), "MIS zero once unmasked");
     PASS();
 }
 
@@ -4958,8 +4973,10 @@ TEST(test_rv_shared_periph_translated_base) {
 
     /* ...and an RISC-V store to the RP2350 PADS_BANK0 must not reach UART1. */
     uart_init();
-    rv_mem_write32(&bus, RP2350_PADS_BANK0_BASE + 0x30, 0x301);
-    ASSERT_EQ(0, uart_state[1].cr, "RP2350 PADS_BANK0 write must not land in UART1 CR");
+    uint32_t cr_reset = uart_state[1].cr;
+    rv_mem_write32(&bus, RP2350_PADS_BANK0_BASE + 0x30, 0xDEADBEEF);
+    ASSERT_EQ(cr_reset, uart_state[1].cr,
+              "RP2350 PADS_BANK0 write must not land in UART1 CR");
 
     uart_init();
     spi_init();

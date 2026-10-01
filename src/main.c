@@ -372,7 +372,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -emmc-spi <0|1>             SPI bus for eMMC (default: 0)\n");
         fprintf(stderr, "  -emmc-size <MB>             eMMC size in MB (default: 128)\n");
         fprintf(stderr, "\nNetworking:\n");
-        fprintf(stderr, "  -net-uart0 <port>           Bridge UART0 to TCP server on port\n");
+        fprintf(stderr, "  -net-uart0 <port>           Bridge UART0 to TCP server (loopback only)\n");
+        fprintf(stderr, "  -net-uart0-all             Let the UART bridges bind all interfaces\n");
         fprintf(stderr, "  -net-uart1 <port>           Bridge UART1 to TCP server on port\n");
         fprintf(stderr, "  -net-uart0-connect <h:p>    Connect UART0 to remote host:port\n");
         fprintf(stderr, "  -net-uart1-connect <h:p>    Connect UART1 to remote host:port\n");
@@ -580,6 +581,9 @@ int main(int argc, char **argv) {
                     *colon = ':';
                 }
             }
+        } else if (strcmp(argv[i], "-net-uart0-all") == 0 ||
+                   strcmp(argv[i], "-net-uart1-all") == 0) {
+            net_bridge_bind_all = 1;
         } else if (strcmp(argv[i], "-net-uart1-connect") == 0) {
             if (i + 1 < argc) {
                 char *arg = argv[++i];

@@ -445,6 +445,62 @@ void gpio_write32(uint32_t addr, uint32_t val) {
     }
 }
 
+/* ========================================================================
+ * GPIO_HI (pins 32-47, plus the QSPI/USB IOs)
+ *
+ * On RP2350 the high bank's output and output-enable registers are interleaved
+ * with the low bank's in SIO space (datasheet Table 17):
+ *   0x010 GPIO_OUT   0x014 GPIO_HI_OUT   0x018 GPIO_OUT_SET  0x01c GPIO_HI_OUT_SET
+ *   0x020 GPIO_OUT_CLR 0x024 GPIO_HI_OUT_CLR 0x028 GPIO_OUT_XOR 0x02c GPIO_HI_OUT_XOR
+ *   0x030 GPIO_OE    0x034 GPIO_HI_OE    0x038 GPIO_OE_SET   0x03c GPIO_HI_OE_SET
+ *   0x040 GPIO_OE_CLR 0x044 GPIO_HI_OE_CLR 0x048 GPIO_OE_XOR  0x04c GPIO_HI_OE_XOR
+ * so the high bank needs its own state rather than living in the 32-bit words.
+ * ======================================================================== */
+
+uint32_t gpio_hi_out = 0;
+uint32_t gpio_hi_oe = 0;
+
+void gpio_hi_write32(uint32_t offset, uint32_t val) {
+    uint16_t v = (uint16_t)(val & 0xFFFF);
+    switch (offset) {
+    case SIO_GPIO_HI_OUT:       gpio_hi_out = v; return;
+    case SIO_GPIO_HI_OUT_SET:  gpio_hi_out |= v; return;
+    case SIO_GPIO_HI_OUT_CLR:  gpio_hi_out &= (uint16_t)~v; return;
+    case SIO_GPIO_HI_OUT_XOR:  gpio_hi_out ^= v; return;
+    case SIO_GPIO_HI_OE:       gpio_hi_oe = v; return;
+    case SIO_GPIO_HI_OE_SET:   gpio_hi_oe |= v; return;
+    case SIO_GPIO_HI_OE_CLR:   gpio_hi_oe &= (uint16_t)~v; return;
+    case SIO_GPIO_HI_OE_XOR:   gpio_hi_oe ^= v; return;
+    default: break;
+    }
+}
+
+uint32_t gpio_hi_read32(uint32_t offset) {
+    switch (offset) {
+    case SIO_GPIO_HI_OUT:
+    case SIO_GPIO_HI_OUT_SET:
+    case SIO_GPIO_HI_OUT_CLR:
+    case SIO_GPIO_HI_OUT_XOR:  return gpio_hi_out;
+    case SIO_GPIO_HI_OE:
+    case SIO_GPIO_HI_OE_SET:
+    case SIO_GPIO_HI_OE_CLR:
+    case SIO_GPIO_HI_OE_XOR:  return gpio_hi_oe;
+    default: return 0;
+    }
+}
+
+/* Is this SIO offset one of the RP2350 GPIO_HI registers? */
+int gpio_hi_offset(uint32_t offset) {
+    switch (offset) {
+    case SIO_GPIO_HI_OUT: case SIO_GPIO_HI_OUT_SET:
+    case SIO_GPIO_HI_OUT_CLR: case SIO_GPIO_HI_OUT_XOR:
+    case SIO_GPIO_HI_OE: case SIO_GPIO_HI_OE_SET:
+    case SIO_GPIO_HI_OE_CLR: case SIO_GPIO_HI_OE_XOR:
+        return 1;
+    default: return 0;
+    }
+}
+
 /* Helper functions for GPIO pin operations */
 
 void gpio_set_pin(uint8_t pin, uint8_t value) {

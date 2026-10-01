@@ -15,6 +15,24 @@
 uint32_t gpio_io_bank0_base(void);
 uint32_t gpio_pads_bank0_base(void);
 
+/* SIO GPIO register offsets. RP2350 interleaves the GPIO_HI bank with the low
+ * bank (datasheet Table 17). */
+#define SIO_GPIO_HI_OUT                0x14
+#define SIO_GPIO_HI_OUT_SET            0x1C
+#define SIO_GPIO_HI_OUT_CLR            0x24
+#define SIO_GPIO_HI_OUT_XOR            0x2C
+#define SIO_GPIO_HI_OE                 0x34
+#define SIO_GPIO_HI_OE_SET             0x3C
+#define SIO_GPIO_HI_OE_CLR             0x44
+#define SIO_GPIO_HI_OE_XOR             0x4C
+
+/* GPIO_HI bank (RP2350 pins 32-47 plus QSPI/USB IOs). */
+extern uint32_t gpio_hi_out;
+extern uint32_t gpio_hi_oe;
+void gpio_hi_write32(uint32_t offset, uint32_t val);
+uint32_t gpio_hi_read32(uint32_t offset);
+int gpio_hi_offset(uint32_t offset);
+
 /* Number of GPIO user pins on the emulated chip (30 on RP2040, 48 on RP2350). */
 int gpio_num_user_pins(void);
 
