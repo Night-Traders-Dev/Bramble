@@ -5246,6 +5246,99 @@ TEST(test_rv_hazard3_csrs) {
     PASS();
 }
 
+/* F1: misa must advertise the extensions this core actually implements, and
+ * the identification CSRs must not read back as "unimplemented". */
+TEST(test_rv_misa_and_id_csr_values) {
+    rv_cpu_state_t rv;
+    rv_cpu_init(&rv, 0);
+
+    uint32_t misa = rv_csr_read(&rv, CSR_MISA);
+    ASSERT_TRUE((misa & (1u << 30)) != 0, "MXL must be 1 for RV32");
+    ASSERT_TRUE((misa & (1u << 0)) != 0, "misa.A must be set (atomics are implemented)");
+    ASSERT_TRUE((misa & (1u << 2)) != 0, "misa.C must be set (compressed is implemented)");
+    ASSERT_TRUE((misa & (1u << 8)) != 0, "misa.I must be set");
+    ASSERT_TRUE((misa & (1u << 12)) != 0, "misa.M must be set");
+    /* X declares the non-standard extensions (Zba/Zbb/Zbs/Zcb/Zcmp/Zbkb), which
+     * this core does implement. It used to be clear. */
+    ASSERT_TRUE((misa & (1u << 23)) != 0, "misa.X must be set for the Zb* extensions");
+
+    /* U is deliberately not advertised: there is no user mode, and claiming it
+     * would send firmware into transitions the core cannot complete. */
+    ASSERT_TRUE((misa & (1u << 20)) == 0,
+                "misa.U must stay clear while user mode is unimplemented");
+
+    ASSERT_EQ(0x00000493, rv_csr_read(&rv, CSR_MVENDORID), "mvendorid");
+    ASSERT_EQ(0x0000001B, rv_csr_read(&rv, CSR_MARCHID), "marchid");
+    ASSERT_EQ(0x86FC4E3F, rv_csr_read(&rv, CSR_MIMPID), "mimpid");
+
+    /* Identification CSRs are read-only. */
+    rv_csr_write(&rv, CSR_MARCHID, 0xDEAD);
+    ASSERT_EQ(0x0000001B, rv_csr_read(&rv, CSR_MARCHID), "marchid must be read-only");
+
+    rv_cpu_state_t rv1;
+    rv_cpu_init(&rv1, 1);
+    ASSERT_EQ(1, rv_csr_read(&rv1, CSR_MHARTID), "mhartid must be per-hart");
+    PASS();
+}
+
+/* F1: MRET drops MPP to the least-privileged supported mode. Leaving it at
+ * M-mode made a handler that had correctly dropped privilege still look
+ * privileged. */
+TEST(test_rv_mret_clears_mpp) {
+    rv_cpu_state_t rv;
+    rv_cpu_init(&rv, 0);
+
+    rv.csr[CSR_MSTATUS] = MSTATUS_MPP | MSTATUS_MPIE;
+    rv.csr[CSR_MEPC] = 0x1000;
+
+    rv_trap_return(&rv);
+
+    ASSERT_EQ(0, rv.csr[CSR_MSTATUS] & MSTATUS_MPP,
+              "MRET must clear MPP (there is no user mode to drop to)");
+    ASSERT_EQ(0x1000, rv.pc, "MRET must restore PC from MEPC");
+    PASS();
+}
+
+/* F1: an icache flush or range invalidate must actually drop entries, and a
+ * range invalidate must leave unrelated addresses cached. */
+TEST(test_rv_icache_invalidation_after_flash_write) {
+    rv_icache_t ic;
+    rv_icache_init(&ic);
+
+    const uint32_t base = 0x10000100;
+    rv_icache_insert(&ic, base, 0x00000013, 4);           /* nop */
+    rv_icache_insert(&ic, base + 0x1000, 0x00000013, 4);  /* elsewhere */
+
+    uint32_t instr = 0;
+    uint8_t size = 0;
+    ASSERT_TRUE(rv_icache_lookup(&ic, base, &instr, &size) == 1, "entry should hit");
+
+    rv_icache_invalidate_range(&ic, base, 4);
+
+    ASSERT_TRUE(rv_icache_lookup(&ic, base, &instr, &size) == 0,
+                "the entry covering the written address must be dropped");
+    ASSERT_TRUE(rv_icache_lookup(&ic, base + 0x1000, &instr, &size) == 1,
+                "an unrelated address must stay cached");
+    PASS();
+}
+
+TEST(test_rv_icache_flush_drops_everything) {
+    rv_icache_t ic;
+    rv_icache_init(&ic);
+    rv_icache_insert(&ic, 0x10000100, 0x00000013, 4);
+    rv_icache_insert(&ic, 0x10000900, 0x00000013, 4);
+
+    rv_icache_flush(&ic);
+
+    uint32_t instr = 0;
+    uint8_t size = 0;
+    ASSERT_TRUE(rv_icache_lookup(&ic, 0x10000100, &instr, &size) == 0,
+                "flush must drop the first entry");
+    ASSERT_TRUE(rv_icache_lookup(&ic, 0x10000900, &instr, &size) == 0,
+                "flush must drop the second entry");
+    PASS();
+}
+
 /* C10: a peripheral IRQ has to reach mip.MEIP. Before the nvic.c -> Xh3irq
  * bridge, nvic_signal_irq() latched the bit in the NVIC, which the RV core
  * never reads, so mip.MEIP stayed 0 and firmware blocking on a UART receive
@@ -5893,6 +5986,10 @@ int main(void) {
     RUN_TEST(test_rv_periph_bootram);
     RUN_TEST(test_rv_periph_timer1);
     RUN_TEST(test_rv_hazard3_csrs);
+    RUN_TEST(test_rv_misa_and_id_csr_values);
+    RUN_TEST(test_rv_mret_clears_mpp);
+    RUN_TEST(test_rv_icache_invalidation_after_flash_write);
+    RUN_TEST(test_rv_icache_flush_drops_everything);
     RUN_TEST(test_rv_peripheral_irq_reaches_mip_meip);
     RUN_TEST(test_rv_peripheral_irq_traps);
     END_CATEGORY("RP2350 Peripherals");

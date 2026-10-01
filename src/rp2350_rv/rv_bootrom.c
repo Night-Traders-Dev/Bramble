@@ -13,6 +13,7 @@
 #include "rp2350_rv/rv_bootrom.h"
 #include "rp2350_rv/rv_membus.h"
 #include "rp2350_rv/rp2350_memmap.h"
+#include "rp2350_rv/rv_icache.h"
 #include "emulator.h"
 
 #define RV_ROM_DATA_FLASH_DEVINFO16_PTR_LITERAL 0x0200
@@ -380,6 +381,14 @@ int rv_rom_intercept(rv_cpu_state_t *cpu) {
         uint32_t count = a1;
         if (offset + count <= bus->flash_size) {
             memset(&bus->flash[offset], 0xFF, count);
+            /* The instruction cache holds decoded words fetched from flash, so
+             * it only stays valid while flash is immutable. Erasing without
+             * invalidating left the hart executing the erased instructions, so
+             * an update-to-flash wrote the bytes and then jumped into the old
+             * code. */
+            if (cpu->icache)
+                rv_icache_invalidate_range((rv_icache_t *)cpu->icache,
+                                           RP2350_FLASH_BASE + offset, count);
             if (cpu->debug_enabled)
                 fprintf(stderr, "[RV-ROM] flash_range_erase(0x%X, %u)\n", offset, count);
         }
@@ -394,6 +403,10 @@ int rv_rom_intercept(rv_cpu_state_t *cpu) {
             for (uint32_t i = 0; i < count; i++) {
                 bus->flash[offset + i] = rv_mem_read8(bus, a1 + i);
             }
+            /* See flash_range_erase: stale decoded instructions must go. */
+            if (cpu->icache)
+                rv_icache_invalidate_range((rv_icache_t *)cpu->icache,
+                                           RP2350_FLASH_BASE + offset, count);
             if (cpu->debug_enabled)
                 fprintf(stderr, "[RV-ROM] flash_range_program(0x%X, %u bytes)\n", offset, count);
         }

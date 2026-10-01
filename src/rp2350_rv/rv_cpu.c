@@ -100,17 +100,30 @@ void rv_cpu_init(rv_cpu_state_t *cpu, int hart_id) {
     cpu->hart_id = hart_id;
     cpu->is_halted = 1;  /* Start halted until reset */
 
-    /* Initialize misa: RV32IMAC */
+    /* misa (datasheet 3.8.6.2): MXL=1 (32-bit) plus I, M, A, C, X.
+     *
+     * X is set because this core implements the non-standard extensions --
+     * Zba, Zbb, Zbs, Zcb, Zcmp, Zbkb -- and X is precisely the bit that declares
+     * them. It was clear, so firmware checking misa before using an extension
+     * could not tell what the core supported.
+     *
+     * U is deliberately NOT set: the hart has no user mode, so advertising it
+     * would invite firmware into privilege transitions the core cannot
+     * complete. It is the one remaining gap versus the datasheet's 0x40901105
+     * and is tracked as such. */
     cpu->csr[CSR_MISA] = (1u << 30)   /* MXL=1 (32-bit) */
                         | (1u << 0)    /* A - Atomics */
                         | (1u << 2)    /* C - Compressed */
                         | (1u << 8)    /* I - Base integer */
-                        | (1u << 12);  /* M - Multiply/divide */
+                        | (1u << 12)   /* M - Multiply/divide */
+                        | (1u << 23);  /* X - non-standard extensions present */
 
-    /* Hazard3 vendor/arch/impl IDs */
-    cpu->csr[CSR_MVENDORID] = 0;       /* Non-commercial */
-    cpu->csr[CSR_MARCHID]   = 0;
-    cpu->csr[CSR_MIMPID]    = 0;
+    /* Hazard3 identification (datasheet 3.8.6.3). These were all zero, which
+     * is indistinguishable from "unimplemented", so firmware could not tell a
+     * Hazard3 from a core it was not running on. */
+    cpu->csr[CSR_MVENDORID] = 0x00000493;
+    cpu->csr[CSR_MARCHID]   = 0x0000001B;
+    cpu->csr[CSR_MIMPID]    = 0x86FC4E3F;
     cpu->csr[CSR_MHARTID]   = (uint32_t)hart_id;
 
     /* mstatus: machine mode, interrupts disabled */
@@ -328,6 +341,12 @@ void rv_trap_return(rv_cpu_state_t *cpu) {
     else
         mstatus &= ~MSTATUS_MIE;
     mstatus |= MSTATUS_MPIE;   /* Set MPIE */
+
+    /* An MRET sets MPP to the least-privileged mode supported (spec 3.1.1.7.4).
+     * Leaving MPP as M meant a trap handler returning with MRET looked like it
+     * was still in M-mode, so firmware inspecting mstatus to tell whether it
+     * had dropped privilege got the wrong answer. */
+    mstatus &= ~MSTATUS_MPP;
     cpu->csr[CSR_MSTATUS] = mstatus;
 
     cpu->in_trap = 0;
@@ -1260,7 +1279,14 @@ decode:
             case 1: /* CSRRW */
                 new_val = cpu->x[rs1];
                 rv_csr_write(cpu, csr_addr, new_val);
-                rv_write_rd(cpu, rd, old_val);
+                /* rd == x0 means the caller does not want the old value, and
+                 * the spec forbids reading the CSR in that case. That matters
+                 * for side-effecting CSRs: reading MEINEXT clears the force
+                 * bits it samples, so a `csrw MEIFA, a0` that also happened to
+                 * read MEINEXT would silently disarm the interrupt it had just
+                 * forced. */
+                if (rd != 0)
+                    cpu->x[rd] = old_val;
                 break;
             case 2: /* CSRRS */
                 if (rs1 != 0)
