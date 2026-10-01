@@ -146,32 +146,50 @@ uint32_t rv_csr_read(rv_cpu_state_t *cpu, uint16_t addr) {
     case CSR_MINSTRETH: return (uint32_t)(cpu->instret_count >> 32);
     case CSR_MHARTID:   return (uint32_t)cpu->hart_id;
 
-    /* Hazard3 external interrupt CSRs (read from CLINT state via bus) */
-    case CSR_MEIP0: {   /* Pending IRQs [31:0] — read-only, computed from hardware */
+    /* Hazard3 Xh3irq external-interrupt CSRs (datasheet Table 367).
+     *
+     * These are array CSRs, not per-IRQ registers: the SDK writes
+     * "csrs 0xbe0, index | (mask << 16)" so bits [4:0] select a 32-bit window
+     * and bits [20:16] the mask within it. The old per-IRQ CSR definitions made
+     * 0xBE0 mean "enable bits 0-31", so that idiom latched the index as enable
+     * bits and the interrupt could never be enabled correctly. */
+    /* Hazard3 Xh3irq external-interrupt CSRs (datasheet 3.8.6.1.1, Table 367).
+     *
+     * These are array CSRs, not per-IRQ registers: the window index is in the
+     * LSBs of the value and the window is 16 bits wide, so
+     * "li a0, 0xa5a50002; csrw MEIEA, a0" writes 0xa5a5 to bits 47:32. The old
+     * per-IRQ definitions made 0xBE0 mean "enable bits 0-31", so that idiom
+     * latched the index as if it were enable data and the SDK's RISC-V
+     * hardware_irq could not enable, prioritise, dispatch or nest anything. */
+    case CSR_MEIEA:
+        return cpu->meiea_window;
+    case CSR_MEIFA:
+        return cpu->meifa_window;
+    case CSR_MEIPA:
         if (cpu->bus) {
             rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
-            return (uint32_t)(bus->clint.ext_pending & cpu->csr[CSR_MEIE0]);
+            uint32_t shift = (cpu->meiea_window & 0xF) * 16;
+            return (uint32_t)((bus->clint.ext_pending >> shift) & 0xFFFF);
         }
         return 0;
-    }
-    case CSR_MEIP1: {   /* Pending IRQs [51:32] — read-only */
+    case CSR_MEIPRA:
         if (cpu->bus) {
             rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
-            return (uint32_t)((bus->clint.ext_pending >> 32) & cpu->csr[CSR_MEIE1]);
+            return bus->clint.ext_priority[cpu->meiea_window & 0xF];
         }
         return 0;
-    }
-    case CSR_MLEI: {    /* Lowest enabled pending IRQ number — read-only */
+    case CSR_MEINEXT: {
         if (cpu->bus) {
             rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
             uint64_t enabled_pending = bus->clint.ext_pending &
-                ((uint64_t)cpu->csr[CSR_MEIE1] << 32 | cpu->csr[CSR_MEIE0]);
-            if (enabled_pending == 0) return 0xFFFFFFFF;  /* No pending */
-            /* Find lowest set bit */
-            for (uint32_t i = 0; i < 52; i++) {
-                if (enabled_pending & (1ULL << i)) return i;
+                                       bus->clint.ext_enable[cpu->hart_id & 1];
+            uint32_t next = 0xFFFFFFFF;
+            for (uint32_t i = 0; i < RV_NUM_EXT_IRQS; i++) {
+                if (enabled_pending & (1ULL << i)) { next = i; break; }
             }
-            return 0xFFFFFFFF;
+            /* Force bits clear automatically once sampled through MEINEXT. */
+            bus->clint.ext_forced &= ~enabled_pending;
+            return next;
         }
         return 0xFFFFFFFF;
     }
@@ -199,30 +217,40 @@ void rv_csr_write(rv_cpu_state_t *cpu, uint16_t addr, uint32_t val) {
     case CSR_MARCHID:   break;  /* Read-only */
     case CSR_MIMPID:    break;  /* Read-only */
 
-    /* Hazard3 external interrupt enable */
-    case CSR_MEIE0:
-        cpu->csr[CSR_MEIE0] = val;
-        /* Update CLINT ext_enable for this hart */
+    /* Xh3irq external-interrupt arrays. The value is a window descriptor:
+     * bits [4:0] select one of two 32-bit windows and bits [20:16] a mask
+     * within it (datasheet 3.8.6.1.1, "csrs 0xbe0, index | (mask << 16)").
+     * Reading it back must return the whole value, and MEIEA writes must apply
+     * the mask to the selected window of this hart's enable vector. */
+    case CSR_MEIEA: {
+        cpu->meiea_window = val;
         if (cpu->bus) {
             rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
-            int h = cpu->hart_id < 2 ? cpu->hart_id : 0;
-            bus->clint.ext_enable[h] = (bus->clint.ext_enable[h] & 0xFFFFFFFF00000000ULL) | val;
+            int h = (cpu->hart_id < 2) ? cpu->hart_id : 0;
+            uint32_t shift = (val & 0xF) * 16;
+            uint64_t m = (uint64_t)((val >> 16) & 0xFFFF) << shift;
+            bus->clint.ext_enable[h] = (bus->clint.ext_enable[h] & ~m) | m;
         }
         break;
-    case CSR_MEIE1:
-        cpu->csr[CSR_MEIE1] = val & 0x000FFFFF;  /* Only 20 bits for IRQs 32-51 */
+    }
+    case CSR_MEIFA:
+        cpu->meifa_window = val;
         if (cpu->bus) {
             rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
-            int h = cpu->hart_id < 2 ? cpu->hart_id : 0;
-            bus->clint.ext_enable[h] = (bus->clint.ext_enable[h] & 0xFFFFFFFF) |
-                                       ((uint64_t)(val & 0x000FFFFF) << 32);
+            uint32_t shift = (val & 0xF) * 16;
+            uint64_t m = (uint64_t)((val >> 16) & 0xFFFF) << shift;
+            bus->clint.ext_pending |= m;
+            bus->clint.ext_forced  |= m;
         }
         break;
-
-    /* Read-only Hazard3 CSRs */
-    case CSR_MEIP0: break;
-    case CSR_MEIP1: break;
-    case CSR_MLEI:  break;
+    case CSR_MEIPRA:
+        if (cpu->bus) {
+            rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
+            bus->clint.ext_priority[val & 0xF] = (uint16_t)((val >> 16) & 0xFFFF);
+        }
+        break;
+    case CSR_MEINEXT: break;   /* UPDATE bit: force bits clear on sample */
+    case CSR_MEIPA:  break;   /* read-only */
 
     /* Stack protection */
     case CSR_MSTACK_BASE:

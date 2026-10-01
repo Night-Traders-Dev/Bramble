@@ -73,8 +73,9 @@ typedef struct {
 
     /* External interrupt pending/enable (52 IRQ lines) */
     uint64_t ext_pending;   /* One bit per IRQ source */
+    uint64_t ext_forced;   /* Bits forced through MEIFA */
     uint64_t ext_enable[2]; /* Per-hart enable mask */
-    uint64_t ext_priority[RV_NUM_EXT_IRQS]; /* 0 = highest */
+    uint16_t ext_priority[16];   /* Priority window; 0 = highest */
 
     /* Timer tick rate (microseconds per mtime increment) */
     uint32_t tick_us;       /* Default: 1 (1 mtime tick per us) */

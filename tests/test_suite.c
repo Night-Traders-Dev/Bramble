@@ -5167,15 +5167,42 @@ TEST(test_rv_hazard3_csrs) {
     rv_cpu_init(&rv, 0);
     rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
     rv.bus = &bus;
-    /* Write meie0 — should update CLINT ext_enable */
-    rv_csr_write(&rv, CSR_MEIE0, 0x000000FF);
-    ASSERT_EQ(0x000000FF, rv.csr[CSR_MEIE0], "MEIE0 should be written");
-    ASSERT_EQ(0x000000FF, (uint32_t)(bus.clint.ext_enable[0] & 0xFFFFFFFF), "CLINT ext_enable should reflect MEIE0");
-    /* Read mlei with no pending — should return 0xFFFFFFFF */
-    ASSERT_EQ(0xFFFFFFFF, rv_csr_read(&rv, CSR_MLEI), "MLEI should be 0xFFFFFFFF with no pending");
-    /* Set ext pending and check mlei */
+    /* Xh3irq uses *array* CSRs: the window index is in the LSBs of the value
+     * and the window is 16 bits wide, so 0xa5a50002 writes 0xa5a5 to bits
+     * 47:32 (datasheet 3.8.6.1.1). Enable IRQ 3 and IRQ 9. */
+    rv_csr_write(&rv, CSR_MEIEA, (0x0008u << 16) | 0u);   /* win 0: bits 15:0 */
+    rv_csr_write(&rv, CSR_MEIEA, (0x0200u << 16) | 2u);   /* win 2: bits 47:32 */
+    /* window 0 (bits 15:0) holds 0x0008, window 2 (bits 47:32) holds 0x0200 */
+    ASSERT_EQ(0x0008, (uint32_t)(bus.clint.ext_enable[0] & 0xFFFF),
+              "MEIEA must write the indexed 16-bit window (low)");
+    ASSERT_EQ(0x0200, (uint32_t)((bus.clint.ext_enable[0] >> 32) & 0xFFFF),
+              "MEIEA must write the indexed 16-bit window (high)");
+
+    /* MEINEXT returns the lowest enabled+pending external IRQ. */
+    ASSERT_EQ(0xFFFFFFFF, rv_csr_read(&rv, CSR_MEINEXT), "MEINEXT with nothing pending");
     rv_clint_set_ext_pending(&bus.clint, 3);
-    ASSERT_EQ(3, rv_csr_read(&rv, CSR_MLEI), "MLEI should be 3 (lowest pending enabled)");
+    rv_clint_set_ext_pending(&bus.clint, 11);
+    ASSERT_EQ(3, rv_csr_read(&rv, CSR_MEINEXT), "MEINEXT should be the enabled IRQ 3");
+
+    /* MEIPA exposes pending for whichever window MEIEA last selected. */
+    rv_csr_write(&rv, CSR_MEIEA, 0);                       /* select window 0 */
+    ASSERT_EQ((1u << 3) | (1u << 11), rv_csr_read(&rv, CSR_MEIPA),
+              "MEIPA must show the pending bits in the selected window");
+
+    /* MEIFA forces bits into the pending array. */
+    rv_clint_clear_ext_pending(&bus.clint, 3);
+    rv_csr_write(&rv, CSR_MEIFA, (0x0001u << 16) | 3u);   /* force bit 48 */
+    rv_csr_write(&rv, CSR_MEIEA, 0);                       /* window 0: bits 47:32 */
+    ASSERT_EQ(1u << 11, rv_csr_read(&rv, CSR_MEIPA),
+              "bit 3 was cleared and the forced bit 48 is not in window 0");
+    rv_csr_write(&rv, CSR_MEIEA, (0u << 16) | 3u);        /* select window 3 */
+    ASSERT_EQ(1, rv_csr_read(&rv, CSR_MEIPA), "MEIFA must force a bit into MEIPA");
+
+    /* MEIPRA is writable and readable through its window. */
+    rv_csr_write(&rv, CSR_MEIPRA, (0x1234u << 16) | 2u);
+    ASSERT_EQ(0x1234, bus.clint.ext_priority[2], "MEIPRA write");
+    rv_csr_write(&rv, CSR_MEIEA, 2u);
+    ASSERT_EQ(0x1234, rv_csr_read(&rv, CSR_MEIPRA), "MEIPRA read via the window index");
     PASS();
 }
 

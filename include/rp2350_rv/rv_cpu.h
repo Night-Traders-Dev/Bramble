@@ -41,16 +41,21 @@
 #define CSR_MIMPID      0xF13
 #define CSR_MHARTID     0xF14
 
-/* Hazard3-specific CSRs for external interrupt routing */
-#define CSR_MEIE0       0xBE0  /* External IRQ enable bits [31:0] */
-#define CSR_MEIE1       0xBE1  /* External IRQ enable bits [51:32] */
-#define CSR_MEIP0       0xFE0  /* External IRQ pending bits [31:0] (read-only) */
-#define CSR_MEIP1       0xFE1  /* External IRQ pending bits [51:32] (read-only) */
-#define CSR_MLEI        0xFE2  /* Lowest enabled pending IRQ number (read-only) */
-#define CSR_MEIEA       0xBE2  /* External IRQ array enable access */
-#define CSR_MEIPA       0xFE4  /* External IRQ array pending access */
-#define CSR_MEIFA       0xBE4  /* External IRQ array force */
-#define CSR_MEICONTEXT  0xBE6  /* External IRQ context save/restore */
+/* Hazard3 Xh3irq external-interrupt CSRs (datasheet Table 367).
+ *
+ * These are *array* CSRs reached with the window idiom
+ * "csrs 0xbe0, index | (mask << 16)" -- there is no per-IRQ CSR. The previous
+ * definitions invented addresses: 0xBE1 is MEIPA (read-only pending), 0xBE2 is
+ * MEIFA (force) not MEIEA, 0xBE4 is MEINEXT not MEIFA, and 0xFE0/0xFE1/0xFE4
+ * are not CSRs at all (accessing an unimplemented CSR must raise an illegal
+ * instruction, mcause 2). As a result the SDK's RISC-V hardware_irq could not
+ * enable, prioritise, dispatch or nest any interrupt. */
+#define CSR_MEIEA       0xBE0  /* external interrupt enable array (w) */
+#define CSR_MEIPA       0xBE1  /* external interrupt pending array (r) */
+#define CSR_MEIFA       0xBE2  /* external interrupt force array (w) */
+#define CSR_MEIPRA      0xBE3  /* external interrupt priority array (r/w) */
+#define CSR_MEINEXT     0xBE4  /* get next external interrupt */
+#define CSR_MEICONTEXT  0xBE5  /* external interrupt context save/restore */
 
 /* Hazard3 stack protection CSRs */
 #define CSR_MSTACK_BASE  0xBC0  /* Stack base (lower bound) */
@@ -126,6 +131,11 @@ typedef struct {
 
     /* CSRs (indexed by 12-bit address) */
     uint32_t csr[RV_CSR_COUNT];
+    /* Raw Xh3irq window value for MEIEA. The array CSRs are accessed with
+     * "csrs 0xbe0, index | (mask << 16)"; the index/mask split is done at
+     * the access site rather than latching the whole word as enable bits. */
+    uint32_t meiea_window;
+    uint32_t meifa_window;
 
     /* Performance counters (64-bit) */
     uint64_t cycle_count;
