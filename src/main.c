@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <termios.h>
 #include <errno.h>
+#include <signal.h>
 #include "devtools.h"
 #include "rp2350_rv/rv_cpu.h"
 #include "rp2350_rv/rv_clint.h"
@@ -330,6 +331,14 @@ static int cli_next_arg_is_value(int argc, char **argv, int i) {
 
 
 int main(int argc, char **argv) {
+    /* A host peer going away (nc, telnet, a GDB client, a wire/vnet partner) is
+     * routine, not fatal. Without this, the first write() to a socket the peer
+     * has reset delivers SIGPIPE and kills the emulator outright -- losing all
+     * emulator state with no diagnostic. With it ignored, every socket write
+     * site just sees EPIPE and takes its existing error path. Verified: the
+     * bare-write path raises SIGPIPE on the second write after the peer's RST. */
+    signal(SIGPIPE, SIG_IGN);
+
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <firmware.uf2> [options]\n", argv[0]);
         fprintf(stderr, "\nArchitecture:\n");

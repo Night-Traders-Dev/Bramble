@@ -273,8 +273,8 @@ static void emmc_process_command(emmc_t *em) {
 
     case CMD17: {
         /* eMMC always uses sector addressing */
-        uint32_t addr = arg * EMMC_BLOCK_SIZE;
-        if (addr + EMMC_BLOCK_SIZE > em->size) {
+        uint64_t addr = (uint64_t)arg * EMMC_BLOCK_SIZE;
+        if (addr + EMMC_BLOCK_SIZE > (uint64_t)em->size) {
             emmc_queue_r1(em, R1_ADDR_ERR);
         } else {
             emmc_queue_r1(em, r1);
@@ -284,8 +284,8 @@ static void emmc_process_command(emmc_t *em) {
     }
 
     case CMD18: {
-        uint32_t addr = arg * EMMC_BLOCK_SIZE;
-        if (addr + EMMC_BLOCK_SIZE > em->size) {
+        uint64_t addr = (uint64_t)arg * EMMC_BLOCK_SIZE;
+        if (addr + EMMC_BLOCK_SIZE > (uint64_t)em->size) {
             emmc_queue_r1(em, R1_ADDR_ERR);
         } else {
             em->state = EMMC_STATE_SEND_MULTI;
@@ -297,8 +297,8 @@ static void emmc_process_command(emmc_t *em) {
     }
 
     case CMD24: {
-        uint32_t addr = arg * EMMC_BLOCK_SIZE;
-        if (addr + EMMC_BLOCK_SIZE > em->size) {
+        uint64_t addr = (uint64_t)arg * EMMC_BLOCK_SIZE;
+        if (addr + EMMC_BLOCK_SIZE > (uint64_t)em->size) {
             emmc_queue_r1(em, R1_ADDR_ERR);
         } else {
             em->state = EMMC_STATE_RECEIVING;
@@ -311,8 +311,8 @@ static void emmc_process_command(emmc_t *em) {
     }
 
     case CMD25: {
-        uint32_t addr = arg * EMMC_BLOCK_SIZE;
-        if (addr + EMMC_BLOCK_SIZE > em->size) {
+        uint64_t addr = (uint64_t)arg * EMMC_BLOCK_SIZE;
+        if (addr + EMMC_BLOCK_SIZE > (uint64_t)em->size) {
             emmc_queue_r1(em, R1_ADDR_ERR);
         } else {
             em->state = EMMC_STATE_RECV_MULTI;
@@ -355,7 +355,7 @@ uint8_t emmc_spi_xfer(void *ctx, uint8_t mosi) {
         if (em->resp_pos >= em->resp_len) {
             if (em->state == EMMC_STATE_SEND_MULTI) {
                 em->multi_addr += EMMC_BLOCK_SIZE;
-                if (em->multi_addr + EMMC_BLOCK_SIZE <= em->size) {
+                if ((uint64_t)em->multi_addr + EMMC_BLOCK_SIZE <= (uint64_t)em->size) {
                     em->resp_len = 0;
                     em->resp_pos = 0;
                     emmc_queue_data(em, &em->data[em->multi_addr], EMMC_BLOCK_SIZE);
@@ -390,7 +390,7 @@ uint8_t emmc_spi_xfer(void *ctx, uint8_t mosi) {
                 }
             }
 
-            if (valid && em->wr_addr + EMMC_BLOCK_SIZE <= em->size) {
+            if (valid && (uint64_t)em->wr_addr + EMMC_BLOCK_SIZE <= (uint64_t)em->size) {
                 memcpy(&em->data[em->wr_addr], &em->wr_buf[1], EMMC_BLOCK_SIZE);
                 em->dirty = 1;
 

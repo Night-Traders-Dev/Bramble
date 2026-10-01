@@ -48,7 +48,8 @@ int flash_persist_open(void) {
 
 void flash_persist_sync(uint32_t offset, uint32_t len) {
     if (!persist_fp) return;
-    if (offset + len > FLASH_SIZE) return;
+    /* offset+len wraps if both are guest-controlled 32-bit values. */
+    if (offset > FLASH_SIZE || len > FLASH_SIZE - offset) return;
 
     fseek(persist_fp, (long)offset, SEEK_SET);
     fwrite(&cpu.flash[offset], 1, len, persist_fp);

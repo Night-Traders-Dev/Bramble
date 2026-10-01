@@ -279,8 +279,8 @@ static void process_command(sdcard_t *sd) {
 
     case CMD17: {
         /* READ_SINGLE_BLOCK */
-        uint32_t addr = sd->sdhc ? (arg * SD_BLOCK_SIZE) : arg;
-        if (addr + SD_BLOCK_SIZE > sd->size) {
+        uint64_t addr = sd->sdhc ? (uint64_t)arg * SD_BLOCK_SIZE : arg;
+        if (addr + SD_BLOCK_SIZE > (uint64_t)sd->size) {
             queue_r1(sd, R1_ADDR_ERR);
         } else {
             queue_r1(sd, r1);
@@ -291,8 +291,8 @@ static void process_command(sdcard_t *sd) {
 
     case CMD18: {
         /* READ_MULTIPLE_BLOCK */
-        uint32_t addr = sd->sdhc ? (arg * SD_BLOCK_SIZE) : arg;
-        if (addr + SD_BLOCK_SIZE > sd->size) {
+        uint64_t addr = sd->sdhc ? (uint64_t)arg * SD_BLOCK_SIZE : arg;
+        if (addr + SD_BLOCK_SIZE > (uint64_t)sd->size) {
             queue_r1(sd, R1_ADDR_ERR);
         } else {
             sd->state = SD_STATE_SEND_MULTI;
@@ -306,8 +306,8 @@ static void process_command(sdcard_t *sd) {
 
     case CMD24: {
         /* WRITE_BLOCK */
-        uint32_t addr = sd->sdhc ? (arg * SD_BLOCK_SIZE) : arg;
-        if (addr + SD_BLOCK_SIZE > sd->size) {
+        uint64_t addr = sd->sdhc ? (uint64_t)arg * SD_BLOCK_SIZE : arg;
+        if (addr + SD_BLOCK_SIZE > (uint64_t)sd->size) {
             queue_r1(sd, R1_ADDR_ERR);
         } else {
             sd->state = SD_STATE_RECEIVING;
@@ -321,8 +321,8 @@ static void process_command(sdcard_t *sd) {
 
     case CMD25: {
         /* WRITE_MULTIPLE_BLOCK */
-        uint32_t addr = sd->sdhc ? (arg * SD_BLOCK_SIZE) : arg;
-        if (addr + SD_BLOCK_SIZE > sd->size) {
+        uint64_t addr = sd->sdhc ? (uint64_t)arg * SD_BLOCK_SIZE : arg;
+        if (addr + SD_BLOCK_SIZE > (uint64_t)sd->size) {
             queue_r1(sd, R1_ADDR_ERR);
         } else {
             sd->state = SD_STATE_RECV_MULTI;
@@ -374,7 +374,7 @@ uint8_t sdcard_spi_xfer(void *ctx, uint8_t mosi) {
             /* Multi-block read: queue next block */
             if (sd->state == SD_STATE_SEND_MULTI) {
                 sd->multi_addr += SD_BLOCK_SIZE;
-                if (sd->multi_addr + SD_BLOCK_SIZE <= sd->size) {
+                if ((uint64_t)sd->multi_addr + SD_BLOCK_SIZE <= (uint64_t)sd->size) {
                     sd->resp_len = 0;
                     sd->resp_pos = 0;
                     queue_data_block(sd, &sd->data[sd->multi_addr], SD_BLOCK_SIZE);
@@ -411,7 +411,7 @@ uint8_t sdcard_spi_xfer(void *ctx, uint8_t mosi) {
                 }
             }
 
-            if (valid && sd->wr_addr + SD_BLOCK_SIZE <= sd->size) {
+            if (valid && (uint64_t)sd->wr_addr + SD_BLOCK_SIZE <= (uint64_t)sd->size) {
                 /* Write data to card (skip token byte, ignore CRC) */
                 memcpy(&sd->data[sd->wr_addr], &sd->wr_buf[1], SD_BLOCK_SIZE);
                 sd->dirty = 1;

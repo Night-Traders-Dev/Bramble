@@ -3802,6 +3802,70 @@ TEST(test_flash_persist_sync_no_crash_without_path) {
     PASS();
 }
 
+/* Regression: the flash ROM stubs took a guest-supplied offset and length and
+ * tested `offs + count <= FLASH_SIZE`. Both are 32-bit, so the sum wrapped and
+ * the guard passed for wildly out-of-range requests, giving guest firmware a
+ * host out-of-bounds write at an attacker-chosen offset. */
+TEST(test_rom_flash_erase_rejects_wrapping_offset) {
+    reset_cpu();
+    /* reset_cpu() leaves flash contents alone, so establish the pattern over
+     * the whole window the assertions below inspect. */
+    memset(&cpu.flash[0], 0x5A, 0x2000);
+
+    struct { uint32_t offs, count; const char *what; } cases[] = {
+        { 0xFFFF0000u, 0x00020000u, "offs+count wraps below FLASH_SIZE" },
+        { 0xFFFFFE00u, 0x00000200u, "count straddles the 32-bit boundary" },
+        { 0xFFFFF000u, 0x00002000u, "offs just below the top of the array" },
+        { 0x00200000u, 0x00000001u, "offs exactly at FLASH_SIZE" },
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        cpu.r[0] = cases[i].offs;
+        cpu.r[1] = cases[i].count;
+        cpu.r[15] = ROM_FLASH_RANGE_ERASE_ADDR;
+        rom_intercept(ROM_FLASH_RANGE_ERASE_ADDR);
+    }
+    /* Nothing above the first sector may have been touched. */
+    int untouched = 1;
+    for (uint32_t i = 0x200; i < 0x2000; i++) {
+        if (cpu.flash[i] != 0x5A) { untouched = 0; break; }
+    }
+    ASSERT_TRUE(untouched, "erase must not touch memory past the requested range");
+
+    /* A legitimate in-range request must still work. */
+    cpu.r[0] = 0x00001000u;
+    cpu.r[1] = 0x00000200u;
+    rom_intercept(ROM_FLASH_RANGE_ERASE_ADDR);
+    ASSERT_EQ(0xFF, cpu.flash[0x1000], "in-range erase should set 0xFF");
+    ASSERT_EQ(0xFF, cpu.flash[0x11FF], "in-range erase should set the whole range");
+    ASSERT_EQ(0x5A, cpu.flash[0x1200], "in-range erase must not overrun its length");
+    PASS();
+}
+
+TEST(test_rom_flash_program_rejects_wrapping_offset) {
+    reset_cpu();
+    memset(&cpu.flash[0], 0x5A, 512);
+
+    cpu.r[0] = 0xFFFF0000u;   /* offs */
+    cpu.r[1] = 0x20000000u;   /* src */
+    cpu.r[2] = 0x00020000u;   /* count: offs + count wraps to 0 */
+    rom_intercept(ROM_FLASH_RANGE_PROGRAM_ADDR);
+
+    int untouched = 1;
+    for (uint32_t i = 0; i < 512; i++) {
+        if (cpu.flash[i] != 0x5A) { untouched = 0; break; }
+    }
+    ASSERT_TRUE(untouched, "program must not write when the range wraps");
+
+    /* In-range program still copies. */
+    cpu.r[0] = 0x00002000u;      /* dst offset */
+    cpu.r[1] = FLASH_BASE + 0x100u;  /* src: guest address inside flash */
+    cpu.r[2] = 0x00000010u;      /* count */
+    memset(&cpu.flash[0x100], 0xC3, 16);
+    rom_intercept(ROM_FLASH_RANGE_PROGRAM_ADDR);
+    ASSERT_EQ(0xC3, cpu.flash[0x2000], "in-range program should copy src to dst");
+    PASS();
+}
+
 TEST(test_flash_persist_set_and_close) {
     flash_persist_set_path("/tmp/bramble_test_flash.bin");
     flash_persist_close();
@@ -5377,6 +5441,8 @@ int main(void) {
 
     BEGIN_CATEGORY("Flash Persistence");
     RUN_TEST(test_flash_persist_sync_no_crash_without_path);
+    RUN_TEST(test_rom_flash_erase_rejects_wrapping_offset);
+    RUN_TEST(test_rom_flash_program_rejects_wrapping_offset);
     RUN_TEST(test_flash_persist_set_and_close);
     END_CATEGORY("Flash Persistence");
 

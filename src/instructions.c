@@ -334,8 +334,7 @@ void instr_b_uncond(uint16_t instr) {
     if (offset & 0x0400) {
         offset |= 0xF800;
     }
-    int32_t signed_offset = (int32_t)offset;
-    signed_offset <<= 1;
+    int32_t signed_offset = (int32_t)((uint32_t)offset << 1);
     cpu.r[15] += 4 + signed_offset;
     pc_updated = 1;
 }
@@ -609,7 +608,7 @@ void instr_shift_logical_left(uint16_t instr) {
     if (imm == 0) {
         cpu.r[reg_dst] = cpu.r[reg_src];
     } else {
-        if (cpu.r[reg_src] & (1 << (32 - imm))) {
+        if (cpu.r[reg_src] & (1u << (32 - imm))) {
             cpu.xpsr |= FLAG_C;
         } else {
             cpu.xpsr &= ~FLAG_C;
@@ -671,7 +670,7 @@ void instr_lsls_reg(uint16_t instr) {
     if (shift == 0) {
         /* No change */
     } else if (shift < 32) {
-        if (cpu.r[rd] & (1 << (32 - shift))) cpu.xpsr |= FLAG_C;
+        if (cpu.r[rd] & (1u << (32 - shift))) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] <<= shift;
         update_nz_flags_fast(cpu.r[rd]);

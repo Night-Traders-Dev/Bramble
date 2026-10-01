@@ -440,7 +440,9 @@ static int rom_intercept_flash(uint32_t pc) {
     if (pc == ROM_FLASH_RANGE_ERASE_ADDR) {
         uint32_t offs = cpu.r[0];
         uint32_t count = cpu.r[1];
-        if (offs + count <= FLASH_SIZE) {
+        /* offs and count are guest-controlled 32-bit values, so offs + count
+         * wraps and would defeat a "<= FLASH_SIZE" test. */
+        if (offs <= FLASH_SIZE && count <= FLASH_SIZE - offs) {
             pthread_mutex_lock(&fuse_flash_mutex);
             memset(&cpu.flash[offs], 0xFF, count);
             flash_persist_sync(offs, count);
@@ -453,7 +455,8 @@ static int rom_intercept_flash(uint32_t pc) {
         uint32_t offs = cpu.r[0];
         uint32_t src = cpu.r[1];
         uint32_t count = cpu.r[2];
-        if (offs + count <= FLASH_SIZE) {
+        /* Same wrap hazard as the erase path above. */
+        if (offs <= FLASH_SIZE && count <= FLASH_SIZE - offs) {
             pthread_mutex_lock(&fuse_flash_mutex);
             for (uint32_t i = 0; i < count; i++) {
                 cpu.flash[offs + i] = mem_read8(src + i);
@@ -509,25 +512,30 @@ int rom_intercept(uint32_t pc) {
         uint32_t flags = cpu.r[2];
         (void)out_words;
         uint32_t count = 0;
+        /* One word for the supported-flags mask, then the words each supported
+         * flag contributes. NONCE (0x0020) is not supported per the datasheet
+         * and is deliberately absent, so the total is 15 words. */
         uint32_t buf[16];
         buf[count++] = flags; /* first word = included flags mask */
-        buf[count++] = 0x00000000; /* package */
-        buf[count++] = 0x23500001; /* device_id_lo */
-        buf[count++] = 0x00000001; /* device_id_hi */
-        buf[count++] = 0x00000B08; /* critical: ARM arch, debug enabled */
-        buf[count++] = 0x01000200; /* cpu_info: ARM, rev 2 */
-        buf[count++] = 0x0000A204; /* flash devinfo: 4MB */
-        buf[count++] = 0x2350C0DE; /* boot_random[0] */
-        buf[count++] = 0x12345678; /* boot_random[1] */
-        buf[count++] = 0x89ABCDEF; /* boot_random[2] */
-        buf[count++] = 0x0BADF00D; /* boot_random[3] */
-        buf[count++] = 0x10203040; /* nonce[0] */
-        buf[count++] = 0x50607080; /* nonce[1] */
-        buf[count++] = 0x00000000; /* boot_info: normal boot, no partition */
-        buf[count++] = 0x00000000;
-        buf[count++] = 0x00000000;
-        buf[count++] = 0x00000000;
-        /* Cap writes to caller's buffer size to avoid stack corruption */
+        buf[count++] = 0x00000000; /* CHIP_INFO word 0: package sel */
+        buf[count++] = 0x23500001; /* CHIP_INFO word 1: device_id_lo */
+        buf[count++] = 0x00000001; /* CHIP_INFO word 2: device_id_hi */
+        buf[count++] = 0x00000B08; /* CRITICAL: OTP CRITICAL register */
+        buf[count++] = 0x00000000; /* CPU_INFO: 0 = Arm */
+        buf[count++] = 0x0000A204; /* FLASH_DEV_INFO */
+        buf[count++] = 0x89ABCDEF; /* BOOT_RANDOM[0] */
+        buf[count++] = 0x12345678; /* BOOT_RANDOM[1] */
+        buf[count++] = 0x0BADF00D; /* BOOT_RANDOM[2] */
+        buf[count++] = 0x2350C0DE; /* BOOT_RANDOM[3] */
+        /* NONCE (0x0020) is not supported, so no words are emitted for it. */
+        buf[count++] = 0x00000000; /* BOOT_INFO word 0: tt pp bb dd */
+        buf[count++] = 0x00000000; /* BOOT_INFO word 1: boot diagnostic */
+        buf[count++] = 0x00000000; /* BOOT_INFO word 2: reboot param 0 */
+        buf[count++] = 0x00000000; /* BOOT_INFO word 3: reboot param 1 */
+        /* Cap writes to caller's buffer size. This must bound the buffer by
+         * construction as well as by out_words: storing all 15 words into
+         * buf[16] first and clamping afterwards wrote buf[16] out of bounds. */
+        if (count > sizeof(buf) / sizeof(buf[0])) count = sizeof(buf) / sizeof(buf[0]);
         if (count > out_words) count = out_words;
         for (uint32_t i = 0; i < count; i++) {
             mem_write32(out_addr + i * 4, buf[i]);

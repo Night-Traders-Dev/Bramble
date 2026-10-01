@@ -87,7 +87,11 @@ static inline int32_t rv_imm_i(uint32_t instr) {
 }
 
 static inline int32_t rv_imm_s(uint32_t instr) {
-    return (int32_t)(((instr >> 20) & 0xFE0) | ((instr >> 7) & 0x1F)) << 20 >> 20;
+    /* Assemble the 12-bit immediate, then sign-extend from bit 11. The shift
+     * pair must run in unsigned: a cast to int32_t before "<< 20" overflows
+     * signed int for any immediate >= 0x800, which is undefined behaviour. */
+    uint32_t v = ((instr >> 20) & 0xFE0) | ((instr >> 7) & 0x1F);
+    return (int32_t)(v << 20) >> 20;
 }
 
 static inline int32_t rv_imm_b(uint32_t instr) {

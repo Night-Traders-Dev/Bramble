@@ -100,8 +100,8 @@ static inline int nvic_irq_valid(uint32_t irq) {
 #define ICSR_ISRPREEMPT             (1 << 23)
 #define ICSR_PENDSVSET              (1 << 28)
 #define ICSR_PENDSVCLR              (1 << 29)
-#define ICSR_PENDSTSET              (1 << 30)
-#define ICSR_PENDSTCLR              (1 << 31)
+#define ICSR_PENDSTSET              (1u << 30)
+#define ICSR_PENDSTCLR              (1u << 31)
 
 /* SysTick State */
 typedef struct {

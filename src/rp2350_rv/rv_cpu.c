@@ -468,7 +468,7 @@ decode:
                     int32_t imm = (int32_t)(((ci >> 7) & 0x20) | ((ci >> 2) & 0x1F));
                     if (imm & 0x20) imm |= (int32_t)0xFFFFFFC0;
                     if (imm == 0) goto c_illegal;
-                    rv_write_rd(cpu, rd, (uint32_t)(imm << 12));
+                    rv_write_rd(cpu, rd, (uint32_t)((uint32_t)imm << 12));
                 }
                 break;
             }

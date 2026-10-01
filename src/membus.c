@@ -1444,7 +1444,7 @@ void mem_write16(uint32_t addr, uint16_t val) {
         uint32_t addr32 = addr & ~0x3;
         uint32_t current = nvic_read_register(addr32);
         uint8_t offset = addr & 0x3;
-        uint32_t mask = 0xFFFF << (offset * 8);
+        uint32_t mask = 0xFFFFu << (offset * 8);
         uint32_t new_val = (current & ~mask) | ((uint32_t)val << (offset * 8));
         nvic_write_register(addr32, new_val);
         return;
@@ -1499,7 +1499,7 @@ void mem_write8(uint32_t addr, uint8_t val) {
         uint32_t a32 = addr & ~0x3;
         uint32_t cur = usb_read32(a32);
         uint32_t bo = addr & 0x3;
-        uint32_t mask8 = 0xFF << (bo * 8);
+        uint32_t mask8 = 0xFFu << (bo * 8);
         uint32_t new_val = (cur & ~mask8) | ((uint32_t)val << (bo * 8));
         usb_write32(a32, new_val);
         return;
@@ -1510,7 +1510,7 @@ void mem_write8(uint32_t addr, uint8_t val) {
         uint32_t addr32 = addr & ~0x3;
         uint32_t current = nvic_read_register(addr32);
         uint8_t offset = addr & 0x3;
-        uint32_t mask = 0xFF << (offset * 8);
+        uint32_t mask = 0xFFu << (offset * 8);
         uint32_t new_val = (current & ~mask) | ((uint32_t)val << (offset * 8));
         nvic_write_register(addr32, new_val);
         return;

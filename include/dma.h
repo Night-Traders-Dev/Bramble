@@ -83,7 +83,7 @@
 #define DMA_CTRL_BUSY           (1 << 24)   /* read-only */
 #define DMA_CTRL_WRITE_ERROR    (1 << 29)   /* W1C */
 #define DMA_CTRL_READ_ERROR     (1 << 30)   /* W1C */
-#define DMA_CTRL_AHB_ERROR      (1 << 31)   /* read-only */
+#define DMA_CTRL_AHB_ERROR      (1u << 31)  /* read-only */
 
 /* RP2350 CTRL_TRIG differences (BUSY/BSWAP/CHAIN_TO/INCR_WRITE shifted) */
 #define DMA_CTRL_INCR_WRITE_RP2350     (1u << 6)

@@ -475,9 +475,10 @@ static void handle_write_register(const char *data) {
     gdb_send_packet("OK");
 }
 
-static void handle_read_memory(const char *data) {
+static void handle_read_memory(const char *data, size_t avail) {
     int len1, len2;
     uint32_t addr = hex_to_u32(data, &len1);
+    if (avail == 0 || (size_t)len1 + 1 >= avail) { gdb_send_packet("E01"); return; }
     uint32_t length = hex_to_u32(data + len1 + 1, &len2);
 
     if (length > 2048) length = 2048;
@@ -491,11 +492,22 @@ static void handle_read_memory(const char *data) {
     gdb_send_packet(resp);
 }
 
-static void handle_write_memory(const char *data) {
+static void handle_write_memory(const char *data, size_t avail) {
     int len1, len2;
     uint32_t addr = hex_to_u32(data, &len1);
+    if ((size_t)len1 + 1 >= avail) { gdb_send_packet("E01"); return; }
     uint32_t length = hex_to_u32(data + len1 + 1, &len2);
+    if ((size_t)len1 + 1 + (size_t)len2 + 1 >= avail) { gdb_send_packet("E01"); return; }
     const char *hex_data = data + len1 + 1 + len2 + 1;
+    size_t payload = avail - (size_t)(hex_data - data);
+
+    /* 'length' is peer-supplied and unbounded, but only `payload` bytes of hex
+     * actually exist in the packet buffer. Without this clamp the loop reads
+     * past the end of the caller's pkt[] array -- a host stack over-read whose
+     * contents are then written into emulated RAM and readable by the same
+     * peer. handle_read_memory() already clamped to 2048. */
+    if (length > payload / 2) length = (uint32_t)(payload / 2);
+    if (length > 2048) length = 2048;
 
     for (uint32_t i = 0; i < length; i++) {
         uint8_t byte = hex_byte(hex_data + i * 2);
@@ -744,7 +756,10 @@ int gdb_handle(void) {
 
     while (1) {
         char pkt[4096];
+        /* Handlers receive pkt+1 (skipping the packet-type char); the number of
+         * bytes actually present after that point is what bounds any payload. */
         int len = gdb_recv_packet(pkt, sizeof(pkt));
+        size_t pkt_avail = (len > 1) ? (size_t)(len - 1) : 0;
         if (len < 0) {
             fprintf(stderr, "[GDB] Client disconnected\n");
             gdb.active = 0;
@@ -786,11 +801,11 @@ int gdb_handle(void) {
             break;
 
         case 'm':
-            handle_read_memory(pkt + 1);
+            handle_read_memory(pkt + 1, pkt_avail);
             break;
 
         case 'M':
-            handle_write_memory(pkt + 1);
+            handle_write_memory(pkt + 1, pkt_avail);
             break;
 
         case 'c':

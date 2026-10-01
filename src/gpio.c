@@ -78,7 +78,7 @@ static void gpio_detect_events(uint32_t old_pins, uint32_t new_pins) {
         uint32_t edge_mask = 0;
         for (int bit = 0; bit < 8; bit++) {
             uint32_t shift = bit * 4;
-            edge_mask |= ((GPIO_INTR_EDGE_LOW | GPIO_INTR_EDGE_HIGH) << shift);
+            edge_mask |= ((uint32_t)(GPIO_INTR_EDGE_LOW | GPIO_INTR_EDGE_HIGH) << shift);
         }
         gpio_state.intr[reg] = (gpio_state.intr[reg] & edge_mask) | level_bits;
     }
@@ -87,6 +87,9 @@ static void gpio_detect_events(uint32_t old_pins, uint32_t new_pins) {
     uint32_t changed = old_pins ^ new_pins;
     if (changed) {
         for (int pin = 0; pin < NUM_GPIO_PINS; pin++) {
+            /* pins >= 32 are outside the 32-bit GPIO_IN/OUT words; shifting
+             * 1u by >= 32 is undefined, so skip them rather than wrap. */
+            if (pin >= 32) break;
             if (!(changed & (1u << pin))) continue;
             int reg = pin / 8;
             int bit = pin % 8;
