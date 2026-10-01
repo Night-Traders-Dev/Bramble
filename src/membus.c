@@ -245,16 +245,29 @@ static int pads_qspi_match(uint32_t addr) {
     return (base >= pbase && base < pbase + PADS_QSPI_BLOCK_SIZE);
 }
 
+/* GPIO bank match. The bases and window sizes are chip-dependent: RP2350 moves
+ * IO_BANK0 to 0x40028000 and PADS_BANK0 to 0x40038000, and those addresses hold
+ * unrelated peripherals on RP2040 (RESETS and PADS_QSPI respectively). Matching
+ * only the RP2040 addresses meant every GPIO and pad register access was
+ * unmapped on RP2350-ARM -- gpio_init() and gpio_set_function() silently did
+ * nothing. The Hazard3 path masked this because rv_translate_shared_addr()
+ * rewrites the bases first. */
 static int gpio_bus_match(uint32_t addr) {
-    return ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-            (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200) ||
-            (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS && addr < IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200) ||
-            (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200) ||
-            (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x80) ||
-            (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x80) ||
-            (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x80) ||
-            (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x80) ||
-            (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100));
+    uint32_t iob = gpio_io_bank0_base();
+    uint32_t io_span = membus_rp2350_mode ? GPIO_IO_BANK0_SPAN_RP2350
+                                          : GPIO_IO_BANK0_SPAN_RP2040;
+    uint32_t padb = gpio_pads_bank0_base();
+    uint32_t pad_size = ((uint32_t)gpio_num_user_pins() + 2) * 4;
+
+    static const uint32_t alias_regions[] = {
+        REG_ALIAS_RW_BITS, REG_ALIAS_XOR_BITS, REG_ALIAS_SET_BITS, REG_ALIAS_CLR_BITS
+    };
+    for (unsigned k = 0; k < 4; k++) {
+        uint32_t al = alias_regions[k];
+        if (addr >= iob + al && addr < iob + al + io_span) return 1;
+        if (addr >= padb + al && addr < padb + al + pad_size) return 1;
+    }
+    return (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100);
 }
 
 static uint32_t pads_qspi_read(uint32_t offset) {

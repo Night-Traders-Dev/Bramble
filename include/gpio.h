@@ -3,10 +3,28 @@
 
 #include <stdint.h>
 
-/* GPIO Base Addresses (RP2040) */
-#define IO_BANK0_BASE       0x40014000  /* GPIO 0-29 control */
-#define PADS_BANK0_BASE     0x4001C000  /* GPIO pad controls */
-#define SIO_BASE_GPIO       0xD0000000  /* SIO for direct GPIO access */
+/* GPIO Base Addresses. RP2350 relocates both blocks, and the two maps overlap
+ * with other peripherals, so these must never be used interchangeably. */
+#define IO_BANK0_BASE          0x40014000  /* RP2040 IO_BANK0 */
+#define PADS_BANK0_BASE        0x4001C000  /* RP2040 PADS_BANK0 */
+#define RP2350_IO_BANK0_BASE   0x40028000  /* RP2350 IO_BANK0 */
+#define RP2350_PADS_BANK0_BASE 0x40038000  /* RP2350 PADS_BANK0 */
+#define SIO_BASE_GPIO          0xD0000000  /* SIO for direct GPIO access */
+
+/* Active IO_BANK0 / PADS_BANK0 base for the emulated chip. */
+uint32_t gpio_io_bank0_base(void);
+uint32_t gpio_pads_bank0_base(void);
+
+/* Number of GPIO user pins on the emulated chip (30 on RP2040, 48 on RP2350). */
+int gpio_num_user_pins(void);
+
+/* Interrupt-register window and per-pin register window, per chip. */
+#define GPIO_IO_BANK0_PIN_WINDOW_RP2040  0x200u  /* GPIOx_STATUS/CTRL up to +0x1FF */
+#define GPIO_IO_BANK0_PIN_WINDOW_RP2350   0x200u
+#define GPIO_IRQ_WINDOW_RP2040           0x0F0u  /* INTR0 .. DORMANT_WAKE_INTS */
+#define GPIO_IRQ_WINDOW_RP2350           0x230u  /* IRQSUMMARY .. DORMANT_WAKE_INTS */
+#define GPIO_IO_BANK0_SPAN_RP2040        0x200u
+#define GPIO_IO_BANK0_SPAN_RP2350        0x320u  /* through DORMANT_WAKE_INTS */
 
 /* Register Alias Offsets for Atomic Operations */
 #define REG_ALIAS_RW_BITS   0x0000      /* Normal read/write */
@@ -33,6 +51,7 @@
 /* Number of GPIO pins (48 on RP2350, 30 used on RP2040) */
 #define NUM_GPIO_PINS       48
 #define NUM_GPIO_PINS_RP2040 30
+#define GPIO_IRQ_BANKS      6   /* INTR0..INTR5 (RP2350 has 48 pins) */
 
 /* GPIO Function Select Values */
 #define GPIO_FUNC_XIP       0
@@ -73,7 +92,7 @@ typedef struct {
     uint32_t proc0_ints[6];  /* Interrupt status for processor 0 */
 
     /* Pad control registers */
-    uint32_t pads[NUM_GPIO_PINS];
+    uint32_t pads[NUM_GPIO_PINS + 2];  /* user pads, then SWCLK and SWD */
 } gpio_state_t;
 
 /* GPIO Functions */

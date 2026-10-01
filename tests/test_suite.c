@@ -4764,6 +4764,139 @@ TEST(test_rv_clint_timer_interrupt) {
     PASS();
 }
 
+/* Regression (datasheet audit C1/C2): the IO_BANK0 per-pin window claimed a
+ * fixed 0x200 span, so on RP2040 -- where GPIO29_CTRL is the last per-pin
+ * register at +0x0EC and INTR0 begins at +0x0F0 -- INTR0..PROC0_INTS were
+ * decoded as phantom GPIO30+ STATUS/CTRL registers and the per-pin branch
+ * returned early. A plain store to PROC0_INTE (what gpio_set_irq_enabled()
+ * does without an atomic alias) was dropped, and gpio_acknowledge_irq() could
+ * never clear a latched edge. */
+TEST(test_gpio_interrupt_regs_are_decoded_not_pins) {
+    reset_cpu();
+    gpio_init();
+
+    /* Pin window is 30 pins * 8 bytes; INTR0 must not be inside it. */
+    uint32_t intr0 = IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2040;
+    uint32_t proc0_inte0 = IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2040 + 0x10;
+    uint32_t proc0_intf0 = IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2040 + 0x20;
+    uint32_t proc0_ints0 = IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2040 + 0x30;
+
+    gpio_write32(proc0_inte0, 0xFFFFFFFF);
+    gpio_write32(proc0_intf0, 0xFFFFFFFF);
+    ASSERT_EQ(0xFFFFFFFF, gpio_read32(proc0_inte0), "PROC0_INTE0 must be writable");
+    ASSERT_EQ(0xFFFFFFFF, gpio_read32(proc0_intf0), "PROC0_INTF0 must be writable");
+    /* INTS is (INTR|INTF)&INTE and must reflect the force bits. */
+    ASSERT_EQ(0xFFFFFFFF, gpio_read32(proc0_ints0), "PROC0_INTS0 must mask INTR|INTF by INTE");
+
+    /* The write must not have landed on a phantom pin register. */
+    int phantom_clean = 1;
+    for (int pin = 30; pin < 48; pin++) {
+        if (gpio_state.pins[pin].status != 0 || gpio_state.pins[pin].ctrl != 0) {
+            phantom_clean = 0;
+            break;
+        }
+    }
+    ASSERT_TRUE(phantom_clean, "interrupt register writes must not reach phantom pins 30-47");
+
+    /* INTR0 is write-1-to-clear regardless of alias. */
+    gpio_write32(proc0_inte0, 0);
+    gpio_write32(proc0_intf0, 0);
+    gpio_state.intr[0] = 0xFFFFFFFF;
+    gpio_write32(intr0, 0xFFFFFFFF);
+    ASSERT_EQ(0x00000000, gpio_read32(intr0), "INTR0 must clear on write-1");
+
+    /* Per-pin CTRL is still decoded as a pin. */
+    gpio_write32(IO_BANK0_BASE + 0x0 * 8 + GPIO_CTRL_OFFSET, GPIO_FUNC_PWM);
+    ASSERT_EQ(GPIO_FUNC_PWM, gpio_read32(IO_BANK0_BASE + 0x0 * 8 + GPIO_CTRL_OFFSET),
+              "GPIO0_CTRL must still decode as a per-pin register");
+    PASS();
+}
+
+/* Regression (datasheet audit A2/C12): IO_BANK0 and PADS_BANK0 are relocated on
+ * RP2350, and those addresses hold unrelated peripherals on RP2040, so the
+ * matchers previously claimed only the RP2040 bases. Every GPIO and pad
+ * register access on RP2350-ARM was therefore unmapped and silently dropped. */
+TEST(test_gpio_chip_aware_bases) {
+    reset_cpu();
+
+    membus_rp2350_mode = 0;
+    ASSERT_EQ(IO_BANK0_BASE, gpio_io_bank0_base(), "RP2040 IO_BANK0 base");
+    ASSERT_EQ(PADS_BANK0_BASE, gpio_pads_bank0_base(), "RP2040 PADS_BANK0 base");
+    ASSERT_EQ(NUM_GPIO_PINS_RP2040, gpio_num_user_pins(), "RP2040 user pin count");
+
+    membus_rp2350_mode = 1;
+    ASSERT_EQ(RP2350_IO_BANK0_BASE, gpio_io_bank0_base(), "RP2350 IO_BANK0 base");
+    ASSERT_EQ(RP2350_PADS_BANK0_BASE, gpio_pads_bank0_base(), "RP2350 PADS_BANK0 base");
+    ASSERT_EQ(NUM_GPIO_PINS, gpio_num_user_pins(), "RP2350 user pin count");
+
+    gpio_init();
+    /* A pad write on RP2350 must land in the pad block, not fall through. */
+    gpio_write32(RP2350_PADS_BANK0_BASE + 0x04, 0x00000096);
+    ASSERT_EQ(0x00000096, gpio_read32(RP2350_PADS_BANK0_BASE + 0x04),
+              "RP2350 PADS_BANK0 write/read");
+    /* ...and through its atomic aliases too. */
+    gpio_write32(RP2350_PADS_BANK0_BASE + 0x08, 0x56);
+    gpio_write32(RP2350_PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x08, 0x40);
+    ASSERT_EQ(0x56 | 0x40, gpio_read32(RP2350_PADS_BANK0_BASE + 0x08),
+              "RP2350 PADS_BANK0 SET alias");
+
+    /* GPIO47 exists on RP2350 only. */
+    gpio_write32(RP2350_IO_BANK0_BASE + 47 * 8 + GPIO_CTRL_OFFSET, GPIO_FUNC_SIO);
+    ASSERT_EQ(GPIO_FUNC_SIO, gpio_read32(RP2350_IO_BANK0_BASE + 47 * 8 + GPIO_CTRL_OFFSET),
+              "RP2350 GPIO47_CTRL must be addressable");
+
+    /* RP2350 interrupt window is at +0x230, not +0x0F0. */
+    /* On RP2350 there are 6 INTR banks, so PROC0_INTE0 is 6 words past INTR0. */
+    uint32_t rp2350_inte0 = RP2350_IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2350 + 6 * 4;
+    gpio_write32(rp2350_inte0, 0xFFFFFFFF);
+    ASSERT_EQ(0xFFFFFFFF, gpio_read32(rp2350_inte0),
+              "RP2350 PROC0_INTE0 must be at the RP2350 window offset");
+    /* INTR5 (pins 32-47) exists only on RP2350. */
+    gpio_write32(RP2350_IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2350 + 5 * 4, 0);
+    gpio_state.intr[5] = 0xFFFFFFFF;
+    gpio_write32(RP2350_IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2350 + 5 * 4, 0xFFFFFFFF);
+    ASSERT_EQ(0x00000000, gpio_read32(RP2350_IO_BANK0_BASE + GPIO_IRQ_WINDOW_RP2350 + 5 * 4),
+              "RP2350 INTR5 must be write-1-to-clear");
+
+    /* FUNCSEL resets to NULL on both chips, not SIO. */
+    gpio_init();
+    ASSERT_EQ(GPIO_FUNC_NULL, gpio_read32(gpio_io_bank0_base() + GPIO_CTRL_OFFSET),
+              "GPIO0 CTRL reset must be FUNCSEL=0x1f (NULL)");
+    /* PADS word 0 is VOLTAGE_SELECT, so word n maps to pads[n-1]; SWCLK and SWD
+     * sit one word past the user pads. */
+    uint32_t swclk = RP2350_PADS_BANK0_BASE + ((uint32_t)gpio_num_user_pins() + 1) * 4;
+    ASSERT_EQ(0x00000096, gpio_read32(swclk), "SWCLK pad reset must be 0x96");
+
+    membus_rp2350_mode = 0;
+    PASS();
+}
+
+/* Regression (datasheet audit B1): every IRQ is renumbered on RP2350. The
+ * peripheral models used to signal RP2040 vectors regardless of chip, so a
+ * UART0 interrupt was delivered to vector 20 (= PIO2_IRQ_1) on RP2350 and a
+ * GPIO bank edge to vector 13 (= DMA_IRQ_3). */
+TEST(test_rp2350_irq_renumbering) {
+    membus_rp2350_mode = 0;
+    ASSERT_EQ(IRQ_UART0_IRQ, nvic_irq_number(IRQ_UART0_IRQ), "RP2040 UART0 keeps vector 20");
+    ASSERT_EQ(IRQ_SPI0_IRQ,  nvic_irq_number(IRQ_SPI0_IRQ),  "RP2040 SPI0 keeps vector 18");
+    ASSERT_EQ(IRQ_IO_IRQ_BANK0, nvic_irq_number(IRQ_IO_IRQ_BANK0), "RP2040 IO keeps vector 13");
+
+    membus_rp2350_mode = 1;
+    ASSERT_EQ(33, nvic_irq_number(IRQ_UART0_IRQ), "RP2350 UART0 must be vector 33");
+    ASSERT_EQ(34, nvic_irq_number(IRQ_UART1_IRQ), "RP2350 UART1 must be vector 34");
+    ASSERT_EQ(31, nvic_irq_number(IRQ_SPI0_IRQ),  "RP2350 SPI0 must be vector 31");
+    ASSERT_EQ(21, nvic_irq_number(IRQ_IO_IRQ_BANK0), "RP2350 IO_BANK0 must be vector 21");
+    ASSERT_EQ(23, nvic_irq_number(IRQ_IO_IRQ_QSPI),  "RP2350 IO_QSPI must be vector 23");
+    ASSERT_EQ(10, nvic_irq_number(IRQ_DMA_IRQ_0),    "RP2350 DMA_IRQ_0 must be vector 10");
+    ASSERT_EQ(30, nvic_irq_number(IRQ_CLOCKS_IRQ),   "RP2350 CLOCKS must be vector 30");
+    ASSERT_EQ(35, nvic_irq_number(IRQ_ADC_IRQ_FIFO), "RP2350 ADC must be vector 35");
+    /* RP2350 has no RP2040-style RTC; the AON timer lives in POWMAN. */
+    ASSERT_EQ(45, nvic_irq_number(IRQ_RTC_IRQ),      "RP2350 RTC maps to POWMAN_TIMER");
+
+    membus_rp2350_mode = 0;
+    PASS();
+}
+
 TEST(test_rv_membus_sram) {
     rv_membus_state_t bus;
     rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
@@ -5517,6 +5650,9 @@ int main(void) {
     END_CATEGORY("RISC-V CLINT");
 
     BEGIN_CATEGORY("RISC-V Memory Bus");
+    RUN_TEST(test_gpio_interrupt_regs_are_decoded_not_pins);
+    RUN_TEST(test_gpio_chip_aware_bases);
+    RUN_TEST(test_rp2350_irq_renumbering);
     RUN_TEST(test_rv_membus_sram);
     RUN_TEST(test_rv_shared_periph_translated_base);
     RUN_TEST(test_rv_bootrom_init);

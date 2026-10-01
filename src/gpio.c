@@ -19,6 +19,66 @@ static inline void gpio_trace_changes(uint32_t old_val, uint32_t new_val) {
 /* GPIO state */
 gpio_state_t gpio_state;
 
+/* The emulated chip's GPIO blocks. RP2350 relocates IO_BANK0 and PADS_BANK0 and
+ * those addresses hold entirely different peripherals on RP2040, so every match
+ * and decode site asks which chip it is on rather than using one constant. */
+uint32_t gpio_io_bank0_base(void) {
+    return membus_rp2350_mode ? RP2350_IO_BANK0_BASE : IO_BANK0_BASE;
+}
+
+uint32_t gpio_pads_bank0_base(void) {
+    return membus_rp2350_mode ? RP2350_PADS_BANK0_BASE : PADS_BANK0_BASE;
+}
+
+int gpio_num_user_pins(void) {
+    return membus_rp2350_mode ? NUM_GPIO_PINS : NUM_GPIO_PINS_RP2040;
+}
+
+/* Offset of the interrupt-register window within IO_BANK0. RP2040: INTR0 at
+ * +0x0F0, right after GPIO29_CTRL at +0x0EC. RP2350: 48 pins, then
+ * PROC0_IRQSUMMARY at +0x200 and INTR0 at +0x230. */
+static uint32_t gpio_irq_window(void) {
+    return membus_rp2350_mode ? GPIO_IRQ_WINDOW_RP2350 : GPIO_IRQ_WINDOW_RP2040;
+}
+
+static uint32_t gpio_io_bank0_span(void) {
+    return membus_rp2350_mode ? GPIO_IO_BANK0_SPAN_RP2350 : GPIO_IO_BANK0_SPAN_RP2040;
+}
+
+/* Interrupt banks needed for the emulated chip. */
+static int gpio_irq_banks(void) {
+    int b = (gpio_num_user_pins() + 7) / 8;
+    return b > GPIO_IRQ_BANKS ? GPIO_IRQ_BANKS : b;
+}
+
+/* PADS_BANK0 covers the user pads plus SWCLK and SWD. */
+static uint32_t gpio_pads_size(void) {
+    return ((uint32_t)gpio_num_user_pins() + 2) * 4;
+}
+
+/* Which atomic-alias region of PADS_BANK0 an address is in (0 for a plain
+ * access). RP2350 relocates the block to 0x40038000 and carries 48 pads plus
+ * SWCLK/SWD (0xCC bytes); RP2040 has 30 pads plus SWCLK/SWD (0x84) at
+ * 0x4001C000. A fixed 0x80 window at the RP2040 base left the entire RP2350 pad
+ * block unmapped -- so every gpio_init()/gpio_set_function() pad write was
+ * dropped on that chip -- and hid the SWD pad even on RP2040. */
+static uint32_t gpio_pads_alias(uint32_t addr) {
+    uint32_t pbase = gpio_pads_bank0_base();
+    uint32_t psize = gpio_pads_size();
+    if (addr >= pbase + REG_ALIAS_CLR_BITS && addr < pbase + REG_ALIAS_CLR_BITS + psize)
+        return REG_ALIAS_CLR_BITS;
+    if (addr >= pbase + REG_ALIAS_SET_BITS && addr < pbase + REG_ALIAS_SET_BITS + psize)
+        return REG_ALIAS_SET_BITS;
+    if (addr >= pbase + REG_ALIAS_XOR_BITS && addr < pbase + REG_ALIAS_XOR_BITS + psize)
+        return REG_ALIAS_XOR_BITS;
+    return REG_ALIAS_RW_BITS;
+}
+
+static int gpio_pads_contains(uint32_t addr) {
+    uint32_t off = addr - gpio_pads_bank0_base() - gpio_pads_alias(addr);
+    return off < gpio_pads_size();
+}
+
 /* Initialize GPIO subsystem */
 void gpio_init(void) {
     gpio_reset();
@@ -28,11 +88,19 @@ void gpio_init(void) {
 void gpio_reset(void) {
     memset(&gpio_state, 0, sizeof(gpio_state_t));
 
-    /* Default: all pins as inputs with SIO function */
+    /* Datasheet reset values: GPIOx_CTRL.FUNCSEL resets to 0x1f (NULL), not SIO,
+     * so pins must come out of reset de-selected. PADS reset is 0x56 for the user
+     * bank (IE=1, OD=0, PUE=0, PDE=1, SCHMITT=1) and 0x96 for SWCLK/SWD, which
+     * additionally have PUE=1. */
+    int user = gpio_num_user_pins();
     for (int i = 0; i < NUM_GPIO_PINS; i++) {
-        gpio_state.pins[i].ctrl = GPIO_FUNC_SIO;  /* Default to SIO function */
-        gpio_state.pads[i] = 0x00000056;  /* Default pad config: IE=1, OD=0, PUE=1, PDE=1 */
+        if (i < user) {
+            gpio_state.pins[i].ctrl = GPIO_FUNC_NULL;
+            gpio_state.pads[i] = 0x00000056;
+        }
     }
+    gpio_state.pads[user + 0] = 0x00000096;  /* SWCLK */
+    gpio_state.pads[user + 1] = 0x00000096;  /* SWD */
 
     /* All pins start as inputs (OE=0) */
     gpio_state.gpio_oe = 0x00000000;
@@ -43,7 +111,8 @@ void gpio_reset(void) {
 /* Recompute INTS and signal NVIC if any interrupt is active */
 static void gpio_check_irq(void) {
     uint32_t any_active = 0;
-    for (int i = 0; i < 4; i++) {
+    int banks = gpio_irq_banks();
+    for (int i = 0; i < banks; i++) {
         gpio_state.proc0_ints[i] = (gpio_state.intr[i] | gpio_state.proc0_intf[i])
                                     & gpio_state.proc0_inte[i];
         any_active |= gpio_state.proc0_ints[i];
@@ -60,12 +129,15 @@ static void gpio_check_irq(void) {
  * Edge interrupts are latched (W1C) when a transition occurs.
  */
 static void gpio_detect_events(uint32_t old_pins, uint32_t new_pins) {
-    /* Recompute level interrupts from current pin state */
-    for (int reg = 0; reg < 4; reg++) {
+    /* Recompute level interrupts from current pin state. The bank count follows
+     * the emulated chip: a hardcoded 4 banks left RP2350's pins 32-47 unable to
+     * set interrupt state at all. */
+    int banks = gpio_irq_banks();
+    for (int reg = 0; reg < banks; reg++) {
         uint32_t level_bits = 0;
         for (int bit = 0; bit < 8; bit++) {
             int pin = reg * 8 + bit;
-            if (pin >= NUM_GPIO_PINS) break;
+            if (pin >= gpio_num_user_pins()) break;
             int val = (new_pins >> pin) & 1;
             uint32_t shift = bit * 4;
             /* Level low (bit 0): pin is 0 */
@@ -86,13 +158,14 @@ static void gpio_detect_events(uint32_t old_pins, uint32_t new_pins) {
     /* Detect edges from changed pins */
     uint32_t changed = old_pins ^ new_pins;
     if (changed) {
-        for (int pin = 0; pin < NUM_GPIO_PINS; pin++) {
-            /* pins >= 32 are outside the 32-bit GPIO_IN/OUT words; shifting
-             * 1u by >= 32 is undefined, so skip them rather than wrap. */
+        for (int pin = 0; pin < gpio_num_user_pins(); pin++) {
+            /* pins >= 32 live in the separate GPIO_HI bank and are not part of
+             * this 32-bit word; shifting 1u by >= 32 is undefined. */
             if (pin >= 32) break;
             if (!(changed & (1u << pin))) continue;
             int reg = pin / 8;
             int bit = pin % 8;
+            if (reg >= gpio_irq_banks()) break;
             uint32_t shift = bit * 4;
             int new_val = (new_pins >> pin) & 1;
             if (new_val) {
@@ -142,13 +215,19 @@ uint32_t gpio_read32(uint32_t addr) {
         }
     }
 
-    /* IO_BANK0 registers (per-pin configuration) */
-    if (addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) {
-        uint32_t offset = addr - IO_BANK0_BASE;
+    /* IO_BANK0 registers (per-pin configuration). The window must stop where the
+     * per-pin registers stop. On RP2040 GPIO29_CTRL is last at +0x0EC and INTR0
+     * begins at +0x0F0; claiming a fixed 0x200 span returned phantom GPIO30+
+     * registers here and made the interrupt decoder below unreachable for plain
+     * (non-alias) accesses. */
+    uint32_t iobase_r = gpio_io_bank0_base();
+    uint32_t pin_win_r = (uint32_t)gpio_num_user_pins() * 8;
+    if (addr >= iobase_r && addr < iobase_r + pin_win_r) {
+        uint32_t offset = addr - iobase_r;
         uint32_t pin = offset / 8;  /* Each pin has 8 bytes (STATUS + CTRL) */
         uint32_t reg = offset % 8;
 
-        if (pin < NUM_GPIO_PINS) {
+        if (pin < (uint32_t)gpio_num_user_pins()) {
             if (reg == GPIO_STATUS_OFFSET) {
                 return gpio_state.pins[pin].status;
             } else if (reg == GPIO_CTRL_OFFSET) {
@@ -167,34 +246,31 @@ uint32_t gpio_read32(uint32_t addr) {
         else if (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200)
             base_addr -= REG_ALIAS_XOR_BITS;
 
-        if (base_addr >= IO_BANK0_BASE + 0xF0 && base_addr < IO_BANK0_BASE + 0x180) {
-            uint32_t offset = (base_addr - (IO_BANK0_BASE + 0xF0)) / 4;
-            if (offset < 4)                  return gpio_state.intr[offset];
-            else if (offset < 8)             return gpio_state.proc0_inte[offset - 4];
-            else if (offset < 12)            return gpio_state.proc0_intf[offset - 8];
-            else if (offset < 16)            return gpio_state.proc0_ints[offset - 12];
+        uint32_t iw_r = gpio_irq_window();
+        if (base_addr >= iobase_r + iw_r && base_addr < iobase_r + gpio_io_bank0_span()) {
+            uint32_t offset = (base_addr - (iobase_r + iw_r)) / 4;
+            /* The window opens at INTR0 on both chips (RP2040 +0x0F0,
+             * RP2350 +0x230), so no offset shift is needed. The four register
+             * groups are each `banks` words wide: 4 banks on RP2040, 6 on
+             * RP2350 (48 pins). A hardcoded 4 read the wrong registers on
+             * RP2350 from PROC0_INTE3 onward. */
+            int banks = (int)gpio_irq_banks();
+            if (offset < (uint32_t)banks)                      return gpio_state.intr[offset];
+            if (offset < (uint32_t)banks * 2)  return gpio_state.proc0_inte[offset - banks];
+            if (offset < (uint32_t)banks * 3)  return gpio_state.proc0_intf[offset - banks * 2];
+            if (offset < (uint32_t)banks * 4)  return gpio_state.proc0_ints[offset - banks * 3];
         }
     }
 
     /* PADS_BANK0 registers with alias support */
-    if ((addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x80) ||
-        (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x80) ||
-        (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x80) ||
-        (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x80)) {
+    if (gpio_pads_contains(addr)) {
         /* Strip alias offset to get base address */
-        uint32_t base_addr = addr;
-        
-        if (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS) {
-            base_addr = addr - REG_ALIAS_CLR_BITS;
-        } else if (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS) {
-            base_addr = addr - REG_ALIAS_SET_BITS;
-        } else if (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS) {
-            base_addr = addr - REG_ALIAS_XOR_BITS;
-        }
+        uint32_t alias_bits = gpio_pads_alias(addr);
+        uint32_t base_addr = addr - alias_bits;
 
-        uint32_t offset = (base_addr - PADS_BANK0_BASE) / 4;
+        uint32_t offset = (base_addr - gpio_pads_bank0_base()) / 4;
         
-        if (offset > 0 && offset <= NUM_GPIO_PINS) {
+        if (offset > 0 && offset <= (uint32_t)gpio_num_user_pins() + 2) {
             return gpio_state.pads[offset - 1];
         }
         /* Voltage select and other pad registers */
@@ -260,13 +336,16 @@ void gpio_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* IO_BANK0 registers (per-pin configuration) */
-    if (addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) {
-        uint32_t offset = addr - IO_BANK0_BASE;
+    /* IO_BANK0 registers (per-pin configuration) — see the read path for why
+     * this window is per-pin-limited rather than a fixed 0x200. */
+    uint32_t iobase_w = gpio_io_bank0_base();
+    uint32_t pin_win_w = (uint32_t)gpio_num_user_pins() * 8;
+    if (addr >= iobase_w && addr < iobase_w + pin_win_w) {
+        uint32_t offset = addr - iobase_w;
         uint32_t pin = offset / 8;
         uint32_t reg = offset % 8;
 
-        if (pin < NUM_GPIO_PINS) {
+        if (pin < (uint32_t)gpio_num_user_pins()) {
             if (reg == GPIO_STATUS_OFFSET) {
                 /* STATUS register - mostly read-only, but some bits writable */
                 /* For now, treat as mostly read-only */
@@ -300,17 +379,19 @@ void gpio_write32(uint32_t addr, uint32_t val) {
             base_addr -= REG_ALIAS_XOR_BITS;
         }
 
-        if (base_addr >= IO_BANK0_BASE + 0xF0 && base_addr < IO_BANK0_BASE + 0x180) {
-            uint32_t offset = (base_addr - (IO_BANK0_BASE + 0xF0)) / 4;
+        uint32_t iw_w = gpio_irq_window();
+        if (base_addr >= iobase_w + iw_w && base_addr < iobase_w + gpio_io_bank0_span()) {
+            uint32_t offset = (base_addr - (iobase_w + iw_w)) / 4;
             uint32_t *reg_ptr = NULL;
 
-            if (offset < 4) {
-                /* INTR - W1C regardless of alias */
+            int banks = (int)gpio_irq_banks();
+            if (offset < (uint32_t)banks) {
+                /* INTR - write-1-to-clear regardless of alias */
                 gpio_state.intr[offset] &= ~val;
-            } else if (offset >= 4 && offset < 8) {
-                reg_ptr = &gpio_state.proc0_inte[offset - 4];
-            } else if (offset >= 8 && offset < 12) {
-                reg_ptr = &gpio_state.proc0_intf[offset - 8];
+            } else if (offset < (uint32_t)banks * 2) {
+                reg_ptr = &gpio_state.proc0_inte[offset - banks];
+            } else if (offset < (uint32_t)banks * 3) {
+                reg_ptr = &gpio_state.proc0_intf[offset - banks * 2];
             }
             /* INTS is read-only */
 
@@ -329,28 +410,14 @@ void gpio_write32(uint32_t addr, uint32_t val) {
 
     /* ===== CRITICAL FIX: PADS_BANK0 with Alias Support ===== */
     /* Handle all 4 alias regions: 0x0000, 0x1000, 0x2000, 0x3000 */
-    if ((addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x80) ||
-        (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x80) ||
-        (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x80) ||
-        (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x80)) {
+    if (gpio_pads_contains(addr)) {
         /* Determine which alias region we're in */
-        uint32_t alias_offset = REG_ALIAS_RW_BITS;  /* Default to normal access */
-        uint32_t base_addr = addr;
-        
-        if (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS) {
-            alias_offset = REG_ALIAS_CLR_BITS;  /* 0x3000 - CLEAR */
-            base_addr = addr - REG_ALIAS_CLR_BITS;
-        } else if (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS) {
-            alias_offset = REG_ALIAS_SET_BITS;  /* 0x2000 - SET */
-            base_addr = addr - REG_ALIAS_SET_BITS;
-        } else if (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS) {
-            alias_offset = REG_ALIAS_XOR_BITS;  /* 0x1000 - XOR */
-            base_addr = addr - REG_ALIAS_XOR_BITS;
-        }
+        uint32_t alias_offset = gpio_pads_alias(addr);  /* 0 = normal access */
+        uint32_t base_addr = addr - alias_offset;
 
-        uint32_t offset = (base_addr - PADS_BANK0_BASE) / 4;
+        uint32_t offset = (base_addr - gpio_pads_bank0_base()) / 4;
         
-        if (offset > 0 && offset <= NUM_GPIO_PINS) {
+        if (offset > 0 && offset <= (uint32_t)gpio_num_user_pins() + 2) {
             uint32_t pin_idx = offset - 1;
             
             /* Apply atomic operation based on alias */

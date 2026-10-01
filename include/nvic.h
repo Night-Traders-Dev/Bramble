@@ -73,6 +73,69 @@
 #define IRQ_I2C1_IRQ                24     /* I2C1_IRQ */
 #define IRQ_RTC_IRQ                 25     /* RTC_IRQ (RP2040) */
 
+/* ========================================================================
+ * RP2350 interrupt vector table (datasheet Table 95)
+ *
+ * Every IRQ is renumbered on RP2350 relative to RP2040, so the IRQ_* values
+ * above (which are the RP2040 numbers) cannot be used directly on that chip.
+ * Previously the peripheral models signalled the RP2040 numbers regardless of
+ * membus_rp2350_mode, so on RP2350 a UART0 interrupt was delivered to vector 20
+ * (= PIO2_IRQ_1) and a GPIO bank edge to vector 13 (= DMA_IRQ_3). Because
+ * nvic_signal_irq() latches *pending* bits, that both starved the real
+ * handler and fired an unrelated one.
+ *
+ * Map an RP2040 IRQ_* through nvic_irq_number() rather than using it raw.
+ * ======================================================================== */
+
+#define RP2350_IRQ_TIMER0_0          0
+#define RP2350_IRQ_TIMER0_1          1
+#define RP2350_IRQ_TIMER0_2          2
+#define RP2350_IRQ_TIMER0_3          3
+#define RP2350_IRQ_TIMER1_0          4
+#define RP2350_IRQ_TIMER1_1          5
+#define RP2350_IRQ_TIMER1_2          6
+#define RP2350_IRQ_TIMER1_3          7
+#define RP2350_IRQ_PWM_WRAP_0        8
+#define RP2350_IRQ_PWM_WRAP_1        9
+#define RP2350_IRQ_DMA_0             10
+#define RP2350_IRQ_DMA_1             11
+#define RP2350_IRQ_DMA_2             12
+#define RP2350_IRQ_DMA_3             13
+#define RP2350_IRQ_USBCTRL           14
+#define RP2350_IRQ_PIO0_0            15
+#define RP2350_IRQ_PIO0_1            16
+#define RP2350_IRQ_PIO1_0            17
+#define RP2350_IRQ_PIO1_1            18
+#define RP2350_IRQ_PIO2_0            19
+#define RP2350_IRQ_PIO2_1            20
+#define RP2350_IRQ_IO_BANK0          21
+#define RP2350_IRQ_IO_BANK0_NS       22
+#define RP2350_IRQ_IO_QSPI           23
+#define RP2350_IRQ_IO_QSPI_NS        24
+#define RP2350_IRQ_SIO_FIFO          25
+#define RP2350_IRQ_SIO_BELL          26
+#define RP2350_IRQ_SIO_FIFO_NS       27
+#define RP2350_IRQ_SIO_BELL_NS       28
+#define RP2350_IRQ_SIO_MTIMECMP      29
+#define RP2350_IRQ_CLOCKS            30
+#define RP2350_IRQ_SPI0              31
+#define RP2350_IRQ_SPI1              32
+#define RP2350_IRQ_UART0             33
+#define RP2350_IRQ_UART1             34
+#define RP2350_IRQ_ADC_FIFO          35
+#define RP2350_IRQ_I2C0              36
+#define RP2350_IRQ_I2C1              37
+#define RP2350_IRQ_OTP               38
+#define RP2350_IRQ_TRNG              39
+#define RP2350_IRQ_PLL_SYS           42
+#define RP2350_IRQ_PLL_USB           43
+#define RP2350_IRQ_POWMAN_POW        44
+#define RP2350_IRQ_POWMAN_TIMER      45
+
+/* Translate an RP2040 IRQ_* to the vector that chip actually uses.
+ * Returns the input unchanged on RP2040. */
+uint32_t nvic_irq_number(uint32_t irq_rp2040);
+
 #define NUM_EXTERNAL_IRQS           26     /* RP2040 external IRQ count */
 #define NUM_EXTERNAL_IRQS_RP2350      52     /* RP2350 external IRQ count */
 #define NUM_EXTERNAL_IRQS_MAX         NUM_EXTERNAL_IRQS_RP2350

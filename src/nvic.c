@@ -516,7 +516,46 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
 /* Called by peripherals to signal an interrupt on BOTH cores' NVICs.
  * On real RP2040, the interrupt line goes to both cores' NVICs.
  * Each core independently decides whether to handle based on its own enable mask. */
+uint32_t nvic_irq_number(uint32_t irq_rp2040) {
+    if (!membus_rp2350_mode) return irq_rp2040;
+
+    /* RP2040 IRQ_* -> RP2350 vector (datasheet Table 95). Everything not listed
+     * is either PIO2 (no RP2040 equivalent) or a peripheral this build does not
+     * yet model, so the input is passed through unchanged. */
+    switch (irq_rp2040) {
+    case IRQ_TIMER_IRQ_0:    return RP2350_IRQ_TIMER0_0;
+    case IRQ_TIMER_IRQ_1:    return RP2350_IRQ_TIMER0_1;
+    case IRQ_TIMER_IRQ_2:    return RP2350_IRQ_TIMER0_2;
+    case IRQ_TIMER_IRQ_3:    return RP2350_IRQ_TIMER0_3;
+    case IRQ_PWM_IRQ_WRAP:   return RP2350_IRQ_PWM_WRAP_0;
+    case IRQ_USBCTRL_IRQ_ACPI: return RP2350_IRQ_USBCTRL;
+    case IRQ_PIO0_IRQ_0:     return RP2350_IRQ_PIO0_0;
+    case IRQ_PIO0_IRQ_1:     return RP2350_IRQ_PIO0_1;
+    case IRQ_PIO1_IRQ_0:     return RP2350_IRQ_PIO1_0;
+    case IRQ_PIO1_IRQ_1:     return RP2350_IRQ_PIO1_1;
+    case IRQ_DMA_IRQ_0:      return RP2350_IRQ_DMA_0;
+    case IRQ_DMA_IRQ_1:      return RP2350_IRQ_DMA_1;
+    case IRQ_IO_IRQ_BANK0:   return RP2350_IRQ_IO_BANK0;
+    case IRQ_IO_IRQ_QSPI:    return RP2350_IRQ_IO_QSPI;
+    case IRQ_SIO_IRQ_PROC0:  return RP2350_IRQ_SIO_FIFO;
+    case IRQ_SIO_IRQ_PROC1:  return RP2350_IRQ_SIO_BELL;
+    case IRQ_CLOCKS_IRQ:     return RP2350_IRQ_CLOCKS;
+    case IRQ_SPI0_IRQ:       return RP2350_IRQ_SPI0;
+    case IRQ_SPI1_IRQ:       return RP2350_IRQ_SPI1;
+    case IRQ_UART0_IRQ:      return RP2350_IRQ_UART0;
+    case IRQ_UART1_IRQ:      return RP2350_IRQ_UART1;
+    case IRQ_ADC_IRQ_FIFO:   return RP2350_IRQ_ADC_FIFO;
+    case IRQ_I2C0_IRQ:       return RP2350_IRQ_I2C0;
+    case IRQ_I2C1_IRQ:       return RP2350_IRQ_I2C1;
+    /* RP2350 has no RP2040-style RTC; the AON timer lives in POWMAN. */
+    case IRQ_RTC_IRQ:        return RP2350_IRQ_POWMAN_TIMER;
+    default:                 return irq_rp2040;
+    }
+}
+
 void nvic_signal_irq(uint32_t irq) {
+    /* Accept the RP2040 IRQ_* identifier and route it to the right vector. */
+    irq = nvic_irq_number(irq);
     if (nvic_irq_valid(irq)) {
         irq_signal_count++;
 
