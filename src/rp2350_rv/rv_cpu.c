@@ -128,6 +128,10 @@ void rv_cpu_init(rv_cpu_state_t *cpu, int hart_id) {
 
     /* mstatus: machine mode, interrupts disabled */
     cpu->csr[CSR_MSTATUS] = MSTATUS_MPP;  /* MPP = M-mode */
+
+    /* mtvec resets to 0x00001fff (datasheet 3.8.6.4): direct mode, base
+     * 0x00001ffc. It read 0 before, which is not a usable handler address. */
+    cpu->csr[CSR_MTVEC] = 0x00001FFFu;
 }
 
 void rv_cpu_reset(rv_cpu_state_t *cpu, uint32_t entry_pc) {
@@ -158,6 +162,8 @@ uint32_t rv_csr_read(rv_cpu_state_t *cpu, uint16_t addr) {
     case CSR_MINSTRET:  return (uint32_t)cpu->instret_count;
     case CSR_MINSTRETH: return (uint32_t)(cpu->instret_count >> 32);
     case CSR_MHARTID:   return (uint32_t)cpu->hart_id;
+    /* MODE is WARL and only direct mode (0) is supported; bit 1 must read 0. */
+    case CSR_MTVEC:     return cpu->csr[CSR_MTVEC] & ~2u;
 
     /* Hazard3 Xh3irq external-interrupt CSRs (datasheet Table 367).
      *

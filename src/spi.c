@@ -162,12 +162,19 @@ uint32_t spi_read32(int spi_num, uint32_t offset) {
         return s->cr1;
 
     case SPI_SSPDR:
-        /* Read pops from RX FIFO; clock a dummy byte if empty (SDK poll loops). */
+        /* Read pops from RX FIFO.
+         *
+         * This used to push a 0xFF through the device model when the RX FIFO
+         * was empty, so that the SDK's "read until the transfer finishes"
+         * poll loop could not spin forever. That is a divergence from a real
+         * PL022: reading DR with nothing to read returns 0 and has no effect
+         * on the bus, it does not invent a transfer. It also made a plain
+         * register read -- including a read-modify-write from a SET/CLR/XOR
+         * alias -- send a byte to whatever was attached.
+         *
+         * Callers that need a transfer have to write DR, which is the only
+         * thing that should clock data out. */
         {
-            if (s->rx_count == 0 && (s->cr1 & SPI_CR1_SSE) && !s->device.xfer) {
-                tx_push(s, 0xFF);
-                spi_execute_transfers(s);
-            }
             uint16_t val = rx_pop(s);
             spi_update_irq(spi_num);
             return val;

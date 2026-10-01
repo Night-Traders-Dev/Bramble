@@ -5246,6 +5246,45 @@ TEST(test_rv_hazard3_csrs) {
     PASS();
 }
 
+/* Reading SSPDR with an empty RX FIFO must not invent a transfer. It used to
+ * push a 0xFF through the device model so SDK poll loops could not spin, which
+ * meant a plain register read -- including a read-modify-write from a SET/CLR/
+ * XOR alias -- sent a byte to whatever was attached. */
+TEST(test_spi_sspsdr_read_does_not_clock_a_phantom_byte) {
+    spi_init();
+
+    mem_write32(SPI0_BASE + SPI_SSPCR1, SPI_CR1_SSE);
+
+    uint32_t tx_before = spi_state[0].tx_count;
+    for (int i = 0; i < 4; i++)
+        (void)mem_read32(SPI0_BASE + SPI_SSPDR);
+
+    ASSERT_EQ(tx_before, spi_state[0].tx_count,
+              "reading SSPDR must not push anything into the TX FIFO");
+    ASSERT_EQ(0, spi_state[0].rx_count,
+              "reading an empty SSPDR must not conjure RX data");
+    PASS();
+}
+
+/* mtvec MODE is WARL and only direct mode is supported, so bit 1 must read 0
+ * whatever firmware writes. */
+TEST(test_rv_mtvec_mode_bit_is_warl) {
+    rv_cpu_state_t rv;
+    rv_cpu_init(&rv, 0);
+
+    /* Datasheet reset value: direct mode, base 0x00001ffc. */
+    ASSERT_EQ(0x00001FFFu, rv.csr[CSR_MTVEC], "mtvec reset value");
+
+    rv_csr_write(&rv, CSR_MTVEC, 0x00000202u);  /* MODE = 2 (reserved) */
+    ASSERT_EQ(0x00000200u, rv_csr_read(&rv, CSR_MTVEC),
+              "mtvec MODE[1] must read back as 0 (WARL)");
+
+    rv_csr_write(&rv, CSR_MTVEC, 0x00000101u);  /* MODE = 1 (vectored) */
+    ASSERT_EQ(0x00000101u, rv_csr_read(&rv, CSR_MTVEC),
+              "vectored mode is supported and must read back as written");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6004,6 +6043,8 @@ int main(void) {
     RUN_TEST(test_rv_periph_bootram);
     RUN_TEST(test_rv_periph_timer1);
     RUN_TEST(test_rv_hazard3_csrs);
+    RUN_TEST(test_spi_sspsdr_read_does_not_clock_a_phantom_byte);
+    RUN_TEST(test_rv_mtvec_mode_bit_is_warl);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
