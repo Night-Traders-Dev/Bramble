@@ -1,5 +1,80 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.47.0] - 2026-10-01
+
+A correctness release driven by three reviews: a datasheet-grounded audit of
+RP2040/RP2350/Hazard3, a full correctness/concurrency/security review of the
+emulator itself, and an empirical pass over the test suite. Both audits are
+checked in (`docs/datasheet_audit.md`, `docs/full_audit.md`), including what
+remains open and why.
+
+### Fixed — RISC-V Hazard3
+
+- **Peripheral interrupts now reach `mip.MEIP`** (the headline fix). `rv_clint_set_ext_pending()` was only ever called from the test suite; every peripheral raised interrupts through `nvic_signal_irq()`, which latched the bit in the Cortex-M NVIC — a structure the Hazard3 core never reads. No peripheral interrupt could reach a RISC-V hart, so firmware that enabled e.g. a UART receive interrupt hung indefinitely. `nvic.c` now fans the already-renumbered vector out to an optional sink, `main.c` installs the Xh3irq bridge for `ARCH_RV32`, and clears travel the same path so an acknowledge deasserts the line.
+- **Xh3irq CSRs at their real addresses, with array semantics.** MEIEA/MEIPA/MEIFA/MEIPRA/MEINEXT/MEICONTEXT replaced invented per-IRQ registers at 0xBE0–0xBE4 plus non-existent 0xFE0/0xFE1/0xFE4. The datasheet idiom `csrs 0xbe0, index | (mask << 16)` was previously latched as raw enable bits, so the SDK's `hardware_irq` could not enable, prioritise, dispatch or nest anything.
+- **Instruction cache invalidated on flash writes.** The cache holds decoded words fetched from flash, so it is only sound while flash is immutable, but `flash_range_program`/`flash_range_erase` rewrote bytes with nothing invalidating them — a firmware flash update wrote the bytes and then jumped into the stale instructions. Added `rv_icache_invalidate_range()` and `rv_icache_flush()`.
+- **`misa` advertises X**, the bit that declares the non-standard extensions this core implements (Zba/Zbb/Zbs/Zcb/Zcmp/Zbkb). `U` is deliberately not set: there is no user mode.
+- **`mvendorid`/`marchid`/`mimpid`** reported 0, indistinguishable from "unimplemented". Now return the datasheet values.
+- **`MRET` clears `MPP`** to the least-privileged supported mode; it previously left it at M-mode.
+- **`CSRRW` honours `rd == x0`** and no longer reads the CSR in that case. Not cosmetic: reading `MEINEXT` clears the force bits it samples, so a `csrw` that also read `MEINEXT` disarmed the interrupt it had just forced.
+- **`mtvec` MODE is WARL** and reads back with `MODE[1]` = 0; it previously echoed whatever firmware wrote. Reset value corrected to the datasheet `0x00001fff` (was 0, not a usable handler address).
+- **SIO `CPUID` returns the hart id** rather than a constant 2. Hart 1's boot branches on it, so every hart identified as core 0.
+- **CLINT at `0xD00001A0`**, not SIO `0x100` where it collided with the GPIO bank. `mtval` hardwired to zero per the datasheet; `WFI` no longer gated on `MSTATUS.MIE` before deciding to wake; `Zcmp` decoded by `funct5` rather than `funct7`.
+
+### Fixed — memory safety and concurrency
+
+- Closed guest-triggerable out-of-bounds writes in flash ROM erase/program, flash persistence, SD/eMMC block arithmetic (64-bit) and the GDB packet parser; and a `SIGPIPE` that could kill the process.
+- Bounded two fixed-size stack buffers in `gdb.c` (RSP packet assembly and console-output hex encoding) whose lengths came from guest state.
+- Real ARM `WFE` event register, latched `SEV`, spinlock and FIFO wakeups, correct thread lifecycle — no more PIO/USB core starvation, timer double-tick, or flush races.
+- FAT16/FAT32 geometry, cluster and directory-entry bounds checks; 32-bit sector counts; validated FUSE offsets; short-write detection; `emu_flash_size` used consistently by ELF and UF2 loading.
+
+### Fixed — per-chip peripheral decoding
+
+RP2040 and RP2350 disagree on base addresses, register layouts and IRQ
+numbering. Where they differ, decoding is now per chip.
+
+- **IRQ vectors**: every IRQ renumbered on RP2350 via `nvic_irq_number()`. Peripheral models were signalling RP2040 numbers regardless of `membus_rp2350_mode`, so a UART0 interrupt was delivered to PIO2 and a GPIO edge to DMA.
+- **GPIO**: chip-aware banks and interrupt windows, including `IO_BANK0` moving on RP2350, and decode by *delegated* address rather than emulated chip so Hazard3's translation is honoured.
+- **SPI/UART/PADS**: matched at their translated RP2040 bases under Hazard3, instead of by address-space guessing. SPI chip select now drives GPIO. UART FIFOs are 32 deep with live TX/RX interrupt levels and a correct reset state.
+- **PIO**: `SIDESET_BASE` is bits 14:10 (was bit 20), `IN_BASE` is modulo 32, PIO2 is gated to RP2350.
+- **TIMER0/TIMER1**: RP2350 TIMER1 has its own base and four IRQs, which were never signalled.
+- **Clocks**: RP2350 FC0 offsets shifted a word (so the SDK's `frequency_count_khz()` could never complete); `CLK_DIV` is 16.16 not 8.8, and the old reset was divide-by-zero on RP2350; 8 generators not 10; ROSC mapped per register identity (it is *not* a monotone shift — `COUNT` moves down, `RANDOMBIT` up) with a corrected `STATUS` decode that had reported `BADWRITE` as `ENABLED` and hard-wired `DIV_RUNNING`.
+- **PWM**: RP2040's base is RP2350's `PLL_SYS`, so the PWM shadowed the PLL; `0x400A8000` now routes to the PWM model.
+
+### Removed
+
+- **SPI `SSPDR` phantom transfer.** Reading `DR` with an empty RX FIFO pushed a `0xFF` through the device model to keep SDK poll loops from spinning. A real PL022 returns 0 and has no bus effect, and the dummy meant every plain register read — including each SET/CLR/XOR alias's read-modify-write — sent a byte to whatever was attached.
+- **Duplicate RP2350 base definitions** in `include/clocks.h`. Two sources of truth for the same addresses; two of the pairs differed only in hex-letter case, which is what made the duplication look like an include-order problem.
+- **`tests/test_invariant_cyw43.c`**: in no build target, needed an absent `libcheck`, and its single assertion tested a libc `strncpy` rather than any cyw43 function.
+
+### Tests
+
+Three tests asserted nothing and so passed even when the code under test did the
+wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/PWM
+registers and never read them back, and which passed straight through the SIO
+GPIO write-drop bug. All three now assert real behaviour.
+
+- 342/342 tests passing, up from 319.
+- 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
+  and riscv64, across the test suite and all eight bundled firmware images
+  (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,
+  name-prompt and hello-world).
+- All eight firmware images still run.
+
+### Known issues
+
+Unfixed, with reasons, in `docs/full_audit.md`:
+
+- **Bus-fault exceptions**: the RV core still returns 0 for unmapped accesses. `mem_read32()` has no mapped/unmapped answer, so this needs a `membus_is_mapped()` mirroring the whole peripheral decode; a misclassified address would start trapping firmware.
+- **U-mode and PMP** absent (hence `misa.U` clear).
+- **Hart-1 launch** uses invented SIO registers at `0x1c0`–`0x1cc`, which on RP2350 are TMDS, rather than the FIFO handshake.
+- **Zcb quadrant-0 byte/halfword stores** (`C.SB`, `C.SH`, `C.SBSP`, `C.SHSP`) compute a base register and no offset. Left alone: the Zcb bit layout could not be confirmed offline and a wrong decode is worse than a known-bad one.
+- **Four unreachable Thumb-2 VFP decoders** (`VLDR Dd`, `VSTR Dd`, two `VCVT` F32↔U32 arms). Left deliberately unfixed so the compiler keeps warning.
+- **Atomic register aliases** do the interposer read-modify-write in software, so a SET-alias write to `UARTDR`/`SSPDR` consumes an RX byte.
+- **RP2350's 12-slice PWM** register body still decodes as RP2040's 8-slice layout.
+
+---
+
 ## [0.46.0] - 2026-06-26
 
 ### Added

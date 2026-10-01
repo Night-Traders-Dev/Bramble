@@ -20,12 +20,20 @@ subsystem, networking stack, and developer tools.
 
 | Metric | Value |
 |--------|-------|
-| Source lines | 34,841 (45 `.c` files) |
-| Header files | 42 `.h` files |
-| Test suite | 319 tests across 60+ categories |
-| Compiler warnings | Zero (`-Wall -Wextra -pedantic`) |
-| Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350) |
-| Version | 0.45.0 |
+| Source lines | 33,660 (47 `.c` files) |
+| Header files | 44 `.h` files |
+| Test suite | 342 tests across 60+ categories |
+| Compiler warnings | 15, all from four unreachable Thumb-2 VFP decoders (see below) |
+| Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350-ARM + RP2350-RV) |
+| Version | 0.47.0 |
+
+**On the warnings:** `-Wall -Wextra -pedantic` is clean except for four
+Thumb-2 VFP decoders (`VLDR Dd`, `VSTR Dd`, and two `VCVT` F32↔U32 arms) whose
+masks disagree with their patterns, so no encoding can ever reach them. They are
+deliberately left unfixed: getting the encodings right needs the ARM ARM, and a
+wrong mask would turn a silent no-op into wrong behaviour, which is strictly
+worse than a compiler diagnostic. The warning is the honest signal that the code
+is dead.
 
 ## 1.2 Design Goals
 
@@ -299,7 +307,7 @@ ctest --test-dir build --output-on-failure
 ./build/bramble_tests
 ```
 
-The test suite contains **319 tests** organized into 60+ categories:
+The test suite contains **342 tests** organized into 60+ categories:
 
 | Category Group | Tests | Description |
 |----------------|-------|-------------|
@@ -910,7 +918,8 @@ typedef struct {
 
 ## 6.5 CLINT Interrupt Controller
 
-Memory-mapped at `0xD0000100` in SIO space:
+Memory-mapped at `0xD00001A0` (RP2350; it is **not** in SIO space at `0x100`,
+where it would collide with the GPIO bank):
 
 | Offset | Register | Description |
 |--------|----------|-------------|
@@ -930,6 +939,47 @@ Timer behavior:
 - `mtimecmp` initialized to `UINT64_MAX` (no immediate interrupt on boot).
 
 Interrupt delivery priority: **MEIP > MSIP > MTIP**.
+
+### 6.5.1 Peripherals reaching `mip.MEIP`
+
+On RP2350 the machine-mode core does not use the Cortex-M NVIC. Interrupts are
+reported through the Hazard3 **Xh3irq** block in the CLINT and surface as
+`mip.MEIP`:
+
+```
+peripheral model
+   └─ nvic_signal_irq(IRQ_*)     renumbers the vector for the chip
+        ├─ NVIC pending  (what ARM cores read)
+        └─ Xh3irq sink   (what RV cores read)  ──► clint.ext_pending
+                                                      │
+                        MEIPA / MEIEA / MEINEXT ◄───┘
+                                                      │
+                        mip.MEIP ──► machine interrupt trap
+```
+
+`nvic.c` fans out to a registered sink, and `main.c` installs the Xh3irq bridge
+when the machine boots as `ARCH_RV32`. On ARM the sink stays `NULL` and nothing
+changes. Because the fan-out happens *after* `nvic_irq_number()`, the Xh3irq
+index and the NVIC vector cannot drift apart on RP2350, where every IRQ is
+renumbered.
+
+The Xh3irq CSRs are **array** accesses, not per-IRQ registers. The window index
+is in the low bits of the value and each window is 16 bits wide, so the SDK idiom
+
+```asm
+    li   a0, 0xa5a50002      # index 2, mask 0xa5a5  ->  bits 47:32
+    csrs MEIEA, a0
+```
+
+enables IRQs 33..48.
+
+### 6.5.2 Flash writes and the instruction cache
+
+The instruction cache holds decoded words fetched from flash, so it is only
+sound while flash is immutable. `flash_range_program` and `flash_range_erase`
+invalidate the written range
+(`rv_icache_invalidate_range()`), so a firmware flash update takes effect rather
+than jumping into the pre-update instructions.
 
 ## 6.6 RISC-V Instruction Cache
 
