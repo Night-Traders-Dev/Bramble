@@ -371,10 +371,29 @@ TEST(test_pwm_csr_default) {
 }
 
 TEST(test_peripheral_writes_no_crash) {
+    /* This previously wrote three peripheral registers and asserted nothing, so
+     * it passed even when the writes were silently dropped -- which is exactly
+     * how the SIO GPIO write bug survived. Read the registers back. */
     reset_cpu();
+    spi_init();
+    i2c_init();
+    pwm_init();
+
+    /* SPI: writing SSPDR with SSE enabled must reach the transmit FIFO. */
+    mem_write32(SPI0_BASE + SPI_SSPCR1, SPI_CR1_SSE);
     mem_write32(SPI0_BASE + SPI_SSPDR, 0xAA);
-    mem_write32(I2C0_BASE, 0x55);
-    mem_write32(PWM_BASE, 0xFF);
+    ASSERT_TRUE(spi_state[0].tx_count == 0,
+               "SSPDR is executed immediately, so the TX FIFO drains");
+
+    /* I2C: TAR is plain read/write. (DATA_CMD is write-only -- reading it
+     * pops the RX FIFO -- so it cannot be used to check a write landed.) */
+    mem_write32(I2C0_BASE + I2C_TAR, 0x55);
+    ASSERT_EQ(0x55, mem_read32(I2C0_BASE + I2C_TAR),
+              "I2C target-address register must read back");
+
+    /* PWM: the enable register is plain RW. */
+    mem_write32(PWM_BASE + PWM_EN, 0xFF);
+    ASSERT_EQ(0xFF, mem_read32(PWM_BASE + PWM_EN), "PWM EN must read back");
     PASS();
 }
 
@@ -795,8 +814,13 @@ TEST(test_sio_non_gpio_writes_still_reach_sio) {
 }
 
 TEST(test_uart_output) {
+    /* Previously asserted nothing at all. A write to DR must reach the UART
+     * model rather than being dropped by the address decode. */
     reset_cpu();
+    uart_init();
+    mem_write32(UART0_BASE + UART_CR, UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE);
     mem_write32(UART0_BASE + UART_DR, 'X');
+    ASSERT_EQ('X', uart_state[0].dr, "UART0 DR write must reach the UART model");
     PASS();
 }
 
@@ -3882,8 +3906,24 @@ TEST(test_rom_flash_program_rejects_wrapping_offset) {
 }
 
 TEST(test_flash_persist_set_and_close) {
+    /* Previously called set_path/close and asserted nothing -- not even that
+     * the file was created, and it left persist_path set for later tests. */
+    unlink("/tmp/bramble_test_flash.bin");
     flash_persist_set_path("/tmp/bramble_test_flash.bin");
+    ASSERT_EQ(0, flash_persist_open(), "flash_persist_open must succeed");
+    flash_persist_sync(0, 16);
     flash_persist_close();
+    /* The image file must now exist and hold the written bytes. */
+    FILE *f = fopen("/tmp/bramble_test_flash.bin", "rb");
+    ASSERT_TRUE(f != NULL, "flash image file should have been created");
+    if (f) {
+        uint8_t hdr[16] = {0};
+        size_t n = fread(hdr, 1, sizeof(hdr), f);
+        fclose(f);
+        ASSERT_EQ(16, n, "flash image should contain the synced bytes");
+    }
+    unlink("/tmp/bramble_test_flash.bin");
+    flash_persist_set_path(NULL);
     PASS();
 }
 

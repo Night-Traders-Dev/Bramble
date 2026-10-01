@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include "emulator.h"
 #include "instructions.h"
 #include "thumb32.h"
@@ -1150,7 +1151,7 @@ void cpu_exception_return(uint32_t lr_value) {
             }
 
             if (cpu.debug_enabled) {
-                printf("[CPU] Cleared active exception (vector %u), IABR=0x%X, depth=%d\n",
+                printf("[CPU] Cleared active exception (vector %u), IABR=0x%" PRIu64 ", depth=%d\n",
                        vector_num, nvic_states[ac].iabr, *p_exception_depth);
             }
         }

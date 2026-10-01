@@ -438,7 +438,7 @@ int fat16_write_file(fat16_fs_t *fs, const char *name, const uint8_t *data, size
      * little-endian layout is explicit and the packed struct is not written
      * through as a native-endian object. */
     memcpy(de->name, fat_name, 11);
-    de->name[11] = FAT16_ATTR_ARCHIVE;
+    de->attr = FAT16_ATTR_ARCHIVE;
     de->reserved = 0;
     de->ctime_tenths = 0;
     write16((uint8_t *)&de->ctime, 0);

@@ -302,6 +302,8 @@ static int vfp_sn_from_insn(uint32_t insn) {
     return (int)(((insn >> 16) & 0xFu) * 2u + ((insn >> 6) & 1u));
 }
 
+/* Unreferenced: kept for symmetry with the other VFP register decoders. */
+__attribute__((unused))
 static int vfp_sm_from_insn(uint32_t insn) {
     return (int)(((insn >> 12) & 0xFu) * 2u + ((insn >> 18) & 1u));
 }

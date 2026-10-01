@@ -2,6 +2,7 @@
 #define CLOCKS_H
 
 #include <stdint.h>
+#include "rp2350_rv/rp2350_memmap.h"  /* single source of truth for the RP2350 bases */
 
 /* ========================================================================
  * RP2040 Clock-Domain Peripherals
@@ -46,34 +47,13 @@
 #define CLK_FC0_STATUS          (CLOCKS_BASE + 0x98)
 #define CLK_FC0_RESULT          (CLOCKS_BASE + 0x9C)
 
-/* RP2350 clock-domain peripheral bases (different from RP2040).
- * These are also defined in rp2350_rv/rp2350_memmap.h; we redefine here
- * with guards to avoid conflicts when both headers are included. */
-#ifndef RP2350_RESETS_BASE
-#define RP2350_RESETS_BASE      0x40020000
-#endif
-#ifndef RP2350_CLOCKS_BASE
-#define RP2350_CLOCKS_BASE      0x40010000
-#endif
-#ifndef RP2350_PSM_BASE
-#define RP2350_PSM_BASE         0x40018000
-#endif
-#ifndef RP2350_XOSC_BASE
-#define RP2350_XOSC_BASE        0x40048000
-#endif
-#ifndef RP2350_PLL_SYS_BASE
-#define RP2350_PLL_SYS_BASE     0x40050000
-#endif
-#ifndef RP2350_PLL_USB_BASE
-#define RP2350_PLL_USB_BASE     0x40058000
-#endif
-#ifndef RP2350_WATCHDOG_BASE
-#define RP2350_WATCHDOG_BASE    0x400d8000
-#endif
-#ifndef RP2350_ROSC_BASE
-#define RP2350_ROSC_BASE        0x400e8000
-#endif
-
+/* RP2350 clock-domain peripheral bases live in rp2350_rv/rp2350_memmap.h,
+ * which is included above. They used to be duplicated here with #ifndef
+ * guards: six pairs were token-identical so GCC stayed silent, and two
+ * (RP2350_WATCHDOG_BASE, RP2350_ROSC_BASE) differed only in hex letter case
+ * and warned. Two sources of truth for the same addresses is how one of them
+ * ends up wrong.
+ */
 /* ROSC (0x40060000) - Ring Oscillator */
 #define ROSC_BASE               0x40060000
 #define ROSC_CTRL               (ROSC_BASE + 0x00)
