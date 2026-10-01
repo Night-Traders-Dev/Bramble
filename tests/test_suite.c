@@ -5285,6 +5285,103 @@ TEST(test_rv_mtvec_mode_bit_is_warl) {
     PASS();
 }
 
+/* Zcb c.sb / c.sh (riscv-isa-manual src/zc.adoc):
+ *
+ *   c.sb  100 | 010 | rs1' | uimm[0|1] | rs2' | 00
+ *   c.sh  100 | 011 | rs1' | 0 uimm[1] | rs2' | 00
+ *
+ * Both previously raised an illegal-instruction trap: quadrant 0 had no
+ * funct3==4 arm at all.
+ */
+/* c.sb's immediate is bit-reversed in the encoding: uimm[1] is encoding[5] and
+ * uimm[0] is encoding[6]. */
+#define ZCB_SB(rs1p, uimm, rs2p) \
+    (0x8000u | (0x2u << 10) | ((rs1p) << 7) | \
+     ((((uimm) >> 1) & 1u) << 5) | (((uimm) & 1u) << 6) | ((rs2p) << 2) | 0u)
+#define ZCB_SH(rs1p, uimm, rs2p) \
+    (0x8000u | (0x3u << 10) | ((rs1p) << 7) | (((uimm) >> 1) << 5) | ((rs2p) << 2) | 0u)
+
+/* Run one 16-bit instruction held in RV SRAM and return after the store. */
+static void rv_exec_one_16(rv_cpu_state_t *rv, rv_membus_state_t *bus, uint16_t insn) {
+    const uint32_t code = RP2350_SRAM_BASE + 0xC00;
+    rv_mem_write32(bus, code, (uint32_t)insn);
+    rv->is_halted = 0;          /* rv_cpu_init() leaves the hart halted */
+    rv->pc = code;
+    rv_cpu_step(rv);
+}
+
+TEST(test_rv_zcb_c_sb_uses_its_offset) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+
+    const uint32_t base = RP2350_SRAM_BASE + 0x400;
+    for (int i = 0; i < 16; i++)
+        rv_mem_write32(&bus, base + (uint32_t)i * 4, 0);
+
+    rv.x[8] = base;   /* rs1' = 0 -> x8 */
+    rv.x[9] = 0xA5;   /* rs2' = 1 -> x9 */
+
+    /* uimm = 0b11 -> both encoding[5] and encoding[6] set. */
+    rv_exec_one_16(&rv, &bus, ZCB_SB(0, 0x3, 1));
+
+    ASSERT_EQ(0xA5, rv_mem_read8(&bus, base + 3) & 0xFF, "c.sb at uimm=3");
+    ASSERT_EQ(0x00, rv_mem_read8(&bus, base) & 0xFF, "c.sb must not write base+0");
+    PASS();
+}
+
+TEST(test_rv_zcb_c_sh_uses_its_offset) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+
+    const uint32_t base = RP2350_SRAM_BASE + 0x400;
+    for (int i = 0; i < 16; i++)
+        rv_mem_write32(&bus, base + (uint32_t)i * 4, 0);
+
+    rv.x[8] = base;
+    rv.x[9] = 0x1234;
+
+    /* c.sh's uimm[0] is hardwired 0, so encoding[6] must be ignored. */
+    rv_exec_one_16(&rv, &bus, (uint16_t)(ZCB_SH(0, 0x2, 1) | (1u << 6)));
+
+    ASSERT_EQ(0x1234, rv_mem_read16(&bus, base + 2) & 0xFFFF, "c.sh at uimm=2");
+    ASSERT_EQ(0x0000, rv_mem_read16(&bus, base) & 0xFFFF,
+              "c.sh must not write base+0, and must ignore encoding[6]");
+    PASS();
+}
+
+TEST(test_rv_zcb_c_sb_uses_both_rs1_and_rs2) {
+    /* rs1'/rs2' are independent fields; the old code assumed rs1' == x8 always. */
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+
+    const uint32_t a = RP2350_SRAM_BASE + 0x400;
+    const uint32_t b = RP2350_SRAM_BASE + 0x500;
+    for (int i = 0; i < 16; i++) {
+        rv_mem_write32(&bus, a + (uint32_t)i * 4, 0);
+        rv_mem_write32(&bus, b + (uint32_t)i * 4, 0);
+    }
+
+    rv.x[11] = a;     /* rs1' = 3 -> x11 (the base) */
+    rv.x[12] = 0x7E;  /* rs2' = 4 -> x12 (the source) */
+    rv.x[13] = b;     /* must not be involved at all */
+
+    rv_exec_one_16(&rv, &bus, ZCB_SB(3, 0x2, 4));   /* c.sb x12, 2(x11) */
+
+    ASSERT_EQ(0x7E, rv_mem_read8(&bus, a + 2) & 0xFF, "c.sb must store via rs2'");
+    ASSERT_EQ(0x00, rv_mem_read8(&bus, b + 2) & 0xFF,
+              "c.sb must use rs1' as the base, not some other register");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6045,6 +6142,9 @@ int main(void) {
     RUN_TEST(test_rv_hazard3_csrs);
     RUN_TEST(test_spi_sspsdr_read_does_not_clock_a_phantom_byte);
     RUN_TEST(test_rv_mtvec_mode_bit_is_warl);
+    RUN_TEST(test_rv_zcb_c_sb_uses_its_offset);
+    RUN_TEST(test_rv_zcb_c_sh_uses_its_offset);
+    RUN_TEST(test_rv_zcb_c_sb_uses_both_rs1_and_rs2);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);

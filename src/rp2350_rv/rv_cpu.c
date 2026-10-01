@@ -471,21 +471,43 @@ decode:
                 rv_write32(cpu, addr, cpu->x[CRS2_P(ci)]);
                 break;
             }
-            default: {
-                /* Zcb: C.SB, C.SH */
-                if (funct3c == 1) { /* C.SB */
-                    uint32_t rs1_p = (ci >> 7) & 0x7;
-                    uint32_t rs2_p = (ci >> 2) & 0x7;
-                    rv_write8(cpu, cpu->x[8 + rs1_p], (uint8_t)cpu->x[8 + rs2_p]);
-                    break;
-                } else if (funct3c == 3) { /* C.SH */
-                    uint32_t rs1_p = (ci >> 7) & 0x7;
-                    uint32_t rs2_p = (ci >> 2) & 0x7;
-                    rv_write16(cpu, cpu->x[8 + rs1_p], (uint16_t)cpu->x[8 + rs2_p]);
+            case 4: { /* Zcb c.sb / c.sh */
+                /* Encoding (Zcb, riscv-isa-manual src/zc.adoc):
+                 *
+                 *   c.sb:  100 | 010 | rs1' | uimm[0|1] | rs2' | 00
+                 *   c.sh:  100 | 011 | rs1' | 0 uimm[1] | rs2' | 00
+                 *
+                 * Both are funct3=100 in quadrant 0, told apart by bits 12:10.
+                 * rs1'/rs2' come from the x8-x15 set and the immediate is tiny:
+                 * 0-3 for c.sb, 0-2 (always even) for c.sh. The SP-relative
+                 * C.SBSP/C.SHSP are separate Zca forms with larger offsets and
+                 * live in quadrant 2.
+                 *
+                 * These were not decoded at all: quadrant 0 had no funct3==4
+                 * arm, so the encoding fell to the default arm and raised an
+                 * illegal-instruction trap. The dead code there matched funct3
+                 * 1 and 3 -- which are not c.sb/c.sh -- and computed no offset
+                 * field whatsoever. */
+                uint32_t op = (ci >> 10) & 0x7u;
+                if (op == 0x2 || op == 0x3) {
+                    uint32_t rs1_p = (ci >> 7) & 0x7u;
+                    uint32_t rs2_p = (ci >> 2) & 0x7u;
+                    /* uimm[1] = encoding[5]; uimm[0] = encoding[6] for c.sb,
+                     * and 0 for c.sh. */
+                    uint32_t off = ((ci >> 5) & 0x1u) << 1;
+                    if (op == 0x2)
+                        off |= (ci >> 6) & 0x1u;
+                    uint32_t addr = cpu->x[8 + rs1_p] + off;
+                    if (op == 0x2)
+                        rv_write8(cpu, addr, (uint8_t)cpu->x[8 + rs2_p]);
+                    else
+                        rv_write16(cpu, addr, (uint16_t)cpu->x[8 + rs2_p]);
                     break;
                 }
                 goto c_illegal;
             }
+            default:
+                goto c_illegal;
             }
             break;
 
