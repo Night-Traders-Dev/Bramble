@@ -392,14 +392,25 @@ the read-modify-write each SET/CLR/XOR alias performs -- sent a byte to whatever
 was attached. `name_prompt.uf2` produces identical output and runs ~3% fewer
 instructions, since it was doing phantom transfers in its poll loop.
 
-### Bus-fault exceptions — **not attempted**
+### Bus-fault exceptions — **not attempted, and reassessed**
 Raising mcause 1/5/7 requires the bus to say *whether* an address is mapped, and
 `mem_read32()` has no such answer: it falls through to the shared RP2040 bus,
 which answers 0 for everything. Adding it means writing a `membus_is_mapped()`
-that mirrors the entire peripheral decode, and any address misclassified as
-unmapped would start trapping and break firmware. That is a bad trade to make
-without hardware to check against, so the RV core still returns 0 for unmapped
-accesses. See "F1" below.
+that mirrors the entire peripheral decode — `mem_read32()` alone has 47 return
+points — and any address misclassified as unmapped would start trapping and
+breaking firmware, with no way to tell from the test suite that a region had
+simply been forgotten.
+
+A narrower variant was considered and rejected: fault only on *instruction
+fetch* outside flash/ROM/SRAM. That is safe, but worth little, because an
+unmapped fetch already reads as `0x0000`, which decodes as an illegal
+instruction and traps — with the wrong cause, but it traps. Firmware that
+distinguishes access fault from illegal instruction is rare, and that
+correctness is not worth the decode-mirroring risk.
+
+This needs either real hardware to check region classifications against, or a
+refactor that makes the peripheral decode return "handled" explicitly instead of
+inferring it from fallthrough.
 
 ### C10 — **fixed in `8b9502c`**
 Peripheral IRQs now reach `mip.MEIP` via an NVIC → Xh3irq sink installed by
