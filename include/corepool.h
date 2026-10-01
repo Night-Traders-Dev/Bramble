@@ -83,6 +83,13 @@ void corepool_stop_threads(void);
 /* Signal sleeping cores to wake (call after NVIC pend, SysTick, etc.) */
 void corepool_wake_cores(void);
 
+/* Raise the ARM local event register for a core, waking it if it is parked
+ * in WFE. Used by SEV and by anything a guest may be waiting on without an
+ * interrupt (SIO spinlock release, inter-core FIFO push, SEV/WFE park).
+ * Safe to call from any core; must be called with emu_lock held or from a
+ * context that already serialises core state. */
+void corepool_signal_event(int core_id);
+
 /* Acquire/release the big emulator lock (for peripheral access from threads) */
 void corepool_lock(void);
 void corepool_unlock(void);

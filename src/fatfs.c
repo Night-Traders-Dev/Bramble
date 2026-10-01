@@ -28,6 +28,13 @@ static void write16(uint8_t *p, uint16_t val) {
     p[1] = (val >> 8) & 0xFF;
 }
 
+static void write32(uint8_t *p, uint32_t val) {
+    p[0] = val & 0xFF;
+    p[1] = (val >> 8) & 0xFF;
+    p[2] = (val >> 16) & 0xFF;
+    p[3] = (val >> 24) & 0xFF;
+}
+
 /* Convert "FILENAME.EXT" to FAT 8.3 format "FILENAMEEXT" (space-padded) */
 static void name_to_fat83(const char *name, char *fat_name) {
     memset(fat_name, ' ', 11);
@@ -75,9 +82,29 @@ static void fat83_to_name(const char *fat_name, char *name) {
     name[pos] = '\0';
 }
 
-/* Get cluster offset in media */
+/* Number of root directory entries that are actually backed by the media.
+ * root_entry_count is guest-controlled (up to 65535) and the root directory is
+ * validated to fit in mount(), but this keeps every accessor independently
+ * bounded rather than relying on that. */
+static uint32_t fat16_root_entries(const fat16_fs_t *fs) {
+    if (!fs->geometry_valid) return 0;
+    uint64_t avail = (uint64_t)fs->media_size - fs->root_dir_offset;
+    uint64_t n = avail / 32;
+    if (n > fs->root_entry_count) n = fs->root_entry_count;
+    return (uint32_t)n;
+}
+
+/* Byte offset of a cluster's first sector, or 0 if the cluster is out of range.
+ * The multiplication is done in 64 bits: cluster_size can be up to 130560 and
+ * the cluster number is read straight out of an on-disk directory entry, so the
+ * 32-bit product could wrap and defeat the caller's bounds check. */
 static uint32_t cluster_offset(fat16_fs_t *fs, uint16_t cluster) {
-    return fs->data_offset + (uint32_t)(cluster - 2) * fs->cluster_size;
+    if (cluster < 2) return 0;
+    if ((uint32_t)(cluster - 2) >= fs->total_clusters) return 0;
+    uint64_t off = (uint64_t)fs->data_offset +
+                   (uint64_t)(cluster - 2) * (uint64_t)fs->cluster_size;
+    if (off > (uint64_t)fs->media_size) return 0;
+    return (uint32_t)off;
 }
 
 /* Read FAT entry for a cluster (supports FAT12 and FAT16) */
@@ -167,7 +194,8 @@ static void fat_free_chain(fat16_fs_t *fs, uint16_t cluster) {
 /* Find a root directory entry by 8.3 name. Returns pointer or NULL. */
 static fat16_dirent_t *find_dirent(fat16_fs_t *fs, const char *fat_name) {
     uint8_t *root = &fs->media[fs->root_dir_offset];
-    for (int i = 0; i < fs->root_entry_count; i++) {
+    uint32_t max = fat16_root_entries(fs);
+    for (uint32_t i = 0; i < max; i++) {
         fat16_dirent_t *de = (fat16_dirent_t *)(root + i * 32);
         if ((uint8_t)de->name[0] == 0x00) break;  /* End of entries */
         if ((uint8_t)de->name[0] == 0xE5) continue; /* Deleted */
@@ -182,7 +210,8 @@ static fat16_dirent_t *find_dirent(fat16_fs_t *fs, const char *fat_name) {
 /* Find a free root directory slot. Returns pointer or NULL. */
 static fat16_dirent_t *find_free_dirent(fat16_fs_t *fs) {
     uint8_t *root = &fs->media[fs->root_dir_offset];
-    for (int i = 0; i < fs->root_entry_count; i++) {
+    uint32_t max = fat16_root_entries(fs);
+    for (uint32_t i = 0; i < max; i++) {
         fat16_dirent_t *de = (fat16_dirent_t *)(root + i * 32);
         if ((uint8_t)de->name[0] == 0x00 || (uint8_t)de->name[0] == 0xE5) {
             return de;
@@ -211,30 +240,43 @@ int fat16_mount(fat16_fs_t *fs, uint8_t *media, size_t media_size) {
     fs->reserved_sectors = read16(&media[14]);
     fs->num_fats = media[16];
     fs->root_entry_count = read16(&media[17]);
+    /* 16-bit field first; 0 means "use the 32-bit field at 0x20". Keeping this
+     * 32-bit is what allows volumes above 32 MiB to mount at all. */
     fs->total_sectors = read16(&media[19]);
     if (fs->total_sectors == 0) {
-        fs->total_sectors = (uint16_t)read32(&media[32]); /* Large sector count */
+        fs->total_sectors = read32(&media[32]);
     }
     fs->sectors_per_fat = read16(&media[22]);
 
-    /* Validate */
+    /* Validate the fields we must have before doing arithmetic with them. */
     if (fs->bytes_per_sector != 512) return -1;
     if (fs->sectors_per_cluster == 0) return -1;
     if (fs->num_fats == 0) return -1;
     if (fs->sectors_per_fat == 0) return -1;
+    if (fs->total_sectors == 0) return -1;
 
-    /* Compute offsets */
-    fs->fat_offset = (uint32_t)fs->reserved_sectors * fs->bytes_per_sector;
-    fs->root_dir_sectors = ((uint32_t)fs->root_entry_count * 32 + fs->bytes_per_sector - 1) /
-                           fs->bytes_per_sector;
-    fs->root_dir_offset = fs->fat_offset +
-                          (uint32_t)fs->num_fats * fs->sectors_per_fat * fs->bytes_per_sector;
-    fs->data_offset = fs->root_dir_offset + fs->root_dir_sectors * fs->bytes_per_sector;
-    fs->cluster_size = (uint32_t)fs->sectors_per_cluster * fs->bytes_per_sector;
+    /* Compute offsets. Every product is done in 64 bits: the BPB is fully
+     * guest-controlled, and the 32-bit sums wrap (num_fats*sectors_per_fat*
+     * bytes_per_sector alone can reach ~4 GiB). */
+    uint64_t bps    = fs->bytes_per_sector;
+    uint64_t fat_sz = (uint64_t)fs->sectors_per_fat * bps;
 
-    uint32_t data_sectors = fs->total_sectors - (fs->reserved_sectors +
-                            fs->num_fats * fs->sectors_per_fat + fs->root_dir_sectors);
-    fs->total_clusters = data_sectors / fs->sectors_per_cluster;
+    fs->fat_offset    = (uint32_t)((uint64_t)fs->reserved_sectors * bps);
+    fs->root_dir_sectors = ((uint64_t)fs->root_entry_count * 32 + bps - 1) / bps;
+    fs->root_dir_offset = fs->fat_offset + (uint32_t)((uint64_t)fs->num_fats * fat_sz);
+    fs->data_offset    = fs->root_dir_offset + (uint32_t)(fs->root_dir_sectors * bps);
+    fs->cluster_size   = (uint32_t)((uint64_t)fs->sectors_per_cluster * bps);
+
+    uint64_t meta_sectors = (uint64_t)fs->reserved_sectors +
+                            (uint64_t)fs->num_fats * fs->sectors_per_fat +
+                            fs->root_dir_sectors;
+    /* O11: the declared metadata must not exceed the declared volume. Without
+     * this, a crafted reserved_sectors/sectors_per_fat drives root_dir_offset
+     * megabytes past the media and every dirent access is an OOB read or
+     * write. */
+    if (meta_sectors > fs->total_sectors) return -1;
+    uint64_t data_sectors = fs->total_sectors - meta_sectors;
+    fs->total_clusters = (uint32_t)(data_sectors / fs->sectors_per_cluster);
 
     /* Determine FAT type by cluster count (Microsoft spec) */
     if (fs->total_clusters < 4085) {
@@ -246,14 +288,28 @@ int fat16_mount(fat16_fs_t *fs, uint8_t *media, size_t media_size) {
     }
     if (fs->total_clusters == 0) return -1;
 
+    /* O11/O13: the whole derived layout, including the FAT copies and the
+     * entire data area, must lie inside the media. Each check is written as a
+     * subtraction so it cannot itself overflow. */
+    if ((uint64_t)fs->fat_offset > (uint64_t)media_size) return -1;
+    if ((uint64_t)fs->num_fats * fat_sz > (uint64_t)media_size - fs->fat_offset) return -1;
+    if ((uint64_t)fs->root_dir_offset > (uint64_t)media_size) return -1;
+    if (fs->root_dir_sectors * bps > (uint64_t)media_size - fs->root_dir_offset) return -1;
+    if ((uint64_t)fs->data_offset > (uint64_t)media_size) return -1;
+    if ((uint64_t)fs->total_clusters * fs->cluster_size >
+        (uint64_t)media_size - fs->data_offset) return -1;
+
+    fs->geometry_valid = 1;
     return 0;
 }
 
 int fat16_list_root(fat16_fs_t *fs, fat16_fileinfo_t *files, int max_files) {
     int count = 0;
+    if (!fs->geometry_valid) return 0;
     uint8_t *root = &fs->media[fs->root_dir_offset];
+    uint32_t entries = fat16_root_entries(fs);
 
-    for (int i = 0; i < fs->root_entry_count && count < max_files; i++) {
+    for (uint32_t i = 0; i < entries && count < max_files; i++) {
         fat16_dirent_t *de = (fat16_dirent_t *)(root + i * 32);
         if ((uint8_t)de->name[0] == 0x00) break;
         if ((uint8_t)de->name[0] == 0xE5) continue;
@@ -262,8 +318,8 @@ int fat16_list_root(fat16_fs_t *fs, fat16_fileinfo_t *files, int max_files) {
 
         fat83_to_name(de->name, files[count].name);
         files[count].attr = de->attr;
-        files[count].size = de->file_size;
-        files[count].cluster = de->cluster_lo;
+        files[count].size = read32((const uint8_t *)&de->file_size);
+        files[count].cluster = read16((const uint8_t *)&de->cluster_lo);
         count++;
     }
 
@@ -277,8 +333,9 @@ int fat16_read_file(fat16_fs_t *fs, const char *name, uint8_t *buf, size_t buf_s
     fat16_dirent_t *de = find_dirent(fs, fat_name);
     if (!de) return -1;
 
-    uint32_t file_size = de->file_size;
+    uint32_t file_size = read32((const uint8_t *)&de->file_size);
     if (file_size > buf_size) file_size = (uint32_t)buf_size;
+    if (de->cluster_lo == 0) return -1;   /* empty or unreachable chain */
 
     uint16_t cluster = de->cluster_lo;
     uint32_t remaining = file_size;
@@ -289,7 +346,8 @@ int fat16_read_file(fat16_fs_t *fs, const char *name, uint8_t *buf, size_t buf_s
         uint32_t chunk = fs->cluster_size;
         if (chunk > remaining) chunk = remaining;
 
-        if (off + chunk > fs->media_size) break;
+        if ((uint64_t)off + chunk > (uint64_t)fs->media_size) break;
+        if ((uint64_t)pos + chunk > (uint64_t)buf_size) break;
         memcpy(&buf[pos], &fs->media[off], chunk);
 
         pos += chunk;
@@ -316,8 +374,9 @@ int fat16_write_file(fat16_fs_t *fs, const char *name, const uint8_t *data, size
     if (!de) return -1;
 
     /* Allocate clusters */
-    uint32_t clusters_needed = (size + fs->cluster_size - 1) / fs->cluster_size;
+    uint32_t clusters_needed = (uint32_t)((size + fs->cluster_size - 1) / fs->cluster_size);
     if (clusters_needed == 0) clusters_needed = 1; /* At least one cluster for empty files */
+    if (clusters_needed > fs->total_clusters) return -1;  /* cannot fit in the volume */
 
     uint16_t first_cluster = 0;
     uint16_t prev_cluster = 0;
@@ -341,18 +400,27 @@ int fat16_write_file(fat16_fs_t *fs, const char *name, const uint8_t *data, size
     uint16_t cluster = first_cluster;
     uint32_t remaining = (uint32_t)size;
     uint32_t pos = 0;
+    int short_write = 0;
 
-    while (remaining > 0 && cluster >= 2 && !fat_is_eoc(fs, cluster)) {
+    while (remaining > 0) {
+        if (cluster < 2 || fat_is_eoc(fs, cluster)) { short_write = 1; break; }
+
         uint32_t off = cluster_offset(fs, cluster);
         uint32_t chunk = fs->cluster_size;
         if (chunk > remaining) chunk = remaining;
 
-        if (off + chunk <= fs->media_size) {
-            memcpy(&fs->media[off], &data[pos], chunk);
-            /* Zero-fill remainder of last cluster */
-            if (chunk < fs->cluster_size) {
-                memset(&fs->media[off + chunk], 0, fs->cluster_size - chunk);
-            }
+        /* cluster_offset() returns 0 for an out-of-range cluster, and the media
+         * bound is checked in 64 bits. Previously a chain running off the end
+         * of the media was skipped silently while the dirent still advertised
+         * the full file_size, so callers saw success and the tail of the data
+         * was simply gone. */
+        if (off == 0 && fs->data_offset != 0) { short_write = 1; break; }
+        if ((uint64_t)off + fs->cluster_size > (uint64_t)fs->media_size) { short_write = 1; break; }
+
+        memcpy(&fs->media[off], &data[pos], chunk);
+        /* Zero-fill remainder of last cluster */
+        if (chunk < fs->cluster_size) {
+            memset(&fs->media[off + chunk], 0, fs->cluster_size - chunk);
         }
 
         pos += chunk;
@@ -360,19 +428,27 @@ int fat16_write_file(fat16_fs_t *fs, const char *name, const uint8_t *data, size
         cluster = fat_read(fs, cluster);
     }
 
-    /* Create directory entry */
+    if (short_write) {
+        /* Roll back so no truncated file is left behind. */
+        fat_free_chain(fs, first_cluster);
+        return -1;
+    }
+
+    /* Create directory entry. Written via write16/write32 so the on-disk
+     * little-endian layout is explicit and the packed struct is not written
+     * through as a native-endian object. */
     memcpy(de->name, fat_name, 11);
-    de->attr = FAT16_ATTR_ARCHIVE;
+    de->name[11] = FAT16_ATTR_ARCHIVE;
     de->reserved = 0;
     de->ctime_tenths = 0;
-    de->ctime = 0;
-    de->cdate = 0;
-    de->adate = 0;
-    de->cluster_hi = 0;
-    de->mtime = 0;
-    de->mdate = 0;
-    de->cluster_lo = first_cluster;
-    de->file_size = (uint32_t)size;
+    write16((uint8_t *)&de->ctime, 0);
+    write16((uint8_t *)&de->cdate, 0);
+    write16((uint8_t *)&de->adate, 0);
+    write16((uint8_t *)&de->cluster_hi, 0);
+    write16((uint8_t *)&de->mtime, 0);
+    write16((uint8_t *)&de->mdate, 0);
+    write16((uint8_t *)&de->cluster_lo, first_cluster);
+    write32((uint8_t *)&de->file_size, (uint32_t)size);
 
     return 0;
 }
@@ -399,8 +475,8 @@ int fat16_stat(fat16_fs_t *fs, const char *name, fat16_fileinfo_t *info) {
 
     fat83_to_name(de->name, info->name);
     info->attr = de->attr;
-    info->size = de->file_size;
-    info->cluster = de->cluster_lo;
+    info->size = read32((const uint8_t *)&de->file_size);
+    info->cluster = read16((const uint8_t *)&de->cluster_lo);
 
     return 0;
 }

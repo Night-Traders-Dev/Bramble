@@ -447,6 +447,9 @@ static int rom_intercept_flash(uint32_t pc) {
             memset(&cpu.flash[offs], 0xFF, count);
             flash_persist_sync(offs, count);
             pthread_mutex_unlock(&fuse_flash_mutex);
+            /* O8: the region may be the one being executed from. */
+            icache_invalidate_range(FLASH_BASE + offs, count);
+            jit_invalidate_range(FLASH_BASE + offs, count);
         }
         return 1;
     }
@@ -463,6 +466,9 @@ static int rom_intercept_flash(uint32_t pc) {
             }
             flash_persist_sync(offs, count);
             pthread_mutex_unlock(&fuse_flash_mutex);
+            /* O8: see the erase path above. */
+            icache_invalidate_range(FLASH_BASE + offs, count);
+            jit_invalidate_range(FLASH_BASE + offs, count);
         }
         return 1;
     }

@@ -319,7 +319,10 @@ static void *core_thread_fn(void *arg) {
             uint32_t pending = nvic_get_pending_irq();
             int wake = (pending != 0xFFFFFFFF) ||
                        systick_states[core_id].pending ||
-                       nvic_states[core_id].pendsv_pending;
+                       nvic_states[core_id].pendsv_pending ||
+                       /* A core parked in WFE wakes on its event register,
+                        * independent of interrupt enables. */
+                       cores[core_id].event_pending;
 
             if (!wake) {
                 /* Sleep with 1ms timeout (for periodic checks) */
@@ -349,8 +352,12 @@ static void *core_thread_fn(void *arg) {
 
                 /* Any core in WFI/WFE: advance shared TIMER by host elapsed so
                  * sleep_until/alarms work while the peer core stays busy (e.g.
-                 * cyw43_arch_init on core0 + BusLoop on core1). */
-                if (elapsed_us > 0) {
+                 * cyw43_arch_init on core0 + BusLoop on core1).
+                 * Only ONE core may do this per wall-clock interval: with both
+                 * cores asleep each would tick the timer for the same elapsed
+                 * host time and the emulated timers would run at up to 2x. The
+                 * cooperative scheduler already restricts this to core 0. */
+                if (elapsed_us > 0 && core_id == CORE0) {
                     timer_tick(elapsed_us);
                     rtc_tick(elapsed_us);
                 }
@@ -364,22 +371,29 @@ static void *core_thread_fn(void *arg) {
         cpu_bind_context_t bind_ctx;
         int bound = cpu_bind_core_context(core_id, &bind_ctx);
         if (bound) {
+            int executed = 0;
             for (int steps = 0; steps < corepool.step_quantum; steps++) {
                 if (!corepool.running || cores[core_id].is_wfi) {
                     break;
                 }
 
                 cpu_step();
-
-                /* Shared peripheral progression stays tied to guest instruction flow. */
-                if (core_id == CORE0) {
-                    pio_step();
-                    usb_step();
-                }
+                executed++;
 
                 if (cpu.r[15] == 0xFFFFFFFF) {
                     break;
                 }
+            }
+
+            /* Shared peripheral progression stays tied to guest instruction flow,
+             * but must not depend on WHICH core is running: previously both calls
+             * were gated on core_id == CORE0, so if core 0 halted or slept, a core
+             * 1 PIO state machine (the standard CYW43/SDIO pattern) froze with no
+             * diagnostic. Advancing once per quantum here matches the cooperative
+             * scheduler, which calls both unconditionally per round-robin pass. */
+            if (executed > 0) {
+                pio_step();
+                usb_step();
             }
 
             cpu_unbind_core_context(core_id, &bind_ctx);
@@ -399,17 +413,34 @@ static void *core_thread_fn(void *arg) {
  * ======================================================================== */
 
 void corepool_start_threads(void) {
-    corepool.running = 1;
+    int started = 0;
 
     for (int i = 0; i < num_active_cores; i++) {
+        /* Publish before creating: pthread_create() can return with the new
+         * thread already runnable, so setting thread_active afterwards left a
+         * window in which a concurrent corepool_stop_threads() saw 0, skipped
+         * the join, and corepool_cleanup() then destroyed the mutex the thread
+         * was blocked on. If creation fails we roll the flag back. */
+        corepool.thread_active[i] = 1;
         if (pthread_create(&corepool.threads[i], NULL,
                            core_thread_fn, (void *)(intptr_t)i) == 0) {
-            corepool.thread_active[i] = 1;
             fprintf(stderr, "[CorePool] Started thread for Core %d\n", i);
+            started++;
         } else {
             fprintf(stderr, "[CorePool] Failed to start thread for Core %d\n", i);
             corepool.thread_active[i] = 0;
         }
+    }
+
+    /* O4: never leave the pool marked running with no core executing -- the
+     * main loop only tests any_core_running() and cores[].is_halted, so a
+     * failed core-0 thread would spin at 100% host CPU with no guest progress
+     * and no further diagnostic. */
+    if (started == 0) {
+        fprintf(stderr, "[CorePool] No core threads could be started\n");
+        corepool.running = 0;
+    } else {
+        corepool.running = 1;
     }
 }
 
@@ -418,12 +449,18 @@ void corepool_start_core_thread(int core_id) {
     if (corepool.thread_active[core_id]) return; /* Already running */
     if (!corepool.running) return; /* Not in threaded mode */
 
+    corepool.thread_active[core_id] = 1;
     if (pthread_create(&corepool.threads[core_id], NULL,
                        core_thread_fn, (void *)(intptr_t)core_id) == 0) {
-        corepool.thread_active[core_id] = 1;
         fprintf(stderr, "[CorePool] Started thread for Core %d (dynamic launch)\n", core_id);
     } else {
         fprintf(stderr, "[CorePool] Failed to start thread for Core %d\n", core_id);
+        corepool.thread_active[core_id] = 0;
+        /* O4: the caller has already cleared is_halted by this point, so a
+         * failure here would leave a core that will never execute yet is
+         * reported as running. Put it back to halted so the emulator reports a
+         * stopped core rather than hanging. */
+        cores[core_id].is_halted = 1;
     }
 }
 
@@ -450,6 +487,15 @@ void corepool_wake_cores(void) {
     pthread_cond_broadcast(&corepool.wfi_cond);
 }
 
+void corepool_signal_event(int core_id) {
+    if (core_id < 0 || core_id >= NUM_CORES) return;
+    cores[core_id].event_pending = 1;
+    /* A core parked in WFE wakes on its own event regardless of interrupt
+     * enable state -- this is the whole point of the event register. */
+    if (cores[core_id].is_wfe) cores[core_id].is_wfi = 0;
+    corepool_wake_cores();
+}
+
 void corepool_lock(void) {
     pthread_mutex_lock(&corepool.emu_lock);
 }
@@ -459,9 +505,11 @@ void corepool_unlock(void) {
 }
 
 void corepool_cleanup(void) {
-    if (corepool.running) {
-        corepool_stop_threads();
-    }
+    /* O5: always attempt the stop. Gating on corepool.running meant that if the
+     * flag was already cleared by an earlier stop, a thread created during the
+     * teardown window was never joined and the mutex below was destroyed under
+     * it. stop_threads() is idempotent (it just sets running=0 and joins). */
+    corepool_stop_threads();
     corepool_unregister();
     pthread_mutex_destroy(&corepool.emu_lock);
     pthread_cond_destroy(&corepool.wfi_cond);

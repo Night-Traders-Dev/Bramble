@@ -58,7 +58,7 @@ typedef struct {
     uint16_t reserved_sectors;
     uint8_t  num_fats;
     uint16_t root_entry_count;
-    uint16_t total_sectors;
+    uint32_t total_sectors;    /* 32-bit: a 16-bit field truncated every volume > 32 MiB */
     uint16_t sectors_per_fat;
 
     /* Computed offsets (byte offsets into media) */
@@ -69,6 +69,7 @@ typedef struct {
     uint32_t cluster_size;      /* Bytes per cluster */
     uint32_t total_clusters;    /* Total data clusters */
     int is_fat12;               /* 1 if FAT12, 0 if FAT16 */
+    int geometry_valid;         /* 1 once the derived layout is known to fit in media */
 } fat16_fs_t;
 
 /* File info for directory listing */

@@ -522,7 +522,16 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-mount-offset") == 0) {
             if (i + 1 < argc) {
-                mount_offset = (uint32_t)strtoul(argv[++i], NULL, 0);
+                unsigned long mo = strtoul(argv[++i], NULL, 0);
+                /* O17: FLASH_SIZE - fs_offset underflowed for any offset past
+                 * the end of flash, handing fuse_mount_start() a pointer
+                 * megabytes beyond cpu.flash[] and a ~4 GiB size. */
+                if (mo >= FLASH_SIZE) {
+                    fprintf(stderr, "[Error] -mount-offset must be < 0x%X (got 0x%lX)\n",
+                            (unsigned)FLASH_SIZE, mo);
+                    return EXIT_FAILURE;
+                }
+                mount_offset = (uint32_t)mo;
                 mount_offset_set = 1;
             }
         } else if (strcmp(argv[i], "-sdcard") == 0) {
@@ -932,6 +941,11 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[FUSE] Warning: no -flash file — mount is volatile (changes lost on exit)\n");
         }
 
+        if (fs_offset >= FLASH_SIZE) {
+            fprintf(stderr, "[Error] mount offset 0x%X is outside flash (size 0x%X)\n",
+                    (unsigned)fs_offset, (unsigned)FLASH_SIZE);
+            goto skip_fuse;
+        }
         uint32_t fs_size = FLASH_SIZE - fs_offset;
         fuse_set_flash_offset(fs_offset);
         int fuse_rc = fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);
@@ -1333,11 +1347,18 @@ skip_fuse:
             if (w5500_live) w5500_poll(&w5500_dev);
             corepool_unlock();
 
-            /* Periodic storage flush */
+            /* Periodic storage flush. Taken under emu_lock because the flush
+             * writes the entire backing image while a core thread may be
+             * running a guest SPI transfer against the same buffer; the two
+             * used different locks, so the host image file could be torn. */
             step_count++;
             if ((step_count & 0x3FF) == 0) {
-                if (sdcard_path) sdcard_flush(&sdcard);
-                if (emmc_path) emmc_flush(&emmc_dev);
+                if (sdcard_path || emmc_path) {
+                    corepool_lock();
+                    if (sdcard_path) sdcard_flush(&sdcard);
+                    if (emmc_path) emmc_flush(&emmc_dev);
+                    corepool_unlock();
+                }
             }
 
             /* Watchdog reboot */
@@ -1433,10 +1454,15 @@ skip_fuse:
                 if (w5500_live) w5500_poll(&w5500_dev);
             }
 
-            /* Flush dirty storage devices every ~1M steps */
+            /* Flush dirty storage devices every ~1M steps (see the threaded
+             * loop above for why this is under emu_lock). */
             if ((step_count & 0xFFFFF) == 0) {
-                if (sdcard_path) sdcard_flush(&sdcard);
-                if (emmc_path) emmc_flush(&emmc_dev);
+                if (sdcard_path || emmc_path) {
+                    corepool_lock();
+                    if (sdcard_path) sdcard_flush(&sdcard);
+                    if (emmc_path) emmc_flush(&emmc_dev);
+                    corepool_unlock();
+                }
             }
 
             if (show_status && (step_count % 1000 == 0)) {

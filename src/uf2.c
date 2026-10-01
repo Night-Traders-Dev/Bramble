@@ -44,7 +44,16 @@ static int uf2_block_flash_offset(const uf2_block_t *block, uint32_t *offset_out
         return 0;
     }
 
-    *offset_out = offset;
+    /* O15: the bus used to map only FLASH_SIZE (2 MiB) while the loader
+     * accepted up to FLASH_SIZE_MAX, so a larger image loaded "successfully"
+     * but its upper part was unreachable by the CPU. Validate against the real
+     * backing array and publish the size the bus should map. */
+    if (offset_out) {
+        *offset_out = offset;
+        if (offset + block->payload_size > emu_flash_size) {
+            emu_flash_size_set(offset + block->payload_size);
+        }
+    }
     return 1;
 }
 

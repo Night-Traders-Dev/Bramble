@@ -1692,10 +1692,16 @@ void dual_core_step(void) {
             uint32_t pending = nvic_get_pending_irq();
             int wake = (pending != 0xFFFFFFFF) ||
                        systick_states[c].pending ||
-                       nvic_states[c].pendsv_pending;
+                       nvic_states[c].pendsv_pending ||
+                       cores[c].event_pending;   /* WFE event register */
             set_active_core(saved_core);
             if (!wake) continue;
             cores[c].is_wfi = 0;  /* Wake up */
+            if (cores[c].is_wfe) {
+                /* Consume the event; the WFE then returns immediately. */
+                cores[c].event_pending = 0;
+                cores[c].is_wfe = 0;
+            }
         }
 
         /* Use bind/unbind to avoid double save/restore overhead of cpu_step_core */
@@ -1984,6 +1990,13 @@ uint32_t spinlock_acquire(uint32_t lock_num) {
 void spinlock_release(uint32_t lock_num) {
     if (lock_num >= SPINLOCK_SIZE) return;
     spinlocks[lock_num] = 0;
+    /* spin_unlock_unsafe() in the SDK sends no SEV, so a peer blocked in
+     * spin_lock()'s "SEV; WFE;" loop has to be woken here or it waits for the
+     * next unrelated event. Raise the event register on both cores: it is
+     * consumed by a WFE if one is pending and otherwise just latches, which is
+     * exactly the ARM semantics. */
+    corepool_signal_event(CORE0);
+    corepool_signal_event(CORE1);
 }
 
 /* ========================================================================
@@ -2057,6 +2070,10 @@ int fifo_try_push(int core_id, uint32_t val) {
 
     /* Signal SIO IRQ for the receiving core */
     nvic_signal_irq(core_id == CORE0 ? IRQ_SIO_IRQ_PROC0 : IRQ_SIO_IRQ_PROC1);
+    /* multicore_fifo_pop_blocking() is "while (!fifo_rvalid()) __wfe();" -- it
+     * relies on the event, not on the interrupt, which the receiver may have
+     * masked. */
+    corepool_signal_event(core_id);
 
     return 1;
 }

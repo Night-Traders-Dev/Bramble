@@ -149,17 +149,19 @@ static int bramble_read(const char *path, char *buf, size_t size, off_t offset,
         return -ENOMEM;
     }
 
+    if ((uint64_t)offset + (uint64_t)size > (uint64_t)info.size) size = info.size - (uint32_t)offset;
+
     int n = fat16_read_file(&fuse_fs, name, tmp, info.size);
     pthread_mutex_unlock(&fuse_flash_mutex);
 
-    if (n < 0) {
+    /* A short read leaves the tail of tmp uninitialised, and that uninitialised
+     * heap was being copied straight to the host. */
+    if (n < 0 || (uint32_t)n < (uint32_t)offset + size) {
         free(tmp);
         return -EIO;
     }
 
-    uint32_t avail = info.size - (uint32_t)offset;
-    if (size > avail) size = avail;
-    memcpy(buf, tmp + offset, size);
+    memcpy(buf, tmp + (size_t)offset, size);
 
     free(tmp);
     return (int)size;
@@ -180,22 +182,38 @@ static int bramble_write(const char *path, const char *buf, size_t size,
         old_size = info.size;
     }
 
+    /* Validate the offset before any arithmetic. off_t is 64-bit; the file
+     * size was narrowed to uint32_t, so a large or negative offset previously
+     * produced a small allocation followed by a memcpy at the full offset. */
+    if (offset < 0 || (uint64_t)offset > UINT32_MAX) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return -EINVAL;
+    }
+    if ((uint64_t)offset + (uint64_t)size > (uint64_t)UINT32_MAX) {
+        pthread_mutex_unlock(&fuse_flash_mutex);
+        return -EFBIG;
+    }
+
     /* Read existing file content */
-    uint32_t new_size = (uint32_t)(offset + size);
+    uint32_t new_size = (uint32_t)((uint64_t)offset + (uint64_t)size);
     if (new_size < old_size) new_size = old_size;
 
-    tmp = calloc(1, new_size);
+    tmp = calloc(1, new_size ? new_size : 1);
     if (!tmp) {
         pthread_mutex_unlock(&fuse_flash_mutex);
         return -ENOMEM;
     }
 
     if (old_size > 0) {
-        fat16_read_file(&fuse_fs, name, tmp, old_size);
+        if (fat16_read_file(&fuse_fs, name, tmp, old_size) < 0) {
+            free(tmp);
+            pthread_mutex_unlock(&fuse_flash_mutex);
+            return -EIO;
+        }
     }
 
     /* Apply write */
-    memcpy(tmp + offset, buf, size);
+    memcpy(tmp + (size_t)offset, buf, size);
 
     /* Write back */
     int rc = fat16_write_file(&fuse_fs, name, tmp, new_size);
@@ -242,6 +260,11 @@ static int bramble_truncate(const char *path, off_t size,
     (void)fi;
     const char *name = path + 1;
 
+    /* off_t is 64-bit but the file size is narrowed to uint32_t below. */
+    if (size < 0 || (uint64_t)size > UINT32_MAX) {
+        return -EINVAL;
+    }
+
     pthread_mutex_lock(&fuse_flash_mutex);
 
     if (size == 0) {
@@ -268,7 +291,11 @@ static int bramble_truncate(const char *path, off_t size,
 
     uint32_t copy_size = info.size < (uint32_t)size ? info.size : (uint32_t)size;
     if (copy_size > 0) {
-        fat16_read_file(&fuse_fs, name, tmp, copy_size);
+        if ((uint32_t)fat16_read_file(&fuse_fs, name, tmp, copy_size) < copy_size) {
+            free(tmp);
+            pthread_mutex_unlock(&fuse_flash_mutex);
+            return -EIO;
+        }
     }
 
     int rc = fat16_write_file(&fuse_fs, name, tmp, (size_t)size);

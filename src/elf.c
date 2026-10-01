@@ -216,7 +216,9 @@ int load_elf(const char *filename) {
         uint32_t target = phdr.p_vaddr;
 
         /* Load into flash */
-        if (region_contains(FLASH_BASE, FLASH_SIZE, target, phdr.p_memsz)) {
+        if (region_contains(FLASH_BASE, FLASH_SIZE_MAX, target, phdr.p_memsz)) {
+            if (target - FLASH_BASE + phdr.p_memsz > emu_flash_size)
+                emu_flash_size_set(target - FLASH_BASE + phdr.p_memsz);
             uint32_t flash_offset = target - FLASH_BASE;
 
             /* Zero the memory region first (for .bss-like sections where memsz > filesz) */
@@ -241,7 +243,7 @@ int load_elf(const char *filename) {
             segments_loaded++;
         }
         /* Load into RAM */
-        else if (region_contains(RAM_BASE, RAM_SIZE, target, phdr.p_memsz)) {
+        else if (region_contains(RAM_BASE, RAM_SIZE_RP2350, target, phdr.p_memsz)) {
             uint32_t ram_offset = target - RAM_BASE;
 
             if (phdr.p_memsz > 0) {
@@ -262,7 +264,7 @@ int load_elf(const char *filename) {
 
             fprintf(stderr, "[ELF] Loaded %u bytes to RAM[0x%08X]\n", phdr.p_filesz, ram_offset);
 
-            if (region_contains(FLASH_BASE, FLASH_SIZE, phdr.p_paddr, phdr.p_filesz) &&
+            if (region_contains(FLASH_BASE, FLASH_SIZE_MAX, phdr.p_paddr, phdr.p_filesz) &&
                 phdr.p_paddr != phdr.p_vaddr) {
                 uint32_t flash_offset = phdr.p_paddr - FLASH_BASE;
 

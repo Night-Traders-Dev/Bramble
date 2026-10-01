@@ -34,7 +34,8 @@
 #define FLASH_SIZE_MAX  FLASH_SIZE_16MB      /* Max static allocation */
 #define FLASH_SIZE      FLASH_SIZE_2MB       /* Default (RP2040 compat) */
 #define RAM_BASE        0x20000000
-#define RAM_SIZE        (264 * 1024)         /* 264 KB on-chip SRAM */
+#define RAM_SIZE        (264 * 1024)         /* 264 KB RP2040 on-chip SRAM */
+#define RAM_SIZE_RP2350 (520 * 1024)        /* 520 KB RP2350 on-chip SRAM */
 #define RAM_TOP         (RAM_BASE + RAM_SIZE)
 
 /* SRAM alias (mirror at +0x01000000) */
@@ -117,6 +118,13 @@ typedef struct {
 extern cpu_state_t cpu;
 
 /* RP2350 mode flags and peripheral state */
+/* Bytes of XIP flash actually mapped by the memory bus. The backing array
+ * is FLASH_SIZE_MAX (16 MiB, per the RP2350 datasheet), but the bus only
+ * maps FLASH_SIZE (2 MiB) for RP2040. The loaders raise this when a larger
+ * image is supplied so that the loaders and the bus agree on one value. */
+extern uint32_t emu_flash_size;
+void emu_flash_size_set(uint32_t bytes);
+
 extern int membus_rp2350_mode;
 extern int membus_rv_delegate;
 extern void *membus_rp2350_periph;
@@ -183,6 +191,8 @@ typedef struct {
     int core_id;                    /* 0 or 1 */
     int is_halted;                  /* Execution state */
     int is_wfi;                     /* Core sleeping (WFI/WFE), skip until interrupt */
+    int is_wfe;                     /* Sleeping specifically in WFE (event wait) */
+    int event_pending;              /* Latched local event register, cleared by WFE */
     uint8_t it_remaining;           /* Thumb IT block: instructions left to predicate */
     uint8_t it_cond;                /* IT block base condition (bits [7:4] of IT insn) */
     uint8_t it_mask;                /* IT block mask (bits [3:0] of IT insn) */
@@ -242,6 +252,13 @@ void mem_write32(uint32_t addr, uint32_t val);
 uint32_t mem_read32(uint32_t addr);
 
 /* RP2350 mode flag: enables RP2350 SYSINFO, peripheral routing, 520KB SRAM */
+/* Bytes of XIP flash actually mapped by the memory bus. The backing array
+ * is FLASH_SIZE_MAX (16 MiB, per the RP2350 datasheet), but the bus only
+ * maps FLASH_SIZE (2 MiB) for RP2040. The loaders raise this when a larger
+ * image is supplied so that the loaders and the bus agree on one value. */
+extern uint32_t emu_flash_size;
+void emu_flash_size_set(uint32_t bytes);
+
 extern int membus_rp2350_mode;
 extern int membus_rv_delegate;
 /* RP2350 peripheral state for M33 mode (set by main.c) — void* to avoid header dependency */

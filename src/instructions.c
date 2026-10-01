@@ -1076,10 +1076,13 @@ static int mc_wfi_trace_count = 0;
 
 void instr_wfi(uint16_t instr) {
     (void)instr;
-    /* Mark active core as sleeping — dual_core_step will skip until interrupt */
+    /* Mark active core as sleeping — dual_core_step will skip until an
+     * interrupt is pending. Unlike WFE, WFI does not observe the event
+     * register (a pending SEV does not cancel a WFI). */
     int c = get_active_core();
     if (c < NUM_CORES) {
         cores[c].is_wfi = 1;
+        cores[c].is_wfe = 0;
     }
     if (multicore_trace_enabled && mc_wfi_trace_count < 8) {
         fprintf(stderr, "[MC-trace] WFI at PC=0x%08X core%d\n", cpu.r[15], c);
@@ -1092,10 +1095,20 @@ void instr_wfi(uint16_t instr) {
 
 void instr_wfe(uint16_t instr) {
     (void)instr;
-    /* WFE: sleep until event (treated same as WFI for now) */
+    /* WFE: if the local event register is already set, consume it and return
+     * immediately; otherwise sleep until an event arrives. Modelling this as a
+     * plain WFI was wrong: the wake predicates only test enabled interrupts, so
+     * firmware that waits on the event register with interrupts masked (the
+     * pico-sdk spin_lock() idiom is literally "SEV; WFE;") hung forever, as did
+     * multicore_fifo_pop_blocking(), which waits on the FIFO-valid bit. */
     int c = get_active_core();
     if (c < NUM_CORES) {
+        if (cores[c].event_pending) {
+            cores[c].event_pending = 0;
+            return;
+        }
         cores[c].is_wfi = 1;
+        cores[c].is_wfe = 1;
     }
     if (multicore_trace_enabled && mc_wfi_trace_count < 8) {
         fprintf(stderr, "[MC-trace] WFE at PC=0x%08X core%d\n", cpu.r[15], c);
@@ -1105,13 +1118,22 @@ void instr_wfe(uint16_t instr) {
 
 void instr_sev(uint16_t instr) {
     (void)instr;
-    /* SEV: wake all cores from WFE */
+    /* SEV: set the local event register and wake every core waiting on it. It
+     * must *latch* the event rather than merely clearing the sleep flag, or an
+     * event delivered before the peer's WFE is lost and that WFE never returns. */
     if (multicore_trace_enabled && mc_wfi_trace_count < 16) {
         fprintf(stderr, "[MC-trace] SEV at PC=0x%08X core%d\n", cpu.r[15], get_active_core());
         mc_wfi_trace_count++;
     }
     for (int i = 0; i < NUM_CORES; i++) {
-        cores[i].is_wfi = 0;
+        cores[i].event_pending = 1;
+        /* Only cores actually parked in WFE are disturbed; a core sleeping in
+         * WFI must stay asleep (the old code woke it, so "SEV; WFI;" never
+         * slept and busy-spun at 100% host CPU). */
+        if (cores[i].is_wfe) {
+            cores[i].is_wfi = 0;
+            cores[i].is_wfe = 0;
+        }
     }
     corepool_wake_cores();
 }

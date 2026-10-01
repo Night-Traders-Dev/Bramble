@@ -52,6 +52,17 @@ int mem_debug_unmapped = 0;  /* Set via -debug-mem flag */
  * Set by main.c when -arch m33 or -arch rv32. */
 int membus_rp2350_mode = 0;
 
+/* Bytes of XIP flash mapped by the bus. Defaults to the RP2040 2 MiB; the
+ * loaders raise it when a larger image is loaded so the bus and the loaders
+ * agree. Bounded by the backing array. */
+uint32_t emu_flash_size = FLASH_SIZE;
+
+void emu_flash_size_set(uint32_t bytes) {
+    if (bytes < FLASH_SIZE) bytes = FLASH_SIZE;
+    if (bytes > FLASH_SIZE_MAX) bytes = FLASH_SIZE_MAX;
+    emu_flash_size = bytes;
+}
+
 /* Hazard3 delegation: set only for the duration of a shared-bus access that
  * the RISC-V membus has already rewritten from an RP2350 address to its
  * RP2040 equivalent (see rv_translate_shared_addr). membus_rp2350_mode is
@@ -1059,12 +1070,12 @@ void mem_write32(uint32_t addr, uint32_t val) {
     }
 
     /* Writes to XIP flash (and uncached aliases) are ignored */
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         return;
     }
-    if (addr >= XIP_NOALLOC_BASE && addr < XIP_NOALLOC_BASE + FLASH_SIZE) return;
-    if (addr >= XIP_NOCACHE_BASE && addr < XIP_NOCACHE_BASE + FLASH_SIZE) return;
-    if (addr >= XIP_NOCACHE_NOALLOC && addr < XIP_NOCACHE_NOALLOC + FLASH_SIZE) return;
+    if (addr >= XIP_NOALLOC_BASE && addr < XIP_NOALLOC_BASE + emu_flash_size) return;
+    if (addr >= XIP_NOCACHE_BASE && addr < XIP_NOCACHE_BASE + emu_flash_size) return;
+    if (addr >= XIP_NOCACHE_NOALLOC && addr < XIP_NOCACHE_NOALLOC + emu_flash_size) return;
 
     /* XIP cache control registers */
     if (addr >= XIP_CTRL_BASE && addr < XIP_CTRL_BASE + 0x20) {
@@ -1420,7 +1431,7 @@ void mem_write16(uint32_t addr, uint16_t val) {
         gdb_check_watchpoint_write(addr, 2);
     addr = sram_alias_translate(addr);
 
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         return;
     }
 
@@ -1477,7 +1488,7 @@ void mem_write8(uint32_t addr, uint8_t val) {
         gdb_check_watchpoint_write(addr, 1);
     addr = sram_alias_translate(addr);
 
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         return;  /* Flash writes ignored */
     }
 
@@ -1554,25 +1565,25 @@ uint32_t mem_read32(uint32_t addr) {
     }
 
     /* XIP flash (and uncached aliases read from same backing store) */
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         uint32_t offset = addr - FLASH_BASE;
         uint32_t val;
         memcpy(&val, &cpu.flash[offset], 4);
         return val;
     }
-    if (addr >= XIP_NOALLOC_BASE && addr < XIP_NOALLOC_BASE + FLASH_SIZE) {
+    if (addr >= XIP_NOALLOC_BASE && addr < XIP_NOALLOC_BASE + emu_flash_size) {
         uint32_t offset = addr - XIP_NOALLOC_BASE;
         uint32_t val;
         memcpy(&val, &cpu.flash[offset], 4);
         return val;
     }
-    if (addr >= XIP_NOCACHE_BASE && addr < XIP_NOCACHE_BASE + FLASH_SIZE) {
+    if (addr >= XIP_NOCACHE_BASE && addr < XIP_NOCACHE_BASE + emu_flash_size) {
         uint32_t offset = addr - XIP_NOCACHE_BASE;
         uint32_t val;
         memcpy(&val, &cpu.flash[offset], 4);
         return val;
     }
-    if (addr >= XIP_NOCACHE_NOALLOC && addr < XIP_NOCACHE_NOALLOC + FLASH_SIZE) {
+    if (addr >= XIP_NOCACHE_NOALLOC && addr < XIP_NOCACHE_NOALLOC + emu_flash_size) {
         uint32_t offset = addr - XIP_NOCACHE_NOALLOC;
         uint32_t val;
         memcpy(&val, &cpu.flash[offset], 4);
@@ -1776,7 +1787,7 @@ uint16_t mem_read16(uint32_t addr) {
         return rom_read16(addr - 0x08000000);
     }
 
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         uint32_t offset = addr - FLASH_BASE;
         uint16_t val;
         memcpy(&val, &cpu.flash[offset], 2);
@@ -1836,7 +1847,7 @@ uint8_t mem_read8(uint32_t addr) {
         return rom_read8(addr - 0x08000000);
     }
 
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         return cpu.flash[addr - FLASH_BASE];
     }
 
@@ -1882,7 +1893,7 @@ void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
     (void)core_id;
     addr = sram_alias_translate(addr);
 
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         return;  /* Flash writes ignored */
     }
 
@@ -1937,7 +1948,7 @@ uint32_t mem_read32_dual(int core_id, uint32_t addr) {
     }
 
     /* Flash is shared across all cores (stored in cpu.flash) */
-    if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
+    if (addr >= FLASH_BASE && addr < FLASH_BASE + emu_flash_size) {
         uint32_t offset = addr - FLASH_BASE;
         uint32_t val = 0;
         memcpy(&val, &cpu.flash[offset], 4);
