@@ -2,22 +2,33 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.46.0
+## Current Status: v0.47.0
 
-319 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
+335 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
+
+**v0.47.0** is a correctness release driven by two datasheet-grounded audits (RP2040/RP2350/Hazard3) plus a full correctness, concurrency and security review of the emulator itself. The headline fixes:
+
+- **RISC-V interrupts actually work.** Peripheral IRQs are now routed from the NVIC into the Hazard3 Xh3irq controller, so `mip.MEIP` can be set and a RISC-V hart can trap on a UART, timer or GPIO interrupt. Previously the pending bit was latched in a structure the RV core never read, so firmware waiting on any peripheral interrupt hung indefinitely.
+- **The Xh3irq CSRs are the ones the hardware has** — MEIEA/MEIPA/MEIFA/MEIPRA/MEINEXT at their real addresses, implemented as the indexed 16-bit array accesses the SDK emits, so `csrs 0xbe0, index | (mask << 16)` does what it looks like.
+- **Per-chip peripheral maps.** GPIO banks, IRQ vectors, SPI, UART FIFOs, PIO, TIMER0/TIMER1, clocks (FC0 offsets, 16.16 `CLK_DIV`, ROSC) and PWM now decode per chip instead of assuming RP2040 numbering on both.
+- **Memory safety.** Closed guest-triggerable out-of-bounds writes in flash ROM erase/program, flash persistence, SD/eMMC block arithmetic and the GDB packet parser, and a `SIGPIPE` that could kill the process.
+- **Concurrency.** Real ARM `WFE` event register, latched `SEV`, spinlock and FIFO wakeups, correct thread lifecycle, and no more PIO/USB core starvation or timer double-tick.
+- **Storage.** FAT16/FAT32 geometry, cluster and directory-entry bounds checks; 32-bit sector counts; validated FUSE offsets; and `emu_flash_size` used consistently by ELF and UF2 loading.
+
+Verification: 335/335 tests, and 0 AddressSanitizer / UndefinedBehaviorSanitizer reports on both x86_64 and riscv64 across the suite and all eight bundled firmware images. See `docs/full_audit.md` and `docs/datasheet_audit.md` for the findings and what remains open.
 
 ### Coverage
 
 | Area | Status | Details |
 |------|--------|---------|
 | RP2040 CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
-| RP2350 RV | Complete | Hazard3: 130+ instructions (RV32IMAC + Zba/Zbb/Zbs/Zcb/Zcmp), Hazard3 CSRs, CLINT, SDK bootrom, icache, GDB, semihosting |
+| RP2350 RV | Complete | Hazard3: 130+ instructions (RV32IMAC + Zba/Zbb/Zbs/Zcb/Zcmp), Xh3irq external-interrupt CSRs, CLINT at `0xD00001A0`, peripheral IRQ delivery, SDK bootrom, icache, GDB, semihosting |
 | RP2350 ARM | Complete | Cortex-M33 (`-arch m33`): full Thumb-2 via existing engine, BASEPRI, M33 CPUID, UF2 auto-detect |
 | RP2350 Peripherals | Complete | TICKS, POWMAN, QMI, OTP+data, BOOTRAM, TIMER1, PIO2, GLITCH, CORESIGHT, ACCESSCTRL, 48 GPIO, SIO |
 | Dual-Core | Complete | RP2040: host-threaded, WFI, FIFO, spinlocks, auto-launch. RP2350: cooperative dual-hart with CLINT + SIO mailbox launch |
 | Memory Map | 100% | RP2040: Flash + XIP + SRAM + ROM (16KB) + all peripherals. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals |
 | Boot | Complete | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash jump), picobin IMAGE_DEF parser |
-| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec direct/vectored, MRET, MIE/MPIE, Hazard3 ext IRQ routing |
+| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec direct/vectored, MRET, MIE/MPIE, and Xh3irq external interrupts delivered from real peripheral models |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`/`-clock 150`), ARMv6-M instruction costs, CLINT mtime, TIMER1 |
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`), architecture-aware registers |
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
@@ -31,7 +42,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Firmware Auto-Detect | UF2 + ELF | Auto-detects RP2040/RP2350-ARM/RP2350-RV from UF2 family ID or ELF machine type |
 | RV Performance | ICache | 64K-entry decoded instruction cache for flash/ROM fetches |
 | RV Semihosting | EBREAK | Full ARM semihosting protocol: SYS_WRITE0, SYS_WRITEC, SYS_WRITE, SYS_READC, SYS_EXIT, etc. via EBREAK |
-| Tests | 319 | CTest integrated, 57+ categories (20 RV + 4 M33 + 19 networking tests) |
+| Tests | 335 | CTest integrated, 57+ categories (22 RV + 4 M33 + 19 networking tests) |
 
 ### Peripherals
 
@@ -447,7 +458,7 @@ Bramble/
 │   └── rp2350_arm/
 │       └── m33_cpu.h       # Cortex-M33 placeholder
 ├── tests/
-│   └── test_suite.c    # Unit test suite (319 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (335 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -608,6 +619,55 @@ Then run with:
 ```bash
 ./bramble firmware.uf2 -status  # Show status for both cores
 ```
+
+## RISC-V Hazard3 Interrupts
+
+On RP2350 the machine-mode core does not use the Cortex-M NVIC. Interrupts are
+routed through the Hazard3 **Xh3irq** block in the CLINT and reported in
+`mip.MEIP`. Bramble models that path end to end:
+
+```
+peripheral model
+   └─ nvic_signal_irq(IRQ_*)        renumbers the vector for the chip
+        └─ NVIC pending  (ARM cores read this)
+        └─ Xh3irq sink   (RV cores read this)  ──► clint.ext_pending
+                                                        │
+                          MEIPA / MEIEA / MEINEXT ◄────┘
+                                                        │
+                          mip.MEIP ──► machine interrupt trap
+```
+
+Because the fan-out happens *after* `nvic_irq_number()`, the Xh3irq index and the
+NVIC vector cannot drift apart on RP2350, where every IRQ is renumbered.
+
+The Xh3irq CSRs are array accesses, not per-IRQ registers. The window index is in
+the low bits of the value and each window is 16 bits wide, so the SDK idiom
+
+```asm
+    li   a0, 0xa5a50002      # index 2, mask 0xa5a5  →  bits 47:32
+    csrs MEIEA, a0
+```
+
+enables IRQ 33..48. The CLINT lives at `0xD00001A0` on RP2350 (not in SIO space
+at `0x100`, where it would collide with the GPIO bank).
+
+## Per-Chip Peripheral Decoding
+
+RP2040 and RP2350 do not agree on peripheral base addresses, register layouts, or
+even IRQ numbering. Where they differ, Bramble decodes per chip rather than
+assuming RP2040 numbering:
+
+| Block | Difference |
+|-------|-----------|
+| GPIO | Banks at different offsets; GPIO_HI exists only on RP2350 |
+| IRQ vectors | Every IRQ renumbered on RP2350 (`nvic_irq_number()`) |
+| SPI/UART/PADS | Reached via Hazard3's address translation, not address-space guessing |
+| CLINT | `0xD00001A0` on RP2350 |
+| PIO | `SIDESET_BASE` is bits 14:10; PIO2 exists only on RP2350; `IN_BASE` is modulo 32 |
+| TIMER0/1 | RP2350 TIMER1 has its own base and four IRQs |
+| Clocks | FC0 shifted by one word; `CLK_DIV` is 16.16 not 8.8; 8 generators not 10 |
+| ROSC | Register map is *not* a monotone shift — COUNT moves down, RANDOMBIT up |
+| PWM | RP2040's base is RP2350's PLL_SYS; RP2350 PWM is at `0x400A8000` |
 
 ## Technical Implementation
 

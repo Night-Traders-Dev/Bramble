@@ -392,6 +392,10 @@ Fixing it properly means modelling whether a transaction was actually framed,
 which interacts with the still-open `MS`/`SOD`/`LBM` semantics. Left alone
 rather than half-fixed.
 
+### C10 — **fixed in `8b9502c`**
+Peripheral IRQs now reach `mip.MEIP` via an NVIC → Xh3irq sink installed by
+`main.c` for `ARCH_RV32`.
+
 ### O28 — atomic aliases do the interposer RMW in software
 The datasheet puts the SET/CLR/XOR interposer in the *bus*; the emulator does
 read-modify-write against the model, so a SET-alias write to `UARTDR` or
@@ -400,13 +404,24 @@ applied before the peripheral decode, which is a structural change to
 `membus.c`'s dispatch. Not attempted — doing it partially risks breaking the
 alias decode that firmware's `hw_set_bits()` depends on.
 
-### D3-D6, F1/F4 — remaining per-chip register differences
-RP2350 `CLK_DIV` is 16.16 (the code assumes 8.8), `FC0` offsets differ, `ROSC`
-is shifted by four bytes with a wrong `STATUS` decode, RP2350 PWM is a
-different 12-slice block with two IRQ outputs, and RP2350 PIO diverges past
-`0x124`. Each is a self-contained per-chip variant of an existing model. None
-are regressions; they are missing RP2350 coverage. They should be done one
-block at a time with firmware to test against, not in one pass.
+### D3-D5 — **fixed in `41e59ee`**
+FC0 offsets, the 16.16 `CLK_DIV` reset value, the generator count, and the ROSC
+map and `STATUS` decode are all per-chip now. ROSC needed mapping by register
+identity rather than a shift, because RP2350 moves `COUNT` *down* to `0x0C` while
+`RANDOMBIT` moves *up* to `0x20`.
+
+### D6 — RP2350 PWM 12-slice body
+`41e59ee` stopped RP2040's PWM at `0x40050000` shadowing RP2350's PLL_SYS, and
+routed `0x400A8000` to the PWM model. The **register body** is still RP2040's
+8-slice layout: RP2350's PWM is a different 12-slice block with two IRQ outputs,
+so slice and channel registers decode wrongly. That needs the RP2350 §12.19 map.
+
+### F1/F4 — remaining per-chip register differences
+RP2350 PIO diverges past `0x124` (`IRQ0_INTE` at `0x170`, so PIO interrupts
+cannot be enabled on RP2350), RP2350 DMA has 4 IRQ lines but 2 are implemented,
+and RP2350 WATCHDOG has no TICK register. Each is a self-contained per-chip
+variant of an existing model and should be done one block at a time with
+firmware to test against, not in one pass.
 
 ### O20 — four unreachable Thumb-2 decoders
 `VLDR Dd` / `VSTR Dd` and the two `VCVT` F32<->U32 arms have masks that
@@ -424,10 +439,9 @@ still have no test references. Closing it needs a deliberate effort per file,
 not opportunistic additions.
 
 ### Remaining datasheet-audit items
-The Hazard3 work covered the critical and high items (CLINT relocation,
-Xh3irq CSRs, mtval, WFI/MIE, Zcmp). Still open there: hart-1 launch uses
-invented SIO registers instead of the FIFO handshake, SIO CPUID returns a
-constant rather than a hart-dependent value, `rv_clint_set_ext_pending()` is
-still only called from the test suite so peripheral interrupts do not reach
-`mip.MEIP`, bus-fault exceptions are not raised, the I-cache is not
+The Hazard3 work covered the critical and high items: CLINT relocation, the
+Xh3irq CSRs and their array semantics, peripheral interrupt delivery, mtval,
+WFI/MIE, and Zcmp. Still open there: hart-1 launch uses invented SIO registers
+instead of the FIFO handshake, SIO CPUID returns a constant rather than a
+hart-dependent value, bus-fault exceptions are not raised, the I-cache is not
 invalidated after RISC-V flash programming, and U-mode/PMP are absent.

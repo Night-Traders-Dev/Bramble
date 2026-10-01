@@ -5356,7 +5356,7 @@ int main(void) {
 
     printf("========================================\n");
     printf(" Bramble RP2040 Emulator - Test Suite\n");
-    printf(" Version 0.9.0 (Verbose)\n");
+    printf(" Bramble v0.47.0 test suite\n");
     printf("========================================\n");
 
     BEGIN_CATEGORY("PRIMASK");

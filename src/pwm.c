@@ -1,6 +1,8 @@
 #include <string.h>
 #include "pwm.h"
+#include "rp2350_rv/rp2350_memmap.h"
 #include "nvic.h"
+#include "emulator.h"  /* membus_rp2350_mode */
 
 pwm_state_t pwm_state;
 
@@ -15,7 +17,18 @@ void pwm_init(void) {
 
 int pwm_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
-    return (base >= PWM_BASE && base < PWM_BASE + PWM_BLOCK_SIZE) ? 1 : 0;
+
+    /* RP2040's PWM is at 0x40050000, which on RP2350 is PLL_SYS. Emulating the
+     * PWM there shadowed the PLL, so RISC-V firmware that configured a PLL read
+     * back PWM register values -- and RP2350's real PWM at 0x400A8000 was
+     * unmapped entirely. Only claim the block on the chip that has it. */
+    if (!membus_rp2350_mode) {
+        if (base >= PWM_BASE && base < PWM_BASE + PWM_BLOCK_SIZE)
+            return 1;
+    } else if (base >= RP2350_PWM_BASE && base < RP2350_PWM_BASE + PWM_BLOCK_SIZE) {
+        return 1;
+    }
+    return 0;
 }
 
 uint32_t pwm_read32(uint32_t offset) {
