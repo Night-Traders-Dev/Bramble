@@ -1,7 +1,9 @@
 # Bramble Full Audit — Correctness, Concurrency, Security, Hygiene
 
 **Date:** 2026-09-30
-**Audited commit:** `45ccf08` (findings), fixed in `8e34bf8`
+**Audited commit:** `45ccf08` (findings)
+**Status:** fixes landed across `8e34bf8`, `4eebffa`, `b4343d0`, `cb468e3`,
+`c5276d6`, `9758e3a`, `8646097`. See "Resolution" on each item.
 **Method:** empirical-first. AddressSanitizer + UndefinedBehaviorSanitizer over
 the full test suite and every bundled firmware image; GCC `-fanalyzer` over all
 47 translation units; targeted review of concurrency, host-facing and storage
@@ -124,7 +126,23 @@ merely theoretical: `gpio_set_pin(40, 1)` wrote bit 8.
 
 ---
 
-## Open findings
+## Resolution summary
+
+| Batch | Findings | State |
+|---|---|---|
+| 1 — memory safety | O11-O17, F13 | fixed |
+| 2 — deadlock/concurrency | O1-O10 | fixed |
+| 3 — interrupts | datasheet B1, C1, C2, C12, A2 | fixed |
+| 4 — UART/SPI | O25, C5, C6, C7, O27, O29, O30 | fixed |
+| 5 — timer/pio/clocks | B2, B3, C3, C11 | fixed |
+| 6 — Hazard3 | B4, B5, B6, B7, B8 | fixed |
+| 7 — hygiene/tests | O19, O22, O23 | fixed |
+
+Still open, with reasons, are listed under [Still open](#still-open) at the end.
+
+## Findings (kept as originally written, for provenance)
+
+### Open findings
 
 ### Concurrency and thread safety
 
@@ -360,3 +378,56 @@ is dropped as a receive-buffer overflow.
 4. **O21/O22/O23** — coverage and assertion quality, so the next round of
    findings is actually caught.
 5. **O18/O19/O20** — warning-clean build and the unreachable decoders.
+---
+
+## Still open
+
+These were **not** fixed, and why.
+
+### O2 follow-up — SPI `SSPDR` read clocks a phantom transfer
+`src/spi.c`. Reading `SSPDR` with an empty RX FIFO pushes a dummy 0xFF through
+the device model to keep SDK poll loops from spinning. That diverges from real
+PL022 and is inconsistent (the dummy is suppressed once a device is attached).
+Fixing it properly means modelling whether a transaction was actually framed,
+which interacts with the still-open `MS`/`SOD`/`LBM` semantics. Left alone
+rather than half-fixed.
+
+### O28 — atomic aliases do the interposer RMW in software
+The datasheet puts the SET/CLR/XOR interposer in the *bus*; the emulator does
+read-modify-write against the model, so a SET-alias write to `UARTDR` or
+`SSPDR` consumes an RX byte. The correct fix is a bus-level alias transform
+applied before the peripheral decode, which is a structural change to
+`membus.c`'s dispatch. Not attempted — doing it partially risks breaking the
+alias decode that firmware's `hw_set_bits()` depends on.
+
+### D3-D6, F1/F4 — remaining per-chip register differences
+RP2350 `CLK_DIV` is 16.16 (the code assumes 8.8), `FC0` offsets differ, `ROSC`
+is shifted by four bytes with a wrong `STATUS` decode, RP2350 PWM is a
+different 12-slice block with two IRQ outputs, and RP2350 PIO diverges past
+`0x124`. Each is a self-contained per-chip variant of an existing model. None
+are regressions; they are missing RP2350 coverage. They should be done one
+block at a time with firmware to test against, not in one pass.
+
+### O20 — four unreachable Thumb-2 decoders
+`VLDR Dd` / `VSTR Dd` and the two `VCVT` F32<->U32 arms have masks that
+disagree with their patterns, so no encoding reaches them and firmware using
+them falls through to `instr_unimplemented`. **Attempted and reverted**: the
+correct encodings need the ARM ARM, which is not available offline here, and
+guessing them risks turning a silent no-op into wrong behaviour. Left
+untouched; the compiler's `-Wtautological-compare` warning is the reliable
+signal that they are dead.
+
+### O21 — test coverage remains ~20%
+This work added 9 regression tests (333 total, up from 324) and fixed three
+tests that asserted nothing, but the gap is structural: eleven source files
+still have no test references. Closing it needs a deliberate effort per file,
+not opportunistic additions.
+
+### Remaining datasheet-audit items
+The Hazard3 work covered the critical and high items (CLINT relocation,
+Xh3irq CSRs, mtval, WFI/MIE, Zcmp). Still open there: hart-1 launch uses
+invented SIO registers instead of the FIFO handshake, SIO CPUID returns a
+constant rather than a hart-dependent value, `rv_clint_set_ext_pending()` is
+still only called from the test suite so peripheral interrupts do not reach
+`mip.MEIP`, bus-fault exceptions are not raised, the I-cache is not
+invalidated after RISC-V flash programming, and U-mode/PMP are absent.
