@@ -54,7 +54,11 @@
  * and warned. Two sources of truth for the same addresses is how one of them
  * ends up wrong.
  */
-/* ROSC (0x40060000) - Ring Oscillator */
+/* ROSC (0x40060000 on RP2040, 0x40060000 on RP2350).
+ *
+ * The offsets below are RP2040's. RP2350 puts COUNT at 0x0C, shifts DIV/PHASE/
+ * STATUS up by 4 and moves RANDOMBIT to 0x20; clocks.c maps by register
+ * identity because that is not a monotone shift. */
 #define ROSC_BASE               0x40060000
 #define ROSC_CTRL               (ROSC_BASE + 0x00)
 #define ROSC_FREQA              (ROSC_BASE + 0x04)

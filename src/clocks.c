@@ -22,6 +22,14 @@ static inline uint32_t psm_proc1_mask(void) {
 }
 
 /* Initialize all clock-domain peripherals */
+/* RP2350 implements 8 clock generators (GPOUT0-3, REF, SYS, PERI, USB);
+ * RP2040 implements 10, adding ADC and RTC. Firmware that reads DIV/SELECTED
+ * for a generator the chip does not have must not see aliasing register data
+ * from a neighbouring one. */
+static uint32_t num_clock_generators(void) {
+    return membus_rp2350_mode ? 8u : (uint32_t)NUM_CLOCK_GENERATORS;
+}
+
 void clocks_init(void) {
     clocks_reset();
 }
@@ -33,9 +41,12 @@ void clocks_reset(void) {
     /* RP2040 boots with all peripherals held in reset */
     clocks_state.reset = resets_all_mask();
 
-    /* Clock dividers default to 1:0 (no division) */
+    /* Clock dividers default to 1.0 (no division), but the register format
+     * differs by chip: RP2040 CLK_DIV is 8.8 fixed point (reset 0x00000100)
+     * while RP2350 is 16.16 (reset 0x00010000). Resetting an RP2350 divider to
+     * 1<<8 gives an integer part of 0, i.e. divide by zero. */
     for (int i = 0; i < NUM_CLOCK_GENERATORS; i++) {
-        clocks_state.clk_div[i] = (1u << 8); /* Integer part = 1 */
+        clocks_state.clk_div[i] = membus_rp2350_mode ? 0x00010000u : 0x00000100u;
     }
 
     /* XOSC defaults */
@@ -119,8 +130,9 @@ static void resets_write(uint32_t addr, uint32_t val, uint32_t alias) {
 static uint32_t clocks_domain_read(uint32_t addr) {
     uint32_t offset = addr & 0xFFF;
 
-    /* Clock generator registers: 10 generators, stride 0x0C each */
-    if (offset < NUM_CLOCK_GENERATORS * 0x0C) {
+    /* Clock generator registers, stride 0x0C each. RP2350 implements 8
+     * generators, RP2040 10, so the addressable range differs by chip. */
+    if (offset < num_clock_generators() * 0x0C) {
         uint32_t gen = offset / 0x0C;
         uint32_t reg = offset % 0x0C;
         switch (reg) {
@@ -142,11 +154,21 @@ static uint32_t clocks_domain_read(uint32_t addr) {
         }
     }
 
-    /* Additional clocks registers */
-    switch (offset) {
-        case 0x78: /* CLK_SYS_RESUS_CTRL */
+    /* Additional clocks registers.
+     *
+     * D3: the RP2350 map shifts everything from RESUS_CTRL up by four bytes --
+     * 0x84 RESUS_CTRL, 0x88 RESUS_STATUS, 0x8C FC0_REF_KHZ ... 0xA0 FC0_SRC,
+     * 0xA4 FC0_STATUS, 0xA8 FC0_RESULT. Decoding the RP2040 offsets on RP2350
+     * meant FC0_STATUS read back 0 forever, so frequency_count_khz()'s
+     * "wait for FC0_STATUS.DONE" loop never completed. */
+    uint32_t fc0 = offset;
+    if (membus_rp2350_mode && offset >= 0x84)
+        fc0 = offset + 4; /* RP2350 shifts FC0 (and RESUS) up by one word */
+
+    switch (fc0) {
+        case 0x78: /* CLK_SYS_RESUS_CTRL (RP2040) */
             return 0;
-        case 0x7C: /* CLK_SYS_RESUS_STATUS */
+        case 0x7C: /* CLK_SYS_RESUS_STATUS (RP2040) */
             return 0; /* No resuscitation */
         case 0x80: /* FC0_REF_KHZ */
         case 0x84: /* FC0_MIN_KHZ */
@@ -187,8 +209,8 @@ static uint32_t clocks_domain_read(uint32_t addr) {
 static void clocks_domain_write(uint32_t addr, uint32_t val, uint32_t alias) {
     uint32_t offset = addr & 0xFFF;
 
-    /* Clock generator registers */
-    if (offset < NUM_CLOCK_GENERATORS * 0x0C) {
+    /* Clock generator registers (see num_clock_generators()). */
+    if (offset < num_clock_generators() * 0x0C) {
         uint32_t gen = offset / 0x0C;
         uint32_t reg = offset % 0x0C;
         switch (reg) {
@@ -404,21 +426,74 @@ static void psm_write(uint32_t addr, uint32_t val, uint32_t alias) {
  * ROSC (Ring Oscillator) - 0x40060000
  * ======================================================================== */
 
-static uint32_t rosc_read(uint32_t addr) {
-    uint32_t offset = addr & 0xFFF;
-    switch (offset) {
-    case 0x00: return clocks_state.rosc_ctrl;
-    case 0x04: return clocks_state.rosc_freqa;
-    case 0x08: return clocks_state.rosc_freqb;
-    case 0x10: return clocks_state.rosc_div;
-    case 0x14: return clocks_state.rosc_phase;
-    case 0x18: {
-        /* STATUS: bit 31=STABLE, bit 24=ENABLED, bit 12=DIV_RUNNING */
-        uint32_t enabled = ((clocks_state.rosc_ctrl >> 12) & 0xFFF) == 0xFAB ? 1 : 0;
-        return (1u << 31) | (enabled << 24) | (1u << 12);
+/* ROSC register identity. RP2040 and RP2350 do not agree on the offsets:
+ *
+ *            RP2040   RP2350
+ *   CTRL       0x00     0x00
+ *   FREQA      0x04     0x04
+ *   FREQB      0x08     0x08
+ *   COUNT      0x20     0x0C
+ *   DIV        0x10     0x14
+ *   PHASE      0x14     0x18
+ *   STATUS     0x18     0x1C
+ *   RANDOMBIT  0x1C     0x20
+ *
+ * This is not a monotone shift -- COUNT moves *down* while RANDOMBIT moves up
+ * past where COUNT used to be -- so it has to be mapped per register, not by
+ * adding a constant. */
+/* Prefixed ROSC_R_ to avoid the ROSC_* address macros in clocks.h. */
+enum { ROSC_R_CTRL, ROSC_R_FREQA, ROSC_R_FREQB, ROSC_R_COUNT,
+       ROSC_R_DIV, ROSC_R_PHASE, ROSC_R_STATUS, ROSC_R_RANDOMBIT };
+
+static int rosc_reg(uint32_t offset) {
+    if (!membus_rp2350_mode) {
+        switch (offset) {
+        case 0x00: return ROSC_R_CTRL;
+        case 0x04: return ROSC_R_FREQA;
+        case 0x08: return ROSC_R_FREQB;
+        case 0x10: return ROSC_R_DIV;
+        case 0x14: return ROSC_R_PHASE;
+        case 0x18: return ROSC_R_STATUS;
+        case 0x1C: return ROSC_R_RANDOMBIT;
+        case 0x20: return ROSC_R_COUNT;
+        default: return -1;
+        }
     }
-    case 0x1C: {
-        /* RANDOMBIT: pseudo-random via LFSR */
+    switch (offset) {
+    case 0x00: return ROSC_R_CTRL;
+    case 0x04: return ROSC_R_FREQA;
+    case 0x08: return ROSC_R_FREQB;
+    case 0x0C: return ROSC_R_COUNT;
+    case 0x14: return ROSC_R_DIV;
+    case 0x18: return ROSC_R_PHASE;
+    case 0x1C: return ROSC_R_STATUS;
+    case 0x20: return ROSC_R_RANDOMBIT;
+    default: return -1;
+    }
+}
+
+static uint32_t rosc_read(uint32_t addr) {
+    switch (rosc_reg(addr & 0xFFF)) {
+    case ROSC_R_CTRL:  return clocks_state.rosc_ctrl;
+    case ROSC_R_FREQA: return clocks_state.rosc_freqa;
+    case ROSC_R_FREQB: return clocks_state.rosc_freqb;
+    case ROSC_R_COUNT: return clocks_state.rosc_count;
+    case ROSC_R_DIV:   return clocks_state.rosc_div;
+    case ROSC_R_PHASE: return clocks_state.rosc_phase;
+    case ROSC_R_STATUS: {
+        /* STATUS (datasheet 12.17): bit 31 STABLE, bit 21 FREQ_RUNNING,
+         * bit 20 DIV_RUNNING, bit 2 DIV_FAIL, bit 1 BADWRITE, bit 0 ENABLED.
+         *
+         * This previously reported bit 24 as ENABLED (it is BADWRITE) and
+         * hard-wired bit 12 -- DIV_RUNNING -- to 1 regardless of state, so
+         * firmware that waited for DIV_RUNNING before trusting DIV, and that
+         * gated clock output on ENABLED, saw constants. */
+        uint32_t enabled = ((clocks_state.rosc_ctrl >> 12) & 0xFFF) == 0xFAB;
+        uint32_t div_running = (clocks_state.rosc_div & 0xFF) != 0;
+        uint32_t freq_running = ((clocks_state.rosc_freqa >> 12) & 0xFFF) != 0;
+        return (1u << 31) | (freq_running << 21) | (div_running << 20) | enabled;
+    }
+    case ROSC_R_RANDOMBIT: {
         uint32_t s = clocks_state.rosc_random_state;
         if (s == 0) s = 0xDEADBEEF;
         s ^= s << 13;
@@ -427,30 +502,28 @@ static uint32_t rosc_read(uint32_t addr) {
         clocks_state.rosc_random_state = s;
         return s & 1;
     }
-    case 0x20: return clocks_state.rosc_count;
     default: return 0;
     }
 }
 
 static void rosc_write(uint32_t addr, uint32_t val, uint32_t alias) {
-    uint32_t offset = addr & 0xFFF;
-    switch (offset) {
-    case 0x00:
+    switch (rosc_reg(addr & 0xFFF)) {
+    case ROSC_R_CTRL:
         clocks_state.rosc_ctrl = apply_alias_write(clocks_state.rosc_ctrl, val, alias);
         break;
-    case 0x04:
+    case ROSC_R_FREQA:
         clocks_state.rosc_freqa = apply_alias_write(clocks_state.rosc_freqa, val, alias);
         break;
-    case 0x08:
+    case ROSC_R_FREQB:
         clocks_state.rosc_freqb = apply_alias_write(clocks_state.rosc_freqb, val, alias);
         break;
-    case 0x10:
+    case ROSC_R_DIV:
         clocks_state.rosc_div = apply_alias_write(clocks_state.rosc_div, val, alias);
         break;
-    case 0x14:
+    case ROSC_R_PHASE:
         clocks_state.rosc_phase = apply_alias_write(clocks_state.rosc_phase, val, alias);
         break;
-    case 0x20:
+    case ROSC_R_COUNT:
         clocks_state.rosc_count = apply_alias_write(clocks_state.rosc_count, val, alias);
         break;
     default:
