@@ -5246,6 +5246,24 @@ TEST(test_rv_hazard3_csrs) {
     PASS();
 }
 
+/* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
+ * branches on it to decide whether it is the secondary core. */
+TEST(test_rv_sio_cpuid_is_hart_dependent) {
+    rv_membus_state_t bus;
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+
+    rv_clint_set_current_hart(0);
+    ASSERT_EQ(0, rv_mem_read32(&bus, RP2350_SIO_BASE + RV_SIO_CPUID),
+              "core 0 must read CPUID == 0");
+
+    rv_clint_set_current_hart(1);
+    ASSERT_EQ(1, rv_mem_read32(&bus, RP2350_SIO_BASE + RV_SIO_CPUID),
+              "core 1 must read CPUID == 1");
+
+    rv_clint_set_current_hart(0);
+    PASS();
+}
+
 /* F1: misa must advertise the extensions this core actually implements, and
  * the identification CSRs must not read back as "unimplemented". */
 TEST(test_rv_misa_and_id_csr_values) {
@@ -5986,6 +6004,7 @@ int main(void) {
     RUN_TEST(test_rv_periph_bootram);
     RUN_TEST(test_rv_periph_timer1);
     RUN_TEST(test_rv_hazard3_csrs);
+    RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
     RUN_TEST(test_rv_icache_invalidation_after_flash_write);

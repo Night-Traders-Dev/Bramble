@@ -117,8 +117,17 @@ int rv_membus_check_hart1_launch(rv_membus_state_t *bus, uint32_t *entry,
 static uint32_t rv_sio_read(rv_membus_state_t *bus, uint32_t offset) {
     switch (offset) {
     case RV_SIO_CPUID:
-        /* RP2350 CPUID: differs from RP2040 */
-        return 0x00000002;  /* RP2350 identifier */
+        /* RP2350 CPUID (datasheet 3.1.2) returns the *hart id*: 0 when read by
+         * core 0, 1 when read by core 1. A fixed 0x2 is not just a different
+         * value -- hart 1's boot sequence branches on this register to decide
+         * whether it is the secondary core, so a constant makes every hart
+         * identify as core 0.
+         *
+         * The bus cannot see which hart issued the access from its arguments,
+         * but the CPU engine already publishes the current hart for exactly
+         * this reason (RISCV_SOFTIRQ and MTIMECMP are per-hart at one address).
+         */
+        return (uint32_t)(rv_clint_current_hart() & 1);
 
     /* GPIO low (pins 0-31) — fall through to RP2040 */
     case 0x04: /* GPIO_IN */
