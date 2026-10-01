@@ -113,11 +113,18 @@ static int hex_decode(const char *hex, char *out, int max_len) {
 }
 
 /* Encode string as hex: "Hello" -> "48656C6C6F" */
-static void hex_encode(const char *str, char *out) {
-    for (int i = 0; str[i]; i++) {
+/* Encode exactly n bytes. hex_encode() is the NUL-terminated convenience
+ * wrapper; callers sizing a fixed stack buffer must use the bounded form so the
+ * encode cannot run past the end. */
+static void hex_encode_n(const char *str, int n, char *out) {
+    for (int i = 0; i < n; i++) {
         u8_to_hex((uint8_t)str[i], out + i * 2);
     }
-    out[strlen(str) * 2] = '\0';
+    out[n * 2] = '\0';
+}
+
+static void hex_encode(const char *str, char *out) {
+    hex_encode_n(str, (int)strlen(str), out);
 }
 
 /* ========================================================================
@@ -134,17 +141,26 @@ static int gdb_send_raw(const char *data, int len) {
     return 0;
 }
 
+/* A packet is '$' + payload + '#' + 2 hex checksum digits + NUL, so the
+ * payload can be at most GDB_PACKET_BUF - 5 bytes. Clamping rather than
+ * trusting the caller is deliberate: the payloads come from register dumps and
+ * memory reads, whose length depends on guest-controlled state. */
+#define GDB_PACKET_BUF 8192
+
 static int gdb_send_packet(const char *data) {
-    int len = strlen(data);
+    int len = (int)strlen(data);
+    if (len > GDB_PACKET_BUF - 5)
+        len = GDB_PACKET_BUF - 5;   /* cannot fit; truncate rather than smash */
+
     uint8_t checksum = 0;
     for (int i = 0; i < len; i++) {
         checksum += (uint8_t)data[i];
     }
 
-    char buf[8192];
+    char buf[GDB_PACKET_BUF];
     int pos = 0;
     buf[pos++] = '$';
-    memcpy(buf + pos, data, len);
+    memcpy(buf + pos, data, (size_t)len);
     pos += len;
     buf[pos++] = '#';
     u8_to_hex(checksum, buf + pos);
@@ -155,10 +171,13 @@ static int gdb_send_packet(const char *data) {
 
 /* Send an 'O' packet (console output to GDB, hex-encoded) */
 static void gdb_send_output(const char *msg) {
+    /* 'O' + two hex digits per input byte + NUL must fit in 4096. */
+    size_t msglen = strlen(msg);
     char buf[4096];
+    if (msglen > (sizeof(buf) - 2) / 2)
+        msglen = (sizeof(buf) - 2) / 2;
     buf[0] = 'O';
-    hex_encode(msg, buf + 1);
-    gdb_send_packet(buf);
+    hex_encode_n(msg, (int)msglen, buf + 1);
 }
 
 static int gdb_recv_packet(char *out, int max_len) {

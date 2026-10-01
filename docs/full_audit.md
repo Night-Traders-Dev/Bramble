@@ -384,13 +384,22 @@ is dropped as a receive-buffer overflow.
 
 These were **not** fixed, and why.
 
-### O2 follow-up — SPI `SSPDR` read clocks a phantom transfer
-`src/spi.c`. Reading `SSPDR` with an empty RX FIFO pushes a dummy 0xFF through
-the device model to keep SDK poll loops from spinning. That diverges from real
-PL022 and is inconsistent (the dummy is suppressed once a device is attached).
-Fixing it properly means modelling whether a transaction was actually framed,
-which interacts with the still-open `MS`/`SOD`/`LBM` semantics. Left alone
-rather than half-fixed.
+### O2 — **fixed in `19956f2`**
+Reading `SSPDR` with an empty RX FIFO pushed a dummy 0xFF through the device
+model to keep SDK poll loops from spinning. Removed: a real PL022 returns 0 and
+has no bus effect, and the dummy meant every plain register read -- including
+the read-modify-write each SET/CLR/XOR alias performs -- sent a byte to whatever
+was attached. `name_prompt.uf2` produces identical output and runs ~3% fewer
+instructions, since it was doing phantom transfers in its poll loop.
+
+### Bus-fault exceptions — **not attempted**
+Raising mcause 1/5/7 requires the bus to say *whether* an address is mapped, and
+`mem_read32()` has no such answer: it falls through to the shared RP2040 bus,
+which answers 0 for everything. Adding it means writing a `membus_is_mapped()`
+that mirrors the entire peripheral decode, and any address misclassified as
+unmapped would start trapping and break firmware. That is a bad trade to make
+without hardware to check against, so the RV core still returns 0 for unmapped
+accesses. See "F1" below.
 
 ### C10 — **fixed in `8b9502c`**
 Peripheral IRQs now reach `mip.MEIP` via an NVIC → Xh3irq sink installed by
