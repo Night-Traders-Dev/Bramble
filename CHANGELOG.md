@@ -54,7 +54,7 @@ wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/P
 registers and never read them back, and which passed straight through the SIO
 GPIO write-drop bug. All three now assert real behaviour.
 
-- 342/342 tests passing, up from 319.
+- 345/345 tests passing, up from 319.
 - 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
   and riscv64, across the test suite and all eight bundled firmware images
   (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,
@@ -64,6 +64,11 @@ GPIO write-drop bug. All three now assert real behaviour.
 ### Known issues
 
 Unfixed, with reasons, in `docs/full_audit.md`:
+
+- **VFP load/store and VCVT are not decoded at all.** They are 16-bit T2
+  encodings and the 16-bit Thumb dispatcher never consults the VFP decoder;
+  the audit's "wrong mask" explanation turned out to be a secondary defect.
+  Adding that dispatch is a feature, not a patch.
 
 - **Bus-fault exceptions**: the RV core still returns 0 for unmapped accesses. `mem_read32()` has no mapped/unmapped answer, so this needs a `membus_is_mapped()` mirroring the whole peripheral decode; a misclassified address would start trapping firmware.
 - **U-mode and PMP** absent (hence `misa.U` clear).
