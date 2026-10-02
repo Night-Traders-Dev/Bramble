@@ -69,8 +69,9 @@ Unfixed, with reasons, in `docs/full_audit.md`:
   as of this release. Note these are *not* the 16-bit `0xD8xx`/`0xD9xx` forms
   that an earlier revision of this file claimed -- the ARM ARM maps 16-bit
   `1101xx` to conditional branch, so those slots are already correctly used.
-- **Core `LDRD`/`STRD` are not implemented** either. The emulator's VFP path
-  used to intercept them, which this release stops -- see the VFP section above.
+- **Core `LDRD`/`STRD` are not implemented** either -- there are guards against
+  other instructions being mis-decoded as them, but no executor. The emulator's
+  VFP path used to intercept them, which this release stops.
 
 - **Bus-fault exceptions**: the RV core still returns 0 for unmapped accesses. `mem_read32()` has no mapped/unmapped answer, so this needs a `membus_is_mapped()` mirroring the whole peripheral decode; a misclassified address would start trapping firmware.
 - **U-mode and PMP** absent (hence `misa.U` clear).

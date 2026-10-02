@@ -515,6 +515,15 @@ load, which is the correct failure mode.
 Also removed as a consequence: the now-unused `vfp_d[]` double-precision file,
 `vfp_st_from_insn()`/`vfp_sm_from_insn()`, and a triplicated VDIV block.
 
+**Core `LDRD`/`STRD` remain unimplemented.** `thumb32.c` has guards *against*
+other instructions being mis-decoded as `LDRD`/`STRD` (`t32_is_tt`,
+`t32_is_halfword_acqrel`, and friends) but no executor for them. So a program
+issuing one gets whatever the surrounding decoders make of the encoding. An
+earlier note here asserted this "silently reports handled without loading",
+which was measured with an encoding I had guessed rather than confirmed, so the
+claim is withdrawn -- the accurate statement is simply that the instruction is
+not implemented.
+
 Result: `src/thumb32.c` builds clean, and the whole project compiles with zero
 warnings under `-Wall -Wextra -pedantic`.
 
