@@ -123,10 +123,6 @@ static void hex_encode_n(const char *str, int n, char *out) {
     out[n * 2] = '\0';
 }
 
-static void hex_encode(const char *str, char *out) {
-    hex_encode_n(str, (int)strlen(str), out);
-}
-
 /* ========================================================================
  * Packet I/O
  * ======================================================================== */

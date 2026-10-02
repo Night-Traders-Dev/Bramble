@@ -443,14 +443,36 @@ and RP2350 WATCHDOG has no TICK register. Each is a self-contained per-chip
 variant of an existing model and should be done one block at a time with
 firmware to test against, not in one pass.
 
-### O20 — four unreachable Thumb-2 decoders
-`VLDR Dd` / `VSTR Dd` and the two `VCVT` F32<->U32 arms have masks that
-disagree with their patterns, so no encoding reaches them and firmware using
-them falls through to `instr_unimplemented`. **Attempted and reverted**: the
-correct encodings need the ARM ARM, which is not available offline here, and
-guessing them risks turning a silent no-op into wrong behaviour. Left
-untouched; the compiler's `-Wtautological-compare` warning is the reliable
-signal that they are dead.
+### O20 — unreachable VFP decoders — **root cause found, feature gap not a mask typo**
+`src/thumb32.c`. The audit recorded this as "masks that disagree with their
+patterns". That is a real secondary defect, but it is not why the instructions
+are unreachable, and fixing the masks alone changes nothing.
+
+The actual cause is the dispatch. `thumb32_vfp_exec()` is called from exactly
+one place, guarded by
+
+```c
+if ((upper & 0xEF00) == 0xEE00 || (upper & 0xEF00) == 0xED00)
+```
+
+but the encodings these arms implement have first halfwords elsewhere:
+
+| Instruction | Encoding | First halfword | Reaches the VFP decoder? |
+|---|---|---|---|
+| `VLDR/VSTR s/d, [Rn, #imm]` | `D8xx`/`D9xx` | `0xD8xx`/`0xD9xx` | no |
+| `VCVT.F32.U32 Sd, Sm` etc. | `EB80A4xx` | `0xEB80` | no |
+
+These are **16-bit T2** encodings, not 32-bit Thumb-2, so they would need to be
+reached from the 16-bit dispatcher, which never calls the VFP decoder at all.
+
+Mask correction was attempted and reverted: with the masks fixed the arms still
+are dead, so the change would have looked like a fix while changing no
+behaviour. Doing this properly means adding 16-bit VFP dispatch to the Thumb
+core -- a feature addition, not a bug fix -- and checking the 16-bit decoder
+does not already claim `0xD8xx`-`0xD9xx`.
+
+The compiler's `-Wtautological-compare` warning is left in place as the honest
+signal that the code is dead.
 
 ### O21 — test coverage remains ~20%
 This work added 9 regression tests (333 total, up from 324) and fixed three
