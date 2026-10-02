@@ -54,7 +54,7 @@ wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/P
 registers and never read them back, and which passed straight through the SIO
 GPIO write-drop bug. All three now assert real behaviour.
 
-- 353/353 tests passing, up from 319.
+- 355/355 tests passing, up from 319.
 - 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
   and riscv64, across the test suite and all eight bundled firmware images
   (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,

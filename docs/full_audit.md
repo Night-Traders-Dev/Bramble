@@ -587,10 +587,27 @@ Also earlier in this work: three tests that asserted nothing were made to assert
 real behaviour, one of which (`test_peripheral_writes_no_crash`) had passed
 straight through the SIO GPIO write-drop bug.
 
-Still no coverage: `cyw43`, `gdb`, `tapif`, `netbridge`, `bme280`,
-`fuse_mount`. `gdb` and `fuse_mount` are the most valuable next targets -- the
-RSP parser is the piece that already had a guest-triggerable bounds fix, and
-FUSE turns guest-supplied lengths into host file offsets.
+`bme280` (`2c7a317`): sits behind the emulated I2C bus, and its
+register-pointer protocol is what SDK drivers depend on. Pinned the chip id,
+that reads auto-increment, that the soft-reset command is recognised, and that
+the 20-bit raw values survive the msb/lsb/xlsb split. The protocol needs an
+explicit `bme280_i2c_start()` between transactions; driving `bme280_i2c_write()`
+directly writes *data* into the last-addressed register, a silent
+wrong-register write, so the test now exercises it the way the I2C model does.
+
+`netbridge` (`2c7a317`): `uart_num` comes from the emulated UART model and
+indexes fixed arrays, so the bounds check guards an OOB write into
+`net_bridge_tx_pending[]`. Pinned that out-of-range and negative indices are
+dropped.
+
+Six of the eleven uncovered files now have coverage. Still none: `cyw43`, `gdb`,
+`tapif` and `fuse_mount`. `gdb` and `fuse_mount` remain the most valuable:
+the RSP parser is the component that already had a guest-triggerable bounds
+fix, and FUSE turns guest-supplied lengths into host file offsets. Both are
+harder than the others because their real behaviour needs a connected socket or
+a real `/dev/fuse` mount, so they need a harness rather than a unit test --
+`netbridge`'s data path is in the same position, and testing only its bounds
+check is deliberately shallow.
 
 ### F1 — largely fixed in `e810fe4`, plus `f57db6b`
 Now fixed: the instruction cache is invalidated after `flash_range_program` and
