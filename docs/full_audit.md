@@ -515,14 +515,21 @@ load, which is the correct failure mode.
 Also removed as a consequence: the now-unused `vfp_d[]` double-precision file,
 `vfp_st_from_insn()`/`vfp_sm_from_insn()`, and a triplicated VDIV block.
 
-**Core `LDRD`/`STRD` remain unimplemented.** `thumb32.c` has guards *against*
-other instructions being mis-decoded as `LDRD`/`STRD` (`t32_is_tt`,
-`t32_is_halfword_acqrel`, and friends) but no executor for them. So a program
-issuing one gets whatever the surrounding decoders make of the encoding. An
-earlier note here asserted this "silently reports handled without loading",
-which was measured with an encoding I had guessed rather than confirmed, so the
-claim is withdrawn -- the accurate statement is simply that the instruction is
-not implemented.
+**Core `LDRD`/`STRD` are implemented after all.** Two claims here were wrong and
+are withdrawn. I had written that they had "no executor", and separately that
+they "silently report handled without loading". Both came from greps that
+matched the guard helpers (`t32_is_tt`, `t32_is_halfword_acqrel`, ...) but
+missed `t32_ldrd_strd()`, which is the actual executor. The second claim came
+from a probe whose `lower` halfword I had written as `0x1000`, which puts Rt and
+Rt2 in the wrong fields -- so the emulator loaded the right words into the wrong
+registers and I read that as a bug.
+
+Against ARMv7-M ARM A6.7.49/A6.7.124, `LDRD`/`STRD` (immediate) T1 is
+`1110 100 P U 1 W L Rn | Rt Rt2 imm8` with `index=(P==1)`, `add=(U==1)`,
+`wback=(W==1)` and `imm32 = imm8:'00'`. `t32_ldrd_strd()` decodes exactly that,
+including the `imm8 << 2` scaling and the index/add/writeback rules, so no
+change was needed -- `test_thumb2_ldrd_strd_immediate` now pins it against the
+ARM's field layout.
 
 Result: `src/thumb32.c` builds clean, and the whole project compiles with zero
 warnings under `-Wall -Wextra -pedantic`.

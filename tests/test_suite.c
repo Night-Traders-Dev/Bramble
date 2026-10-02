@@ -5454,6 +5454,75 @@ TEST(test_pwm_rp2040_layout_unchanged) {
     PASS();
 }
 
+/* LDRD/STRD (immediate) T1, ARMv7-M ARM A6.7.49 / A6.7.124:
+ *
+ *   1 1 1 0 1 0 0 P U 1 W L | Rn | Rt Rt2 imm8
+ *
+ * with index = (P==1), add = (U==1), wback = (W==1), imm32 = imm8:'00'.
+ * L distinguishes LDRD (1) from STRD (0).
+ *
+ * These are implemented in t32_ldrd_strd(); an earlier note in
+ * docs/full_audit.md claimed they were not, because the grep that produced the
+ * claim only matched the guard helpers and missed the executor. This pins the
+ * behaviour against the ARM's field layout. */
+#define LDRD_T1(P_, U_, W_, Rn_, Rt_, Rt2_, imm_) \
+    ((uint16_t)((0xEu << 12) | (1u << 11) | (0u << 10) | (0u << 9) | \
+                ((P_) << 8) | ((U_) << 7) | (1u << 6) | ((W_) << 5) | \
+                (1u << 4) | ((Rn_) & 0xFu)))
+#define LDRD_T1_LOW(Rt_, Rt2_, imm_) \
+    ((uint16_t)(((Rt_) << 12) | ((Rt2_) << 8) | ((imm_) & 0xFFu)))
+#define STRD_T1(P_, U_, W_, Rn_, Rt_, Rt2_, imm_) \
+    ((uint16_t)(LDRD_T1(P_, U_, W_, Rn_, Rt_, Rt2_, imm_) & ~0x10u))
+
+TEST(test_thumb2_ldrd_strd_immediate) {
+    const uint32_t base = RAM_BASE + 0x2800;
+    reset_cpu();
+    mem_write32(base,     0x11111111u);
+    mem_write32(base + 4, 0x22222222u);
+
+    /* LDRD r0, r1, [r2, #0] -- offset form, no writeback. */
+    cpu.r[2] = base;
+    cpu.r[0] = 0;
+    cpu.r[1] = 0;
+    cpu.r[15] = RAM_BASE;
+    thumb32_step(RAM_BASE, LDRD_T1(1, 1, 0, 2, 0, 1, 0), LDRD_T1_LOW(0, 1, 0));
+    ASSERT_EQ(0x11111111u, cpu.r[0], "LDRD must load Rt from [Rn]");
+    ASSERT_EQ(0x22222222u, cpu.r[1], "LDRD must load Rt2 from [Rn]+4");
+
+    /* imm8 is scaled by four: #4 means a 16-byte displacement. */
+    mem_write32(base + 16, 0xAAAAAAAAu);
+    mem_write32(base + 20, 0xBBBBBBBBu);
+    cpu.r[0] = 0;
+    cpu.r[1] = 0;
+    thumb32_step(RAM_BASE, LDRD_T1(1, 1, 0, 2, 0, 1, 4), LDRD_T1_LOW(0, 1, 4));
+    ASSERT_EQ(0xAAAAAAAAu, cpu.r[0], "LDRD imm8 must be scaled by 4");
+    ASSERT_EQ(0xBBBBBBBBu, cpu.r[1], "LDRD second word");
+
+    /* Pre-indexed with writeback (P=1, W=1): Rn becomes Rn + offset. */
+    cpu.r[2] = base;
+    thumb32_step(RAM_BASE, LDRD_T1(1, 1, 1, 2, 0, 1, 4), LDRD_T1_LOW(0, 1, 4));
+    ASSERT_EQ(base + 16, cpu.r[2], "LDRD writeback must update Rn");
+
+    /* U=0 subtracts: Rn = base+16 with a 16-byte offset lands back on base,
+     * which holds 0x11111111, not the 0xAAAAAAAA at base+16. */
+    cpu.r[2] = base + 16;
+    thumb32_step(RAM_BASE, LDRD_T1(1, 0, 0, 2, 0, 1, 4), LDRD_T1_LOW(0, 1, 4));
+    ASSERT_EQ(0x11111111u, cpu.r[0], "U=0 must subtract the offset");
+
+    /* STRD stores Rt and Rt2. */
+    reset_cpu();
+    cpu.r[2] = base;
+    cpu.r[0] = 0xCAFEBABEu;
+    cpu.r[1] = 0xFEEDFACEu;
+    mem_write32(base,     0);
+    mem_write32(base + 4, 0);
+    cpu.r[15] = RAM_BASE;
+    thumb32_step(RAM_BASE, STRD_T1(1, 1, 0, 2, 0, 1, 0), LDRD_T1_LOW(0, 1, 0));
+    ASSERT_EQ(0xCAFEBABEu, mem_read32(base), "STRD must store Rt");
+    ASSERT_EQ(0xFEEDFACEu, mem_read32(base + 4), "STRD must store Rt2");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6219,6 +6288,7 @@ int main(void) {
     RUN_TEST(test_rv_zcb_c_sb_uses_both_rs1_and_rs2);
     RUN_TEST(test_pwm_rp2350_layout);
     RUN_TEST(test_pwm_rp2040_layout_unchanged);
+    RUN_TEST(test_thumb2_ldrd_strd_immediate);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
