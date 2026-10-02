@@ -65,15 +65,17 @@ GPIO write-drop bug. All three now assert real behaviour.
 
 Unfixed, with reasons, in `docs/full_audit.md`:
 
-- **VFP load/store and VCVT are not decoded at all.** They are 16-bit T2
-  encodings and the 16-bit Thumb dispatcher never consults the VFP decoder;
-  the audit's "wrong mask" explanation turned out to be a secondary defect.
-  Adding that dispatch is a feature, not a patch.
+- **VFP load/store (16-bit T2, `0xD8xx`/`0xD9xx`) is not implemented.** VCVT
+  float<->int *is* implemented again as of this release. The load/store forms
+  need the ARM ARM's VD1R/VS1R field layout; until then they fail loudly with
+  `instr_unimplemented` instead of silently mis-executing.
+- **Core `LDRD`/`STRD` are not implemented** either. The emulator's VFP path
+  used to intercept them, which this release stops -- see the VFP section above.
 
 - **Bus-fault exceptions**: the RV core still returns 0 for unmapped accesses. `mem_read32()` has no mapped/unmapped answer, so this needs a `membus_is_mapped()` mirroring the whole peripheral decode; a misclassified address would start trapping firmware.
 - **U-mode and PMP** absent (hence `misa.U` clear).
 - **Hart-1 launch** uses invented SIO registers at `0x1c0`–`0x1cc`, which on RP2350 are TMDS, rather than the FIFO handshake.
-- **Zcb quadrant-0 byte/halfword stores** (`C.SB`, `C.SH`, `C.SBSP`, `C.SHSP`) compute a base register and no offset. Left alone: the Zcb bit layout could not be confirmed offline and a wrong decode is worse than a known-bad one.
+- **The SP-relative Zca forms `C.SBSP`/`C.SHSP`** (quadrant 2) were not re-examined. The Zcb `c.sb`/`c.sh` in quadrant 0 are fixed; the Zca forms are a separate encoding with larger offsets.
 - **Four unreachable Thumb-2 VFP decoders** (`VLDR Dd`, `VSTR Dd`, two `VCVT` F32↔U32 arms). Left deliberately unfixed so the compiler keeps warning.
 - **Atomic register aliases** do the interposer read-modify-write in software, so a SET-alias write to `UARTDR`/`SSPDR` consumes an RX byte.
 - **RP2350's 12-slice PWM** register body still decodes as RP2040's 8-slice layout.
