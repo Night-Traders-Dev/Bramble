@@ -473,11 +473,23 @@ so genuine core LDRD/STRD were intercepted and executed as float accesses --
 moving bytes of the VFP register file instead of the pair of core registers the
 instruction named. Removing them stops that.
 
-The real VFP load/store encodings are 16-bit T2 forms in `0xD8xx`/`0xD9xx`, which
-reach the 16-bit dispatch table and never this function. **That decoder is still
-not implemented**; adding it needs the ARM ARM's VD1R/VS1R field layout, which
-was not available. Firmware using it now gets `instr_unimplemented` rather than
-silently executing a core LDRD as a float load, which is the correct failure mode.
+**VFP load/store remain unimplemented.** An earlier revision of this note claimed
+they were 16-bit T2 forms in `0xD8xx`/`0xD9xx` reachable from the 16-bit dispatch
+table. **That was wrong**, and following it would have introduced a bug. The ARM
+ARM's Table F3-2 maps the 16-bit `1101xx` group to *conditional branch and
+Supervisor Call*, so `dispatch_table[0xD8]`/`[0xD9]` correctly handle `B<cond>`;
+wiring VFP there would have broken branches.
+
+The `1101 u:1 .0 l:1 rn:4 .... 1010 imm:8` pattern in QEMU's `vfp.decode` is
+likewise the **A32** form, not Thumb -- that file is titled "AArch32 VFP
+instruction descriptions (conditional insns)" and its header notes it covers
+"anything matching A32". V8's `Assembler::IsVldrDRegisterImmediate` confirms it,
+masking bits 27:24 (`15 * B24`) against `13 * B24` -- the A32 condition field.
+
+The Thumb-2 M-profile VFP load/store encodings differ again, and I could not
+confirm their exact layout, so no decoder was written. Firmware using them now
+gets `instr_unimplemented` rather than silently executing a core LDRD as a float
+load, which is the correct failure mode.
 
 Also removed as a consequence: the now-unused `vfp_d[]` double-precision file,
 `vfp_st_from_insn()`/`vfp_sm_from_insn()`, and a triplicated VDIV block.
