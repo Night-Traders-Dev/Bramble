@@ -20,6 +20,8 @@
 #include "emulator.h"
 #include "instructions.h"
 #include "nvic.h"
+#include "spi_flash.h"
+#include "fatfs.h"
 #include "timer.h"
 #include "gpio.h"
 #include "clocks.h"
@@ -5566,6 +5568,230 @@ TEST(test_rv_hart1_launch_uses_the_documented_fifo_protocol) {
     PASS();
 }
 
+/* spi_flash had no test coverage at all. The parts worth pinning are the
+ * bounds checks: offsets are 64-bit and the access is guest-controlled, so an
+ * overflow in the length check would turn a bounded read into a host OOB. */
+TEST(test_spi_flash_rejects_out_of_range_accesses) {
+    unlink("/tmp/bramble_sf_test.bin");
+
+    /* Chip 0 defaults to 64 MB. Note spi_flash_close() clears `enabled`, so it
+     * must not be called between configure and use -- calling it there is
+     * exactly what made the first version of this test see every read rejected. */
+    spi_flash_configure(0, "/tmp/bramble_sf_test.bin");
+    spi_flash_set_size(0, 64);
+
+    const uint64_t bytes = 64ull * 1024 * 1024;
+
+    uint8_t buf[64];
+    memset(buf, 0, sizeof(buf));
+
+    /* Sanity: a read inside the chip is accepted (it may fail to open, but it
+     * must not be rejected by the bounds check). */
+    ASSERT_TRUE(spi_flash_read(0, 0, buf, 16) >= 0,
+                "an in-range read must not be rejected");
+
+    /* Past the end. */
+    ASSERT_EQ(-1, spi_flash_read(0, bytes - 8, buf, 16),
+              "a read straddling the end must be rejected");
+    ASSERT_EQ(-1, spi_flash_read(0, bytes, buf, 1),
+              "a read at exactly the end must be rejected");
+
+    /* 64-bit overflow: offset + len must not wrap. */
+    ASSERT_EQ(-1, spi_flash_read(0, bytes - 4, buf, sizeof(buf)),
+              "offset + len must be checked in 64 bits, not truncated");
+    ASSERT_EQ(-1, spi_flash_read(0, 0xFFFFFFFFFFFFFFF0ull, buf, sizeof(buf)),
+              "a near-UINT64_MAX offset must be rejected, not wrapped");
+
+    /* Out-of-range chip index. */
+    ASSERT_EQ(-1, spi_flash_read(99, 0, buf, 4), "chip index must be range-checked");
+
+    /* NULL buffer and zero length. */
+    ASSERT_EQ(-1, spi_flash_read(0, 0, NULL, 4), "NULL buffer must be rejected");
+    ASSERT_EQ(0, spi_flash_read(0, 0, buf, 0), "zero length must be a no-op");
+
+    spi_flash_close();
+    unlink("/tmp/bramble_sf_test.bin");
+    PASS();
+}
+
+/* The chip size is normalised to the 32 MB erase unit, so a small request must
+ * not produce a chip smaller than one unit. */
+TEST(test_spi_flash_size_is_normalised_to_the_erase_unit) {
+    spi_flash_configure(1, "/tmp/bramble_sf_test2.bin");
+    spi_flash_set_size(1, 1);          /* below the 32 MB unit */
+    spi_flash_set_size(1, 0);          /* nonsense: must be ignored */
+
+    uint8_t buf[16];
+    /* A read within the first 32 MB must be in range. */
+    ASSERT_TRUE(spi_flash_read(1, 1024, buf, 16) >= 0,
+                "a small size request must normalise to at least one erase unit");
+    /* A read past 32 MB must not be: the request was clamped, not honoured. */
+    ASSERT_EQ(-1, spi_flash_read(1, 33ull * 1024 * 1024, buf, 16),
+              "size must clamp to the erase unit rather than accept the request");
+    spi_flash_close();
+    unlink("/tmp/bramble_sf_test2.bin");
+    PASS();
+}
+
+/* fatfs had no test coverage. The BPB is entirely guest-controlled, so the
+ * validation in fat16_mount() is the security-relevant surface: a crafted
+ * reserved_sectors/sectors_per_fat would otherwise place the root directory
+ * megabytes past the media and turn every dirent access into an OOB read. */
+
+/* Build a minimal valid FAT16 image, then let the caller corrupt fields. */
+static uint8_t *fat16_test_image(size_t *size_out) {
+    size_t sectors = 8192;                 /* 4 MiB */
+    size_t bytes = sectors * 512;
+    uint8_t *m = calloc(1, bytes);
+    if (m == NULL) return NULL;
+
+    m[510] = 0x55; m[511] = 0xAA;          /* boot signature */
+    m[11] = 0x00; m[12] = 0x02;            /* bytes_per_sector = 512 */
+    m[13] = 4;                              /* sectors_per_cluster */
+    m[14] = 0x01; m[15] = 0x00;            /* reserved_sectors = 1 */
+    m[16] = 2;                              /* num_fats = 2 */
+    m[17] = 0x80; m[18] = 0x00;            /* root_entry_count = 128 (LE) */
+    m[19] = 0x00; m[20] = 0x00;            /* total_sectors16 = 0 -> use 32-bit */
+    m[22] = 0x10; m[23] = 0x00;            /* sectors_per_fat = 16 */
+    /* total_sectors32 at 0x20 */
+    m[32] = (uint8_t)(sectors & 0xFF);
+    m[33] = (uint8_t)((sectors >> 8) & 0xFF);
+    m[34] = (uint8_t)((sectors >> 16) & 0xFF);
+    m[35] = (uint8_t)((sectors >> 24) & 0xFF);
+
+    /* FAT entries: chain 2 -> 3 -> EOC. */
+    size_t fat_off = 512;
+    m[fat_off + 2 * 2] = 3;
+    m[fat_off + 3 * 2] = 0xFF;
+    m[fat_off + 4 * 2] = 0xFF;
+    m[fat_off + 5 * 2] = 0xFF;
+
+    /* Root directory: "HELLO.TXT" in 8.3, one cluster, 13 bytes. */
+    size_t root_off = 512 + 2u * 16u * 512u;
+    memcpy(&m[root_off], "HELLO   TXT", 11);
+    m[root_off + 11] = 0x20;               /* archive */
+    m[root_off + 26] = 2;                  /* first cluster low */
+    m[root_off + 28] = 13;                 /* file size */
+    /* ...and the same name in the second root entry, for list tests. */
+    memcpy(&m[root_off + 32], "DATA    BIN", 11);
+    m[root_off + 43] = 0x20;
+    m[root_off + 58] = 2;
+    m[root_off + 60] = 13;
+    /* Mark both used entries with a valid first byte. */
+    m[root_off + 32] = 'D';
+
+    /* Cluster 2 payload. */
+    size_t data_off = root_off + 128u * 32u;
+    const char *msg = "hello world\n";
+    memcpy(&m[data_off], msg, 13);
+
+    *size_out = bytes;
+    return m;
+}
+
+TEST(test_fat16_mount_rejects_malformed_bpb) {
+    size_t bytes = 0;
+    uint8_t *img = fat16_test_image(&bytes);
+    ASSERT_TRUE(img != NULL, "test image allocation");
+    if (!img) PASS();
+
+    fat16_fs_t fs;
+
+    /* A well-formed image must mount. */
+    ASSERT_TRUE(fat16_mount(&fs, img, bytes) == 0, "valid FAT16 image must mount");
+    ASSERT_EQ(512, fs.bytes_per_sector, "bytes_per_sector");
+    ASSERT_EQ(4, fs.sectors_per_cluster, "sectors_per_cluster");
+
+    /* Reads must find the file and its contents. */
+    uint8_t buf[64];
+    memset(buf, 0, sizeof(buf));
+    int n = fat16_read_file(&fs, "HELLO.TXT", buf, sizeof(buf));
+    ASSERT_TRUE(n == 13, "HELLO.TXT should be 13 bytes");
+    ASSERT_TRUE(memcmp(buf, "hello world\n", 12) == 0, "HELLO.TXT contents");
+
+    /* Missing boot signature. */
+    uint8_t *bad = fat16_test_image(&bytes);
+    bad[510] = 0x00;
+    ASSERT_TRUE(fat16_mount(&fs, bad, bytes) != 0, "bad boot signature must fail");
+    free(bad);
+
+    /* Media smaller than one sector. */
+    bad = fat16_test_image(&bytes);
+    ASSERT_TRUE(fat16_mount(&fs, bad, 100) != 0, "short media must fail");
+    free(bad);
+
+    /* bytes_per_sector != 512 is not supported. */
+    bad = fat16_test_image(&bytes);
+    bad[11] = 0x00; bad[12] = 0x04;         /* 1024 */
+    ASSERT_TRUE(fat16_mount(&fs, bad, bytes) != 0, "bytes_per_sector != 512 must fail");
+    free(bad);
+
+    /* Zero fields that would divide by zero. */
+    bad = fat16_test_image(&bytes);
+    bad[13] = 0;                           /* sectors_per_cluster = 0 */
+    ASSERT_TRUE(fat16_mount(&fs, bad, bytes) != 0, "sectors_per_cluster = 0 must fail");
+    free(bad);
+
+    bad = fat16_test_image(&bytes);
+    bad[16] = 0;                           /* num_fats = 0 */
+    ASSERT_TRUE(fat16_mount(&fs, bad, bytes) != 0, "num_fats = 0 must fail");
+    free(bad);
+
+    bad = fat16_test_image(&bytes);
+    bad[22] = 0; bad[23] = 0;              /* sectors_per_fat = 0 */
+    ASSERT_TRUE(fat16_mount(&fs, bad, bytes) != 0, "sectors_per_fat = 0 must fail");
+    free(bad);
+
+    /* Metadata larger than the declared volume: the crafted case. */
+    bad = fat16_test_image(&bytes);
+    bad[14] = 0xFF; bad[15] = 0xFF;        /* reserved_sectors = 0xFFFF */
+    ASSERT_TRUE(fat16_mount(&fs, bad, bytes) != 0,
+                "metadata beyond the volume must be rejected");
+    free(bad);
+
+    free(img);
+    PASS();
+}
+
+TEST(test_fat16_rejects_out_of_bounds_directory_entries) {
+    size_t bytes = 0;
+    uint8_t *img = fat16_test_image(&bytes);
+    ASSERT_TRUE(img != NULL, "test image allocation");
+    if (!img) PASS();
+
+    fat16_fs_t fs;
+    ASSERT_TRUE(fat16_mount(&fs, img, bytes) == 0, "mount");
+
+    /* The 32-bit total_sectors path must be used when the 16-bit field is 0;
+     * otherwise volumes over 32 MiB silently truncate. */
+    ASSERT_TRUE(fs.total_sectors > 0xFFFF || fs.total_sectors == 8192,
+                "total_sectors must come from the 32-bit field when the 16-bit is 0");
+
+    /* Stat on a name that is not present. */
+    fat16_fileinfo_t info;
+    ASSERT_TRUE(fat16_stat(&fs, "MISSING.TXT", &info) != 0,
+                "stat of a missing file must fail");
+
+    /* Read a missing file. */
+    uint8_t buf[64];
+    ASSERT_TRUE(fat16_read_file(&fs, "MISSING.TXT", buf, sizeof(buf)) < 0,
+                "read of a missing file must fail");
+
+    /* A buffer too small must be reported, not silently truncated. */
+    uint8_t tiny[4];
+    ASSERT_TRUE(fat16_read_file(&fs, "HELLO.TXT", tiny, sizeof(tiny)) != 13,
+                "a short buffer must not report a full 13-byte read");
+
+    /* Listing must not run past the root directory. */
+    fat16_fileinfo_t files[16];
+    int nf = fat16_list_root(&fs, files, 16);
+    ASSERT_TRUE(nf >= 2, "list_root should find both files");
+    ASSERT_TRUE(nf <= 16, "list_root must respect the caller's capacity");
+
+    free(img);
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6333,6 +6559,10 @@ int main(void) {
     RUN_TEST(test_pwm_rp2040_layout_unchanged);
     RUN_TEST(test_thumb2_ldrd_strd_immediate);
     RUN_TEST(test_rv_hart1_launch_uses_the_documented_fifo_protocol);
+    RUN_TEST(test_spi_flash_rejects_out_of_range_accesses);
+    RUN_TEST(test_spi_flash_size_is_normalised_to_the_erase_unit);
+    RUN_TEST(test_fat16_mount_rejects_malformed_bpb);
+    RUN_TEST(test_fat16_rejects_out_of_bounds_directory_entries);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
