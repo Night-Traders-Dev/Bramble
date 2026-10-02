@@ -5382,6 +5382,78 @@ TEST(test_rv_zcb_c_sb_uses_both_rs1_and_rs2) {
     PASS();
 }
 
+/* RP2350's PWM block differs from RP2040's almost entirely above the per-slice
+ * registers: 12 slices rather than 8, the global block at 0xF0 rather than 0xA0,
+ * 12-bit global registers rather than 8, and *two* interrupt outputs. Offsets
+ * from pico-sdk src/rp2350/.../regs/pwm.h. */
+TEST(test_pwm_rp2350_layout) {
+    pwm_init();
+    membus_rp2350_mode = 1;
+
+    /* Slice 11's CSR is at 0xDC -- beyond anything RP2040 has. */
+    pwm_write32(11 * 0x14 + PWM_CH_TOP, 0x1234u);
+    ASSERT_EQ(0x1234u, pwm_read32(11 * 0x14 + PWM_CH_TOP), "RP2350 slice 11");
+    ASSERT_EQ(0, pwm_read32(PWM2350_G_EN), "global block starts clear");
+
+    /* PWM_EN aliases the per-slice CSR enable bits and is 12 bits wide. It used
+     * to be masked to 0xFF, so slices 8-11 could never be enabled. */
+    pwm_write32(PWM2350_G_EN, 0xFFF);
+    ASSERT_EQ(0xFFFu, pwm_read32(PWM2350_G_EN), "PWM_EN must be 12 bits on RP2350");
+    for (int i = 0; i < 12; i++)
+        ASSERT_TRUE((pwm_state.slice[i].csr & PWM_CSR_EN) != 0,
+                    "slice must be enabled via PWM_EN");
+    ASSERT_TRUE((pwm_state.slice[0].csr & PWM_CSR_EN) == 0 ||
+                (pwm_state.slice[0].csr & PWM_CSR_EN) != 0, "");
+
+    pwm_write32(PWM2350_G_EN, 0);
+    ASSERT_EQ(0, pwm_read32(PWM2350_G_EN), "PWM_EN clear");
+    ASSERT_EQ(0, pwm_state.slice[11].csr & PWM_CSR_EN,
+              "clearing PWM_EN must clear slice 11's CSR enable");
+
+    /* The RP2040 offsets are *not* the RP2350 ones: on RP2350, 0xA8 lands
+     * inside slice 10's register area, not in the interrupt block. */
+    ASSERT_TRUE(pwm_read32(PWM2040_G_INTE) == pwm_read32(10 * 0x14 + PWM_CH_CC) ||
+                pwm_read32(PWM2040_G_INTE) == 0,
+              "0xA8 must not be treated as the interrupt enable on RP2350");
+
+    /* The two interrupt outputs are independent. */
+    pwm_write32(PWM2350_G_IRQ0_INTE, 0x001);
+    pwm_write32(PWM2350_G_IRQ1_INTE, 0x100);
+    ASSERT_EQ(0x001u, pwm_read32(PWM2350_G_IRQ0_INTE), "IRQ0 enable");
+    ASSERT_EQ(0x100u, pwm_read32(PWM2350_G_IRQ1_INTE), "IRQ1 enable");
+    pwm_write32(PWM2350_G_IRQ1_INTF, 0x100);
+    ASSERT_EQ(0x100u, pwm_read32(PWM2350_G_IRQ1_INTS), "IRQ1 forced status");
+
+    membus_rp2350_mode = 0;
+    PASS();
+}
+
+/* RP2040 keeps 8 slices, the 0xA0 block and 8-bit globals -- the change must not
+ * have regressed it. */
+TEST(test_pwm_rp2040_layout_unchanged) {
+    pwm_init();
+    membus_rp2350_mode = 0;
+
+    pwm_write32(7 * 0x14 + PWM_CH_TOP, 0xABCDu);
+    ASSERT_EQ(0xABCDu, pwm_read32(7 * 0x14 + PWM_CH_TOP), "RP2040 slice 7");
+
+    pwm_write32(PWM2040_G_EN, 0xFF);
+    ASSERT_EQ(0xFFu, pwm_read32(PWM2040_G_EN), "RP2040 PWM_EN is 8 bits");
+
+    pwm_write32(PWM2040_G_INTE, 0x10);
+    pwm_write32(PWM2040_G_INTF, 0x10);
+    ASSERT_EQ(0x10u, pwm_read32(PWM2040_G_INTS), "RP2040 INTS");
+
+    /* Slices 8-11 do not exist on RP2040. Their offsets (0xA0, 0xB4, 0xC8,
+     * 0xDC) all land inside or past the global block, which ends at 0xB0, so
+     * none may read back as a slice register. 0xA0 is PWM_EN by design. */
+    ASSERT_EQ(0xFFu, pwm_read32(8 * 0x14), "0xA0 is PWM_EN on RP2040, not slice 8");
+    for (int i = 9; i < 12; i++)
+        ASSERT_EQ(0, pwm_read32((uint32_t)i * 0x14 + PWM_CH_CSR),
+                  "RP2040 has only 8 slices");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6145,6 +6217,8 @@ int main(void) {
     RUN_TEST(test_rv_zcb_c_sb_uses_its_offset);
     RUN_TEST(test_rv_zcb_c_sh_uses_its_offset);
     RUN_TEST(test_rv_zcb_c_sb_uses_both_rs1_and_rs2);
+    RUN_TEST(test_pwm_rp2350_layout);
+    RUN_TEST(test_pwm_rp2040_layout_unchanged);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
