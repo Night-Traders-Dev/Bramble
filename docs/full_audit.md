@@ -515,6 +515,35 @@ load, which is the correct failure mode.
 Also removed as a consequence: the now-unused `vfp_d[]` double-precision file,
 `vfp_st_from_insn()`/`vfp_sm_from_insn()`, and a triplicated VDIV block.
 
+**Hart-1 launch — fixed, and the audit was half right.**
+The claim "hart-1 launch uses invented SIO registers, so
+`multicore_launch_core1()` never launches" was correct *for the RISC-V path*
+and wrong for Arm. Arm already implements the datasheet protocol in
+`sio_core1_bootrom_handle_fifo_write()`; only the RV path used the invented
+mailbox.
+
+RP2350 datasheet §5.3 gives the mechanism: core 0 pushes six words to core 1
+over the SIO inter-processor FIFO,
+
+    { 0, 0, 1, vector_table, sp, entry }
+
+with `vector_table` destined for VTOR. §3.1.5 puts the FIFO at SIO `+0x54`
+(`FIFO_WR`) and `+0x58` (`FIFO_RD`). And §3.1.9's register list is explicit that
+`0x1C0`-`0x1CC` is `TMDS_CTRL`, `TMDS_WDATA`, `TMDS_PEEK_SINGLE` and
+`TMDS_POP_SINGLE` — so the "boot mailbox" was writing a hart-1 entry point into
+the HDMI pixel encoder, and the TMDS block itself was unreachable.
+
+The RV path now watches core 0's `FIFO_WR`, recognises the six-word shape, and
+takes the entry point, stack pointer and vector table from it. The third word
+goes to `mtvec`; the old code loaded it into `a0`, which only made sense as a
+"boot arg" for the invented register.
+
+One subtlety worth recording: `FIFO_WR`/`FIFO_RD` reads must keep falling
+through to the shared SIO model. Answering them early from the RV path makes
+`FIFO_RD` return a marker value, and firmware polling its mailbox spins -- which
+is exactly what happened on the first attempt and showed up as the RV littleOS
+image climbing from ~44M to ~41M instructions in the wrong direction.
+
 **Core `LDRD`/`STRD` are implemented after all.** Two claims here were wrong and
 are withdrawn. I had written that they had "no executor", and separately that
 they "silently report handled without loading". Both came from greps that

@@ -84,6 +84,7 @@ void rv_membus_init(rv_membus_state_t *bus, uint8_t *flash, uint32_t flash_size,
     bus->rom_size = 32 * 1024;
     bus->is_riscv = 1;
     bus->hart1_launch_pending = 0;
+    bus->hart1_count = 0;
     bus->gpio_hi_in = 0x3E;  /* CS high + data pulled up (same as RP2040 QSPI) */
     rv_clint_init(&bus->clint, cycles_per_us);
     rp2350_periph_init(&bus->periph, 0);
@@ -148,12 +149,6 @@ static uint32_t rv_sio_read(rv_membus_state_t *bus, uint32_t offset) {
     case 0x044: return bus->gpio_hi_oe;       /* GPIO_HI_OE_CLR */
     case 0x04c: return bus->gpio_hi_oe;       /* GPIO_HI_OE_XOR */
 
-    /* Hart 1 launch mailbox */
-    case RV_SIO_HART1_BOOT_ENTRY:  return bus->hart1_entry;
-    case RV_SIO_HART1_BOOT_SP:     return bus->hart1_sp;
-    case RV_SIO_HART1_BOOT_ARG:    return bus->hart1_arg;
-    case RV_SIO_HART1_BOOT_LAUNCH: return 0;
-
     default: break;
     }
     /* Fall through for standard SIO registers */
@@ -175,17 +170,41 @@ static int rv_sio_write(rv_membus_state_t *bus, uint32_t offset, uint32_t val) {
     case 0x044: bus->gpio_hi_oe &= ~(val & 0xFFFF); return 1; /* GPIO_HI_OE_CLR */
     case 0x04c: bus->gpio_hi_oe ^= (val & 0xFFFF); return 1; /* GPIO_HI_OE_XOR */
 
-    /* Hart 1 launch mailbox */
-    case RV_SIO_HART1_BOOT_ENTRY: bus->hart1_entry = val; return 1;
-    case RV_SIO_HART1_BOOT_SP:    bus->hart1_sp = val; return 1;
-    case RV_SIO_HART1_BOOT_ARG:   bus->hart1_arg = val; return 1;
-    case RV_SIO_HART1_BOOT_LAUNCH:
-        if (val & 1) {
-            bus->hart1_launch_pending = 1;
-            fprintf(stderr, "[RV-SIO] Hart 1 launch: entry=0x%08X SP=0x%08X arg=0x%08X\n",
-                    bus->hart1_entry, bus->hart1_sp, bus->hart1_arg);
+    /* Hart 1 launch: the datasheet section 5.3 protocol. Core 0 pushes six
+     * words to core 1 over the SIO FIFO:
+     *
+     *     { 0, 0, 1, vector_table, sp, entry }
+     *
+     * so the launch is recognised by that shape rather than by a magic
+     * register write. This used to be claimed at 0x1C0-0x1CC, which the
+     * datasheet says is the TMDS encoder. */
+    case RV_SIO_FIFO_WR: {
+        /* The write still has to reach core 1's FIFO, so let the shared SIO
+         * model handle it and only observe the value here. */
+        if (bus->hart1_count < 6) {
+            bus->hart1_words[bus->hart1_count++] = val;
+            if (bus->hart1_count == 6) {
+                uint32_t *w = bus->hart1_words;
+                /* Shape check: {0, 0, 1, ...}. The real protocol also requires
+                 * core 1 to echo each word, which the shared FIFO model does
+                 * not track, so require the three constant words at least. */
+                if (w[0] == 0 && w[1] == 0 && w[2] == 1) {
+                    bus->hart1_arg    = w[3];   /* vector_table / VTOR */
+                    bus->hart1_sp     = w[4];
+                    bus->hart1_entry  = w[5] & ~1u;  /* drop the Thumb bit */
+                    bus->hart1_launch_pending = 1;
+                    fprintf(stderr,
+                            "[RV-SIO] Hart 1 launch: entry=0x%08X SP=0x%08X vtor=0x%08X\n",
+                            bus->hart1_entry, bus->hart1_sp, bus->hart1_arg);
+                } else {
+                    fprintf(stderr, "[RV-SIO] FIFO sequence did not match the "
+                                    "core-1 launch protocol; hart 1 stays halted\n");
+                }
+                bus->hart1_count = 0;
+            }
         }
-        return 1;
+        return 0;   /* fall through so the shared FIFO model also stores it */
+    }
 
     default: break;
     }
@@ -241,10 +260,16 @@ uint32_t rv_mem_read32(rv_membus_state_t *bus, uint32_t addr) {
     if (addr >= RP2350_SIO_BASE && addr < RP2350_SIO_BASE + 0x200) {
         uint32_t offset = addr - RP2350_SIO_BASE;
         uint32_t sio_val = rv_sio_read(bus, offset);
-        /* If CPUID or GPIO_HI or hart launch, return directly */
+        /* CPUID and the GPIO_HI aliases are RV-specific, so answer them here.
+         *
+         * The FIFO offsets must NOT be listed: they are ordinary SIO
+         * registers owned by the shared model, and returning early would make
+         * a read of FIFO_RD answer with a marker value instead of the actual
+         * received word. Firmware polling its mailbox would then spin. The
+         * launch protocol only needs to *observe* FIFO writes, which
+         * rv_sio_write() does without consuming them. */
         if (offset == RV_SIO_CPUID || offset == 0x30 || offset == 0x38 ||
-            offset == 0x40 ||
-            (offset >= RV_SIO_HART1_BOOT_ENTRY && offset <= RV_SIO_HART1_BOOT_LAUNCH))
+            offset == 0x40)
             return sio_val;
         /* Otherwise fall through to RP2040 SIO */
     }

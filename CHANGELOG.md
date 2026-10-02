@@ -54,7 +54,7 @@ wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/P
 registers and never read them back, and which passed straight through the SIO
 GPIO write-drop bug. All three now assert real behaviour.
 
-- 347/347 tests passing, up from 319.
+- 349/349 tests passing, up from 319.
 - 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
   and riscv64, across the test suite and all eight bundled firmware images
   (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,
@@ -69,13 +69,17 @@ Unfixed, with reasons, in `docs/full_audit.md`:
   as of this release. Note these are *not* the 16-bit `0xD8xx`/`0xD9xx` forms
   that an earlier revision of this file claimed -- the ARM ARM maps 16-bit
   `1101xx` to conditional branch, so those slots are already correctly used.
-- **Core `LDRD`/`STRD` are not implemented** either -- there are guards against
-  other instructions being mis-decoded as them, but no executor. The emulator's
-  VFP path used to intercept them, which this release stops.
+- **Core `LDRD`/`STRD`** are implemented (`t32_ldrd_strd()`) and now have a test
+  pinned to the ARMv7-M ARM encoding. An earlier release note claimed otherwise;
+  that was wrong.
 
 - **Bus-fault exceptions**: the RV core still returns 0 for unmapped accesses. `mem_read32()` has no mapped/unmapped answer, so this needs a `membus_is_mapped()` mirroring the whole peripheral decode; a misclassified address would start trapping firmware.
 - **U-mode and PMP** absent (hence `misa.U` clear).
-- **Hart-1 launch** uses invented SIO registers at `0x1c0`–`0x1cc`, which on RP2350 are TMDS, rather than the FIFO handshake.
+- ~~**Hart-1 launch** uses invented SIO registers at `0x1c0`–`0x1cc`.~~ Fixed:
+  the RISC-V path now uses the datasheet §5.3 FIFO protocol
+  (`{0, 0, 1, vector_table, sp, entry}` over SIO `FIFO_WR`), and `0x1c0`–`0x1cc`
+  is left to the TMDS encoder, which is what the datasheet says it is. The Arm
+  path already did this correctly.
 - **The SP-relative Zca forms `C.SBSP`/`C.SHSP`** (quadrant 2) were not re-examined. The Zcb `c.sb`/`c.sh` in quadrant 0 are fixed; the Zca forms are a separate encoding with larger offsets.
 - **Four unreachable Thumb-2 VFP decoders** (`VLDR Dd`, `VSTR Dd`, two `VCVT` F32↔U32 arms). Left deliberately unfixed so the compiler keeps warning.
 - **Atomic register aliases** do the interposer read-modify-write in software, so a SET-alias write to `UARTDR`/`SSPDR` consumes an RX byte.

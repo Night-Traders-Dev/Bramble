@@ -23,12 +23,19 @@
 /* RP2350 SRAM: 520KB (10 banks of 64KB + 8KB scratch) */
 #define RV_SRAM_SIZE    (520 * 1024)
 
-/* Hart launch mailbox (in SIO space) */
 #define RV_SIO_CPUID              0x00
-#define RV_SIO_HART1_BOOT_ENTRY   0x1C0  /* Hart 1 entry point */
-#define RV_SIO_HART1_BOOT_SP      0x1C4  /* Hart 1 stack pointer */
-#define RV_SIO_HART1_BOOT_ARG     0x1C8  /* Hart 1 argument (a0) */
-#define RV_SIO_HART1_BOOT_LAUNCH  0x1CC  /* Write 1 to launch hart 1 */
+
+/* SIO inter-processor FIFO, per core. RP2350 datasheet section 3.1.5: 0x54
+ * writes this core's TX FIFO, 0x58 reads its RX FIFO. This is the only
+ * documented channel for launching core 1 (section 5.3).
+ *
+ * SIO +0x1C0..0x1CC is NOT a hart-1 mailbox -- it is the TMDS encoder
+ * (TMDS_CTRL, TMDS_WDATA, TMDS_PEEK_SINGLE, TMDS_POP_SINGLE). The emulator
+ * previously claimed those four registers as a boot mailbox, which meant the
+ * real TMDS block was unreachable and RISC-V firmware's multicore_launch_core1()
+ * wrote its entry point into the pixel encoder. */
+#define RV_SIO_FIFO_WR            0x054
+#define RV_SIO_FIFO_RD            0x058
 
 typedef struct {
     /* RP2350 SRAM (520KB, separate from RP2040 RAM) */
@@ -48,7 +55,11 @@ typedef struct {
     uint8_t rom[32 * 1024];
     uint32_t rom_size;
 
-    /* Hart 1 launch mailbox */
+    /* Hart 1 launch, driven by the RP2350 datasheet section 5.3 protocol:
+     * core 0 pushes {0, 0, 1, vector_table, sp, entry} to core 1 through the
+     * SIO inter-processor FIFO. These are the words collected so far. */
+    uint32_t hart1_words[6];
+    int      hart1_count;
     uint32_t hart1_entry;
     uint32_t hart1_sp;
     uint32_t hart1_arg;

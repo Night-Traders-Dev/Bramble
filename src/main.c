@@ -1283,13 +1283,17 @@ skip_fuse:
 
             /* Check hart 1 launch mailbox */
             if (rv_cores[1].is_halted) {
-                uint32_t h1_entry, h1_sp, h1_arg;
-                if (rv_membus_check_hart1_launch(&rv_bus, &h1_entry, &h1_sp, &h1_arg)) {
+                uint32_t h1_entry, h1_sp, h1_vtor;
+                if (rv_membus_check_hart1_launch(&rv_bus, &h1_entry, &h1_sp, &h1_vtor)) {
                     rv_cpu_reset(&rv_cores[1], h1_entry);
-                    rv_cores[1].x[2] = h1_sp;   /* SP */
-                    rv_cores[1].x[10] = h1_arg;  /* a0 */
-                    fprintf(stderr, "[RV] Hart 1 launched: PC=0x%08X SP=0x%08X a0=0x%08X\n",
-                            h1_entry, h1_sp, h1_arg);
+                    rv_cores[1].x[2] = h1_sp;                        /* x2 = SP */
+                    /* The datasheet's third word is vector_table, i.e. the
+                     * value for VTOR. On RV that is mtvec, not a0 -- the old
+                     * code loaded it into a0, which is what the invented
+                     * mailbox's "boot arg" field suggested. */
+                    rv_cores[1].csr[CSR_MTVEC] = h1_vtor;
+                    fprintf(stderr, "[RV] Hart 1 launched: PC=0x%08X SP=0x%08X mtvec=0x%08X\n",
+                            h1_entry, h1_sp, h1_vtor);
                 }
             }
 

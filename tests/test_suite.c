@@ -5523,6 +5523,49 @@ TEST(test_thumb2_ldrd_strd_immediate) {
     PASS();
 }
 
+/* RP2350 datasheet section 5.3: core 0 launches core 1 by pushing
+ *
+ *     { 0, 0, 1, vector_table, sp, entry }
+ *
+ * to core 1 over the SIO inter-processor FIFO (SIO +0x54). The emulator used to
+ * claim SIO +0x1C0..0x1CC as a boot mailbox, which the datasheet says is the
+ * TMDS encoder (TMDS_CTRL / TMDS_WDATA / TMDS_PEEK_SINGLE / TMDS_POP_SINGLE).
+ * So multicore_launch_core1() wrote its entry point into the pixel encoder and
+ * hart 1 never started. */
+TEST(test_rv_hart1_launch_uses_the_documented_fifo_protocol) {
+    rv_membus_state_t bus;
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+
+    const uint32_t vtor = 0x20040000u;
+    const uint32_t sp   = 0x20081000u;
+    const uint32_t entry = 0x10000101u;   /* Thumb bit set by the sender */
+
+    /* Wrong sequence must not launch: these are the invented mailbox writes. */
+    rv_mem_write32(&bus, RP2350_SIO_BASE + 0x1C0u, vtor);
+    rv_mem_write32(&bus, RP2350_SIO_BASE + 0x1C4u, sp);
+    rv_mem_write32(&bus, RP2350_SIO_BASE + 0x1C8u, entry);
+    rv_mem_write32(&bus, RP2350_SIO_BASE + 0x1CCu, 1u);
+    uint32_t e, s2, v;
+    ASSERT_TRUE(rv_membus_check_hart1_launch(&bus, &e, &s2, &v) == 0,
+                "SIO +0x1C0..0x1CC is TMDS, not a launch mailbox");
+
+    /* The real protocol. */
+    const uint32_t seq[6] = { 0, 0, 1, vtor, sp, entry };
+    for (int i = 0; i < 6; i++)
+        rv_mem_write32(&bus, RP2350_SIO_BASE + RV_SIO_FIFO_WR, seq[i]);
+
+    ASSERT_TRUE(rv_membus_check_hart1_launch(&bus, &e, &s2, &v) == 1,
+                "the section 5.3 sequence must launch hart 1");
+    ASSERT_EQ(sp, s2, "launch must carry the stack pointer");
+    ASSERT_EQ(entry & ~1u, e, "launch must carry the entry point, Thumb bit clear");
+    ASSERT_EQ(vtor, v, "launch must carry vector_table");
+
+    /* Only once: the second poll must report nothing new. */
+    ASSERT_TRUE(rv_membus_check_hart1_launch(&bus, &e, &s2, &v) == 0,
+                "a launch must be reported exactly once");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6289,6 +6332,7 @@ int main(void) {
     RUN_TEST(test_pwm_rp2350_layout);
     RUN_TEST(test_pwm_rp2040_layout_unchanged);
     RUN_TEST(test_thumb2_ldrd_strd_immediate);
+    RUN_TEST(test_rv_hart1_launch_uses_the_documented_fifo_protocol);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
