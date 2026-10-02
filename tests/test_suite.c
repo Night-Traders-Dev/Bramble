@@ -24,6 +24,7 @@
 #include "fatfs.h"
 #include "bme280.h"
 #include "netbridge.h"
+#include "cyw43.h"
 #include "timer.h"
 #include "gpio.h"
 #include "clocks.h"
@@ -5876,6 +5877,90 @@ TEST(test_net_bridge_rejects_out_of_range_uart_index) {
     PASS();
 }
 
+/* cyw43 is the largest uncovered file (1345 lines). It bit-bangs an SPI
+ * transaction over three GPIOs, so the state machine is drivable from a test
+ * without any hardware -- and the interesting part is the buffer indexing in the
+ * read phase, which walks resp_buf[] with resp_offset/resp_len driven by the
+ * emulated device. */
+#define CYW_WL_CS   23
+#define CYW_WL_CLK  24
+#define CYW_WL_DIO  25
+
+TEST(test_cyw43_gpio_intercept_only_claims_wifi_pins) {
+    /* The model is gated on cyw43.enabled, which main.c sets only for -wifi or
+     * -tap. The test harness passes neither, so enable it explicitly before
+     * init -- otherwise every intercept returns 0 and the test would "pass"
+     * without exercising the state machine at all. */
+    cyw43.enabled = 1;
+    cyw43_init();
+
+    ASSERT_EQ(1, cyw43_is_wifi_gpio(CYW_WL_CS), "WL_CS must be a WiFi pin");
+    ASSERT_EQ(1, cyw43_is_wifi_gpio(CYW_WL_CLK), "WL_CLK must be a WiFi pin");
+    ASSERT_EQ(1, cyw43_is_wifi_gpio(CYW_WL_DIO), "WL_DIO must be a WiFi pin");
+    ASSERT_EQ(0, cyw43_is_wifi_gpio(0), "GPIO 0 must not be a WiFi pin");
+    ASSERT_EQ(0, cyw43_is_wifi_gpio(15), "GPIO 15 (LED) must not be a WiFi pin");
+
+    /* A non-WiFi GPIO must be passed through, not consumed by the model. */
+    ASSERT_EQ(0, cyw43_gpio_intercept(15, 1), "a non-WiFi GPIO must not be intercepted");
+    ASSERT_EQ(0, cyw43_gpio_intercept(0, 1), "a non-WiFi GPIO must not be intercepted");
+
+    /* The WiFi pins are claimed regardless of the value written. */
+    ASSERT_EQ(1, cyw43_gpio_intercept(CYW_WL_CS, 1), "WL_CS is intercepted");
+    ASSERT_EQ(1, cyw43_gpio_intercept(CYW_WL_CS, 0), "WL_CS is intercepted");
+    ASSERT_EQ(1, cyw43_gpio_intercept(CYW_WL_CLK, 1), "WL_CLK is intercepted");
+    ASSERT_EQ(1, cyw43_gpio_intercept(CYW_WL_DIO, 0), "WL_DIO is intercepted");
+    PASS();
+}
+
+/* Clocking 32 command bits must move the state machine into the data phase, and
+ * the read phase must serve resp_buf[] without running off the end. */
+TEST(test_cyw43_bitbang_spi_state_machine) {
+    cyw43.enabled = 1;    /* see the note in the test above */
+    cyw43_init();
+
+    /* Chip select low starts the command phase. */
+    cyw43_gpio_intercept(CYW_WL_CS, 0);
+    ASSERT_EQ(1, cyw43.spi.cs_active, "CS low must select the device");
+    ASSERT_EQ(0, cyw43.spi.cmd_bits, "a fresh command must start with no bits");
+
+    /* Clock edges before the 32nd must keep accumulating the command word. */
+    uint32_t cmd = 0x0000A500u;   /* plausible SPI command header */
+    for (int i = 0; i < 31; i++) {
+        int bit = (int)((cmd >> i) & 1u);
+        cyw43_gpio_intercept(CYW_WL_DIO, (uint32_t)bit);
+        cyw43_gpio_intercept(CYW_WL_CLK, 1);
+        cyw43_gpio_intercept(CYW_WL_CLK, 0);
+        ASSERT_EQ(i + 1, cyw43.spi.cmd_bits, "each rising clock must shift one bit");
+    }
+    ASSERT_EQ(0, cyw43.spi.in_data_phase, "must not enter the data phase early");
+
+    /* The 32nd bit completes the command and switches phases. */
+    cyw43_gpio_intercept(CYW_WL_DIO, (uint32_t)((cmd >> 31) & 1u));
+    cyw43_gpio_intercept(CYW_WL_CLK, 1);
+    cyw43_gpio_intercept(CYW_WL_CLK, 0);
+    ASSERT_EQ(1, cyw43.spi.in_data_phase, "32 command bits must enter the data phase");
+
+    /* Deselecting must drop the chip select. */
+    cyw43_gpio_intercept(CYW_WL_CS, 1);
+    ASSERT_EQ(0, cyw43.spi.cs_active, "CS high must deselect the device");
+
+    /* Now clock the read phase. With no response queued the model must serve
+     * zeros indefinitely rather than reading past resp_buf[]. */
+    uint32_t served_before = cyw43.spi.resp_offset;
+    for (int i = 0; i < 64; i++) {
+        cyw43_gpio_intercept(CYW_WL_DIO, 0);
+        cyw43_gpio_intercept(CYW_WL_CLK, 1);
+        cyw43_gpio_intercept(CYW_WL_CLK, 0);
+    }
+    /* Nothing was queued, so resp_offset must not have advanced -- that is the
+     * guard against walking off the end of resp_buf[]. */
+    ASSERT_EQ(served_before, cyw43.spi.resp_offset,
+              "the read phase must not advance past an empty response buffer");
+
+    cyw43.enabled = 0;    /* leave global state as we found it */
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6649,6 +6734,8 @@ int main(void) {
     RUN_TEST(test_fat16_rejects_out_of_bounds_directory_entries);
     RUN_TEST(test_bme280_register_protocol);
     RUN_TEST(test_net_bridge_rejects_out_of_range_uart_index);
+    RUN_TEST(test_cyw43_gpio_intercept_only_claims_wifi_pins);
+    RUN_TEST(test_cyw43_bitbang_spi_state_machine);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
