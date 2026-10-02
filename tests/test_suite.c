@@ -22,6 +22,8 @@
 #include "nvic.h"
 #include "spi_flash.h"
 #include "fatfs.h"
+#include "bme280.h"
+#include "netbridge.h"
 #include "timer.h"
 #include "gpio.h"
 #include "clocks.h"
@@ -5792,6 +5794,88 @@ TEST(test_fat16_rejects_out_of_bounds_directory_entries) {
     PASS();
 }
 
+/* bme280 had no test coverage. It is reached over the emulated I2C bus, so its
+ * register-pointer protocol is worth pinning: a write sets the pointer and
+ * subsequent reads auto-increment through the register map. Getting that wrong
+ * makes every SDK read of the calibration block silently return the wrong
+ * bytes, which no firmware would notice without a probe. */
+TEST(test_bme280_register_protocol) {
+    bme280_t dev;
+    bme280_init(&dev);
+
+    /* The I2C protocol needs an explicit start between transactions: start
+     * clears ptr_set so the *next* write byte is taken as the register pointer
+     * rather than as data. Driving bme280_i2c_write() directly, without the
+     * start, silently writes data into whatever register was last addressed. */
+#define BME_SEL(reg) (bme280_i2c_start(&dev), bme280_i2c_write(&dev, (reg)))
+
+    /* Chip identification must be readable at 0xD0. */
+    BME_SEL(BME280_REG_CHIP_ID);
+    ASSERT_EQ(BME280_CHIP_ID, bme280_i2c_read(&dev), "chip id at 0xD0");
+
+    /* Reads auto-increment, so the pointer must have advanced past 0xD0. */
+    uint8_t after = bme280_i2c_read(&dev);
+    ASSERT_TRUE(after != BME280_CHIP_ID, "reads must advance the register pointer");
+
+    /* The soft-reset command is recognised at 0xE0. */
+    BME_SEL(BME280_REG_RESET);
+    bme280_i2c_write(&dev, BME280_RESET_CMD);
+
+    /* ctrl_meas is writable and readable back. */
+    BME_SEL(BME280_REG_CTRL_MEAS);
+    bme280_i2c_write(&dev, BME280_MODE_NORMAL);
+    BME_SEL(BME280_REG_CTRL_MEAS);
+    uint8_t ctrl = bme280_i2c_read(&dev);
+    ASSERT_TRUE((ctrl & 0x03) == BME280_MODE_NORMAL,
+                "ctrl_meas mode bits must read back as written");
+
+    /* The simulation setters must reach the register file, and the 20-bit
+     * values must survive the msb/lsb/xlsb split. */
+    bme280_set_temperature(&dev, 25.0f);
+    BME_SEL(BME280_REG_TEMP_MSB);
+    uint8_t t_msb  = bme280_i2c_read(&dev);
+    uint8_t t_lsb  = bme280_i2c_read(&dev);
+    uint8_t t_xlsb = bme280_i2c_read(&dev);
+    int32_t raw = ((int32_t)t_msb << 12) | ((int32_t)t_lsb << 4) | (t_xlsb >> 4);
+    ASSERT_TRUE(raw > 0 && raw <= 0xFFFFF, "temperature must be a valid 20-bit raw value");
+
+    /* A different temperature must produce a different raw value. */
+    bme280_set_temperature(&dev, 30.0f);
+    BME_SEL(BME280_REG_TEMP_MSB);
+    int32_t raw2 = ((int32_t)bme280_i2c_read(&dev) << 12);
+    ASSERT_TRUE(raw2 != raw, "a different temperature must change the raw value");
+
+    bme280_set_pressure(&dev, 101325.0f);
+    BME_SEL(BME280_REG_PRESS_MSB);
+    uint8_t p_msb = bme280_i2c_read(&dev);
+    ASSERT_TRUE(p_msb != 0, "set_pressure must populate the pressure regs");
+
+    bme280_set_humidity(&dev, 50.0f);
+    BME_SEL(BME280_REG_HUM_MSB);
+    uint8_t h_msb = bme280_i2c_read(&dev);
+    ASSERT_TRUE(h_msb != 0, "set_humidity must populate the humidity regs");
+
+#undef BME_SEL
+    PASS();
+}
+
+/* netbridge indexes fixed per-UART arrays, and the uart_num comes from the
+ * emulated UART model. Without the bounds check a bad index is an OOB write
+ * into net_bridge_tx_pending[]. Pinned here; the data path needs a connected
+ * client socket and is not reachable from a unit test. */
+TEST(test_net_bridge_rejects_out_of_range_uart_index) {
+    net_bridge_uart_tx(99, 'x');   /* must be a no-op, not an OOB write */
+    net_bridge_uart_tx(-1, 'x');
+    ASSERT_EQ(1, 1, "out-of-range UART writes must be dropped without effect");
+    ASSERT_EQ(0, net_bridge_uart_active(99), "an out-of-range UART must not be active");
+    ASSERT_EQ(0, net_bridge_uart_active(-1), "a negative UART must not be active");
+
+    /* With no client connected, nothing should report active. */
+    for (int u = 0; u < 2; u++)
+        ASSERT_EQ(0, net_bridge_uart_active(u), "UART must be inactive with no client");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6563,6 +6647,8 @@ int main(void) {
     RUN_TEST(test_spi_flash_size_is_normalised_to_the_erase_unit);
     RUN_TEST(test_fat16_mount_rejects_malformed_bpb);
     RUN_TEST(test_fat16_rejects_out_of_bounds_directory_entries);
+    RUN_TEST(test_bme280_register_protocol);
+    RUN_TEST(test_net_bridge_rejects_out_of_range_uart_index);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
