@@ -563,11 +563,34 @@ ARM's field layout.
 Result: `src/thumb32.c` builds clean, and the whole project compiles with zero
 warnings under `-Wall -Wextra -pedantic`.
 
-### O21 — test coverage remains ~20%
-This work added 9 regression tests (333 total, up from 324) and fixed three
-tests that asserted nothing, but the gap is structural: eleven source files
-still have no test references. Closing it needs a deliberate effort per file,
-not opportunistic additions.
+### O21 — test coverage — **partly fixed in `c0f3885`**
+Originally measured at 19.9% (187 of 938 functions referenced), with eleven
+source files having no test references at all. `spi_flash.c` and `fatfs.c` now
+have coverage, chosen because both are reached with guest-controlled values, so
+their validation paths are the security-relevant surface rather than incidental.
+
+`spi_flash`: reads take a 64-bit offset and a length from the emulated device,
+so the bounds check must not overflow. Pinned that `offset + len` is evaluated
+in 64 bits (a near-`UINT64_MAX` offset is rejected, not wrapped), that a read
+straddling the chip end is refused, and that the chip index, `NULL` buffer and
+zero length are handled.
+
+`fatfs`: the BPB is entirely guest-supplied. A minimal valid image is built and
+one field corrupted at a time -- boot signature, short media,
+`bytes_per_sector != 512`, and the three zero-value fields that would divide by
+zero -- plus `reserved_sectors = 0xFFFF`, which before the 64-bit arithmetic fix
+placed the root directory megabytes past the media. Also checks the 32-bit
+`total_sectors` fallback, that `list_root` respects the caller's capacity, and
+that a short read buffer is reported rather than silently truncated.
+
+Also earlier in this work: three tests that asserted nothing were made to assert
+real behaviour, one of which (`test_peripheral_writes_no_crash`) had passed
+straight through the SIO GPIO write-drop bug.
+
+Still no coverage: `cyw43`, `gdb`, `tapif`, `netbridge`, `bme280`,
+`fuse_mount`. `gdb` and `fuse_mount` are the most valuable next targets -- the
+RSP parser is the piece that already had a guest-triggerable bounds fix, and
+FUSE turns guest-supplied lengths into host file offsets.
 
 ### F1 — largely fixed in `e810fe4`, plus `f57db6b`
 Now fixed: the instruction cache is invalidated after `flash_range_program` and
