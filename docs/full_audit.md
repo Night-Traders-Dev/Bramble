@@ -613,13 +613,28 @@ sets only for `-wifi` or `-tap`. The test harness passes neither, so without
 setting it the first version of this test passed while exercising nothing --
 every intercept returned 0.
 
-Eight of the eleven uncovered files now have coverage. Still none: `gdb`,
-`tapif` and `fuse_mount`. These are the ones that need a harness rather than a
-unit test: `gdb`'s behaviour is a live RSP socket, `fuse_mount` needs a real
-`/dev/fuse` mount, and `tapif` needs a TAP interface. `gdb` and `fuse_mount`
-are the most valuable of the three -- the RSP parser is the component that
-already had a guest-triggerable bounds fix, and FUSE turns guest-supplied
-lengths into host file offsets.
+`gdb` (`8c06bce`): built the harness first, and it immediately turned up a
+conformance bug. `gdb_recv_packet()` never validated the two hex checksum digits
+after `#` -- it ACKed unconditionally, so a corrupted packet was accepted as
+intact and the debugger and emulator then silently disagreed. The sum is now
+compared, a mismatch is NAKed with `-`, and the buffer advances past the bad
+packet so the next read starts on a boundary instead of rescanning it.
+
+The tests drive the real `gdb_handle()` over a `socketpair` -- `gdb` is extern,
+so `gdb.client_fd` can be pointed at one end, with no port binding, fork or
+timing dependency. Worth recording the harness subtlety: `sv[1]` is
+half-closed for writing so the emulator sees EOF, but its *read* side stays open,
+so a blocking drain waits forever. The drain sets `O_NONBLOCK`.
+
+The checksum test was confirmed load-bearing by bypassing the comparison: the
+suite drops to 359/360, so it exercises the validation rather than passing either
+way.
+
+Nine of the eleven uncovered files now have coverage. Still none: `tapif` and
+`fuse_mount`. Both need real infrastructure -- a TAP interface and a live
+`/dev/fuse` mount respectively -- rather than a mock. `fuse_mount` is the more
+valuable of the two, because it turns guest-supplied lengths into host file
+offsets.
 
 ### F1 — largely fixed in `e810fe4`, plus `f57db6b`
 Now fixed: the instruction cache is invalidated after `flash_range_program` and
