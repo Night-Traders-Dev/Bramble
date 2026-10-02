@@ -296,7 +296,6 @@ static void t32_ldst_multiple(uint32_t pc, uint16_t upper, uint16_t lower) {
  * ======================================================================== */
 
 static uint32_t vfp_s[32];
-static uint64_t vfp_d[16];
 
 static int vfp_sn_from_insn(uint32_t insn) {
     return (int)(((insn >> 16) & 0xFu) * 2u + ((insn >> 6) & 1u));
@@ -306,10 +305,6 @@ static int vfp_sn_from_insn(uint32_t insn) {
 __attribute__((unused))
 static int vfp_sm_from_insn(uint32_t insn) {
     return (int)(((insn >> 12) & 0xFu) * 2u + ((insn >> 18) & 1u));
-}
-
-static int vfp_st_from_insn(uint32_t insn) {
-    return (int)(((insn >> 12) & 0xFu) * 2u + ((insn >> 6) & 1u));
 }
 
 static float vfp_read_s(int sn) {
@@ -350,6 +345,7 @@ static int thumb32_pico_gpioc(uint16_t upper, uint16_t lower) {
 }
 
 static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
+    (void)pc;   /* only the VFP load/store arms needed the PC */
     uint32_t insn = ((uint32_t)upper << 16) | lower;
 
     /* VMOV between ARM core register and single-precision VFP register */
@@ -364,13 +360,48 @@ static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
         return 1;
     }
 
-    /* VCVT.F32.U32 Sd, Sm (including Sd==Sm) */
-    if (((insn >> 8) & 0xFFu) == 0x7Au && (insn & 0xFF00FF00u) == 0xEE000000u) {
-        int sd = vfp_sn_from_insn(insn);
-        uint32_t raw = vfp_s[sd];
-        vfp_write_s(sd, (float)raw);
+    /* VCVT between a single-precision float and a 32-bit integer (QEMU
+     * vfp.decode, the decodetree transcription of the ARM ARM):
+     *
+     *   int -> float:  1110 1.11 1000 .... 1010 s:1 1.0 ....
+     *   float -> int:  1110 1.11 110 s:1 .... 1010 rz:1 1.0 ....
+     *
+     * s (bit 11) selects signed; the second form's rz field picks VCVT vs VCVTR
+     * and this implements the former. Bit 8 is a fixed 0; bits 9 and 4 are
+     * don't-cares. Direction comes from bits 23:20: 1000 is integer-to-float,
+     * 110s is float-to-integer.
+     *
+     * The old arms tested bits 15:8 == 0x7A/0x7E *and*
+     * (insn & 0xFF00FF00) == 0xEE000000, which can never both hold -- the
+     * second constant has zero in bits 15:8. Hence the four "and of mutually
+     * exclusive equal-tests" warnings; they were four unreachable decoders.
+     *
+     * VFP register numbers are interleaved: Vd = {bit22, bits 12:9} and
+     * Vm = {bits 5:1, bit 0}. For int->float the integer is Vm's bit pattern
+     * and the float result goes to Vd; for float->int it is the reverse. */
+    if ((insn & 0xFBF0FD00u) == 0xEB80A400u ||    /* VCVT.F32.U32 Sd, Sm */
+        (insn & 0xFBF0FD00u) == 0xEB80AC00u ||    /* VCVT.F32.S32 Sd, Sm */
+        (insn & 0xFBF0FD00u) == 0xEBC0A400u ||    /* VCVT.U32.F32 Sd, Sm */
+        (insn & 0xFBF0FD00u) == 0xEBD0AC00u) {    /* VCVT.S32.F32 Sd, Sm */
+        int to_float  = ((insn >> 20) & 0xF0u) == 0x80u;
+        int is_signed = (int)((insn >> 11) & 0x1u);
+        int vd = (int)((((insn >> 9) & 0xFu) << 1) | ((insn >> 22) & 1u));
+        int vm = (int)((((insn >> 1) & 0x1Fu) << 1) | (insn & 1u));
+
+        if (to_float) {
+            uint32_t raw = vfp_s[vm * 2];          /* integer source */
+            float f = is_signed ? (float)(int32_t)raw : (float)raw;
+            vfp_write_s(vd * 2, f);                /* float destination */
+        } else {
+            float f = vfp_read_s(vm * 2);          /* float source */
+            uint32_t raw = is_signed ? (uint32_t)(int32_t)f : (uint32_t)f;
+            vfp_s[vd * 2] = raw;                   /* integer destination */
+        }
         return 1;
     }
+
+
+
 
     /* VDIV.F32 — MegaFlash GetDeviceInfoString and block formatters */
     if ((insn & 0xFFFFFF00u) == 0xEEC77A00u) {
@@ -382,60 +413,26 @@ static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
         return 1;
     }
 
-    /* VLDR Dd, [PC, #imm*4] */
-    if ((insn & 0xFF700000u) == 0xED900000u) {
-        int dn = (int)((insn >> 12) & 0xFu);
-        uint32_t imm8 = insn & 0xFFu;
-        uint32_t addr = ((pc + 4u) & ~3u) + (imm8 * 4u);
-        vfp_d[dn] = (uint64_t)mem_read32(addr) |
-                      ((uint64_t)mem_read32(addr + 4u) << 32);
-        return 1;
-    }
-
-    /* VSTR Dd, [SP, #imm*4] */
-    if ((insn & 0xFF700000u) == 0xED800000u) {
-        int dn = (int)((insn >> 12) & 0xFu);
-        uint32_t imm8 = insn & 0xFFu;
-        uint32_t addr = cpu.r[13] + imm8 * 4u;
-        uint64_t v = vfp_d[dn];
-        mem_write32(addr, (uint32_t)v);
-        mem_write32(addr + 4u, (uint32_t)(v >> 32));
-        return 1;
-    }
-
-    /* VLDR Sd, [PC, #imm*4] */
-    if ((insn & 0xFF700000u) == 0xED500000u) {
-        int sn = vfp_st_from_insn(insn);
-        uint32_t imm8 = insn & 0xFFu;
-        uint32_t addr = ((pc + 4u) & ~3u) + (imm8 * 4u);
-        vfp_s[sn] = mem_read32(addr);
-        return 1;
-    }
-
-    /* VLDR Sd, [SP, #imm*4] */
-    if ((insn & 0xFF700F00u) == 0xED500A00u) {
-        int sn = vfp_st_from_insn(insn);
-        uint32_t imm8 = insn & 0xFFu;
-        vfp_s[sn] = mem_read32(cpu.r[13] + imm8 * 4u);
-        return 1;
-    }
-
-    /* VSTR Sd, [SP, #imm*4] */
-    if ((insn & 0xFF700F00u) == 0xED400A00u) {
-        int sn = vfp_st_from_insn(insn);
-        uint32_t imm8 = insn & 0xFFu;
-        mem_write32(cpu.r[13] + imm8 * 4u, vfp_s[sn]);
-        return 1;
-    }
-
-    /* VCVT.U32.F32 Sd, Sm — used by block-format helpers */
-    if (((insn >> 8) & 0xFFu) == 0x7Eu && (insn & 0xFF00FF00u) == 0xEE000000u) {
-        int sd = vfp_sn_from_insn(insn);
-        float f = vfp_read_s(sd);
-        vfp_s[sd] = (uint32_t)f;
-        return 1;
-    }
-
+    /* VLDR/VSTR single- and double-precision are NOT implemented here.
+     *
+     * The arms that used to be here matched 0xED9x / 0xED8x / 0xED5x / 0xED4x.
+     * Those are the ARM *core* LDRD/STRD immediate opcodes, not VFP: 0xED40
+     * is STRD (U=0), 0xED50 is LDRD (U=1), 0xED80/0xED90 are the register
+     * forms. So they were double-wrong -- the opcode was a different
+     * instruction class, and the mask bits could not even all match, which is
+     * what GCC's -Wtautological-compare was reporting.
+     *
+     * Executing them as VFP would also have been actively wrong rather than
+     * merely dead: 0xED4x/0xED5x are self-consistent, so genuine core
+     * LDRD/STRD would have been intercepted and turned into VFP accesses,
+     * moving 4 or 8 bytes of float register file in place of the pair of core
+     * registers the instruction asked for.
+     *
+     * The real VFP load/store encodings are 16-bit T2 forms in 0xD8xx/0xD9xx,
+     * which reach the 16-bit dispatch table and never this function. Adding
+     * that decoder is a feature; see docs/full_audit.md ("O20"). Until then,
+     * firmware using them gets instr_unimplemented instead of silently
+     * executing a core LDRD as a float load. */
     return 0;
 }
 
@@ -1327,7 +1324,11 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
     /* ------------------------------------------------------------------ */
     if (top5 == 0x1E) {
         /* Check for VFP/NEON instructions (M33 FPU) */
-        if ((upper & 0xEF00) == 0xEE00 || (upper & 0xEF00) == 0xED00) {
+        /* 0xEDxx/0xEExx cover the DP load/store and data-processing forms.
+         * 0xEBxx is the VCVT between float and 32-bit integer group; it was
+         * missing here, so those instructions never reached this decoder. */
+        if ((upper & 0xEF00) == 0xEE00 || (upper & 0xEF00) == 0xED00 ||
+            (upper & 0xEF00) == 0xEB00) {
             if (thumb32_vfp_exec(pc, upper, lower)) {
                 return 1;
             }

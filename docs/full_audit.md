@@ -444,36 +444,46 @@ and RP2350 WATCHDOG has no TICK register. Each is a self-contained per-chip
 variant of an existing model and should be done one block at a time with
 firmware to test against, not in one pass.
 
-### O20 — unreachable VFP decoders — **root cause found, feature gap not a mask typo**
-`src/thumb32.c`. The audit recorded this as "masks that disagree with their
-patterns". That is a real secondary defect, but it is not why the instructions
-are unreachable, and fixing the masks alone changes nothing.
+### O20 — VFP decoders — **fixed in this release; build is warning-free**
+`src/thumb32.c`. The audit recorded "masks that disagree with their patterns".
+Chasing that down found two separate defects, one of them a real mis-decode.
 
-The actual cause is the dispatch. `thumb32_vfp_exec()` is called from exactly
-one place, guarded by
+**1. VCVT float<->int was never decoded.** The two arms tested
+`(insn >> 8) & 0xFF == 0x7A` (or `0x7E`) *and* `(insn & 0xFF00FF00) == 0xEE000000`.
+Those can never both hold: `0xEE000000` has zero in bits 15:8. That was the
+source of the two "and of mutually exclusive equal-tests" warnings, and it meant
+the instructions were unreachable.
 
+Root cause was one line of dispatch:
 ```c
 if ((upper & 0xEF00) == 0xEE00 || (upper & 0xEF00) == 0xED00)
 ```
+VCVT float<->int has first halfword `0xEB8x`-`0xEBDx`, which the guard excluded.
+Added `|| == 0xEB00` and implemented all four forms per QEMU's `vfp.decode`:
+`VCVT.F32.U32/.S32` and `VCVT.U32.F32/.S32`, with the correct interleaved
+register fields (`Vd = {bit22, bits 12:9}`, `Vm = {bits 5:1, bit 0}`) and the
+correct `s` bit -- bit 11, with bit 8 a fixed 0.
 
-but the encodings these arms implement have first halfwords elsewhere:
+**2. The VFP load/store arms were hijacking ARM-core LDRD/STRD.** They matched
+`0xED9x` / `0xED8x` / `0xED5x` / `0xED4x`. Those are *core* opcodes -- `0xED40` is
+STRD (U=0), `0xED50` is LDRD (U=1), `0xED80`/`0xED90` the register forms. Two
+problems: the mask bits could not all match (the
+`-Wtautological-compare` warnings), and `0xED4x`/`0xED5x` *are* self-consistent,
+so genuine core LDRD/STRD were intercepted and executed as float accesses --
+moving bytes of the VFP register file instead of the pair of core registers the
+instruction named. Removing them stops that.
 
-| Instruction | Encoding | First halfword | Reaches the VFP decoder? |
-|---|---|---|---|
-| `VLDR/VSTR s/d, [Rn, #imm]` | `D8xx`/`D9xx` | `0xD8xx`/`0xD9xx` | no |
-| `VCVT.F32.U32 Sd, Sm` etc. | `EB80A4xx` | `0xEB80` | no |
+The real VFP load/store encodings are 16-bit T2 forms in `0xD8xx`/`0xD9xx`, which
+reach the 16-bit dispatch table and never this function. **That decoder is still
+not implemented**; adding it needs the ARM ARM's VD1R/VS1R field layout, which
+was not available. Firmware using it now gets `instr_unimplemented` rather than
+silently executing a core LDRD as a float load, which is the correct failure mode.
 
-These are **16-bit T2** encodings, not 32-bit Thumb-2, so they would need to be
-reached from the 16-bit dispatcher, which never calls the VFP decoder at all.
+Also removed as a consequence: the now-unused `vfp_d[]` double-precision file,
+`vfp_st_from_insn()`/`vfp_sm_from_insn()`, and a triplicated VDIV block.
 
-Mask correction was attempted and reverted: with the masks fixed the arms still
-are dead, so the change would have looked like a fix while changing no
-behaviour. Doing this properly means adding 16-bit VFP dispatch to the Thumb
-core -- a feature addition, not a bug fix -- and checking the 16-bit decoder
-does not already claim `0xD8xx`-`0xD9xx`.
-
-The compiler's `-Wtautological-compare` warning is left in place as the honest
-signal that the code is dead.
+Result: `src/thumb32.c` builds clean, and the whole project compiles with zero
+warnings under `-Wall -Wextra -pedantic`.
 
 ### O21 — test coverage remains ~20%
 This work added 9 regression tests (333 total, up from 324) and fixed three

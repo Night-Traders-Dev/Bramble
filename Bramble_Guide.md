@@ -23,17 +23,13 @@ subsystem, networking stack, and developer tools.
 | Source lines | 33,660 (47 `.c` files) |
 | Header files | 44 `.h` files |
 | Test suite | 345 tests across 60+ categories |
-| Compiler warnings | 15, all from four unreachable VFP decoder arms (see below) |
+| Compiler warnings | Zero (`-Wall -Wextra -pedantic`) |
 | Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350-ARM + RP2350-RV) |
 | Version | 0.47.0 |
 
-**On the warnings:** `-Wall -Wextra -pedantic` is clean except for four
-Thumb-2 VFP decoders (`VLDR Dd`, `VSTR Dd`, and two `VCVT` F32↔U32 arms) whose
-masks disagree with their patterns, so no encoding can ever reach them. They are
-deliberately left unfixed: getting the encodings right needs the ARM ARM, and a
-wrong mask would turn a silent no-op into wrong behaviour, which is strictly
-worse than a compiler diagnostic. The warning is the honest signal that the code
-is dead.
+The project compiles clean under `-Wall -Wextra -pedantic`. It did not always:
+four VFP decoder arms in `src/thumb32.c` were unreachable, and fixing them
+turned up a real bug -- see `docs/full_audit.md` ("O20").
 
 ## 1.2 Design Goals
 
