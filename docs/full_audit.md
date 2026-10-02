@@ -600,14 +600,26 @@ indexes fixed arrays, so the bounds check guards an OOB write into
 `net_bridge_tx_pending[]`. Pinned that out-of-range and negative indices are
 dropped.
 
-Six of the eleven uncovered files now have coverage. Still none: `cyw43`, `gdb`,
-`tapif` and `fuse_mount`. `gdb` and `fuse_mount` remain the most valuable:
-the RSP parser is the component that already had a guest-triggerable bounds
-fix, and FUSE turns guest-supplied lengths into host file offsets. Both are
-harder than the others because their real behaviour needs a connected socket or
-a real `/dev/fuse` mount, so they need a harness rather than a unit test --
-`netbridge`'s data path is in the same position, and testing only its bounds
-check is deliberately shallow.
+`cyw43` (`381c609`): the largest uncovered file, and it bit-bangs SPI over
+`WL_CS`/`WL_CLK`/`WL_DIO`, so the state machine is drivable with no hardware.
+Asserts that CS low selects and high deselects, that each rising clock edge
+shifts exactly one command bit, that the data phase is not entered before the
+32nd bit and is entered on it, and that the read phase does not advance
+`resp_offset` when nothing is queued -- the guard against walking off
+`resp_buf[]`.
+
+One trap worth recording: the model is gated on `cyw43.enabled`, which `main.c`
+sets only for `-wifi` or `-tap`. The test harness passes neither, so without
+setting it the first version of this test passed while exercising nothing --
+every intercept returned 0.
+
+Eight of the eleven uncovered files now have coverage. Still none: `gdb`,
+`tapif` and `fuse_mount`. These are the ones that need a harness rather than a
+unit test: `gdb`'s behaviour is a live RSP socket, `fuse_mount` needs a real
+`/dev/fuse` mount, and `tapif` needs a TAP interface. `gdb` and `fuse_mount`
+are the most valuable of the three -- the RSP parser is the component that
+already had a guest-triggerable bounds fix, and FUSE turns guest-supplied
+lengths into host file offsets.
 
 ### F1 — largely fixed in `e810fe4`, plus `f57db6b`
 Now fixed: the instruction cache is invalidated after `flash_range_program` and
