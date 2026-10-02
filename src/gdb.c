@@ -176,6 +176,11 @@ static void gdb_send_output(const char *msg) {
     hex_encode_n(msg, (int)msglen, buf + 1);
 }
 
+static int is_hex(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+           (c >= 'A' && c <= 'F');
+}
+
 static int gdb_recv_packet(char *out, int max_len) {
     char buf[8192];
     int total = 0;
@@ -202,7 +207,37 @@ static int gdb_recv_packet(char *out, int max_len) {
 
         char *end = strchr(start, '#');
         if (end && (end - buf + 2) < total) {
+            /* The two characters after '#' are the checksum. */
+            const char *checksum_digits = end + 1;
             int data_len = end - start - 1;
+
+            /* Verify the two hex checksum digits. The RSP framing is
+             * "$<payload>#<sum of payload bytes, two hex digits>"; accepting
+             * the packet without checking it means a corrupted write is ACKed
+             * as though it arrived intact, and the debugger and the emulator
+             * then disagree about what was sent with no indication of which is
+             * wrong. */
+            unsigned got = 0;
+            int ok = is_hex(checksum_digits[0]) && is_hex(checksum_digits[1]);
+            if (ok) {
+                char d[3] = { checksum_digits[0], checksum_digits[1], '\0' };
+                got = (unsigned)strtoul(d, NULL, 16);
+                unsigned want = 0;
+                for (int i = 0; i < data_len; i++)
+                    want += (uint8_t)start[1 + i];
+                ok = (got == (want & 0xFFu));
+            }
+            if (!ok) {
+                /* NAK and keep looking for a good packet in the stream. */
+                gdb_send_raw("-", 1);
+                /* Drop everything up to and including the bad packet so the
+                 * next read starts on a packet boundary. */
+                total -= (int)(end + 2 - buf);
+                if (total > 0)
+                    memmove(buf, end + 2, (size_t)total);
+                continue;
+            }
+
             if (data_len >= max_len) data_len = max_len - 1;
             memcpy(out, start + 1, data_len);
             out[data_len] = '\0';

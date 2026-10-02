@@ -25,6 +25,7 @@
 #include "bme280.h"
 #include "netbridge.h"
 #include "cyw43.h"
+#include "gdb.h"
 #include "timer.h"
 #include "gpio.h"
 #include "clocks.h"
@@ -5961,6 +5962,152 @@ TEST(test_cyw43_bitbang_spi_state_machine) {
     PASS();
 }
 
+/* GDB RSP over a socketpair. `gdb` is extern, so the test can point
+ * gdb.client_fd at one end and drive the protocol directly -- no port binding,
+ * no fork, no timing. gdb_recv_packet() and gdb_handle() are static, so this
+ * goes through gdb_handle(), which is the real entry point the emulator uses. */
+static uint8_t gdb_checksum(const char *payload) {
+    uint8_t sum = 0;
+    for (const char *p = payload; *p; p++)
+        sum += (uint8_t)*p;
+    return sum;
+}
+
+/* Send "$<payload>#<checksum>" on the test end of the socketpair. */
+static void gdb_test_send_packet(int fd, const char *payload, int corrupt) {
+    char pkt[512];
+    uint8_t sum = gdb_checksum(payload);
+    int n = snprintf(pkt, sizeof(pkt), "$%s#%02x", payload, sum);
+    if (corrupt)
+        pkt[n - 2] = (pkt[n - 2] == '0') ? '1' : '0';   /* break the checksum */
+    (void)!write(fd, pkt, (size_t)n);
+}
+
+/* Drain whatever the emulator has written. The socket is put in non-blocking
+ * mode: sv[1] is half-closed for writing (so the emulator sees EOF and
+ * gdb_handle() returns), but its *read* side is still open, so a blocking read
+ * would wait forever for more data that will never arrive. */
+static void gdb_test_drain(int fd, int *flags) {
+    int fl = fcntl(fd, F_GETFL, 0);
+    (void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    *flags = fl;
+}
+
+static void gdb_test_undrain(int fd, int fl) {
+    (void)fcntl(fd, F_SETFL, fl);
+}
+
+/* Drive gdb_handle() with one packet already queued. It blocks on read, so the
+ * packet must be in the socket first; a 0x03 interrupt makes it return. */
+static void gdb_test_drive(int fd, const char *payload, int corrupt) {
+    gdb_test_send_packet(fd, payload, corrupt);
+    (void)!write(fd, "\x03", 1);          /* 0x03 -> handler replies and loops */
+    /* Break the blocking read so gdb_handle() returns. */
+    (void)!write(fd, "$", 1);
+    shutdown(fd, SHUT_WR);
+    (void)gdb_handle();
+}
+
+TEST(test_gdb_rsp_accepts_a_valid_packet) {
+    int sv[2];
+    ASSERT_TRUE(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair");
+    if (sv[0] < 0) PASS();
+
+    memset(&gdb, 0, sizeof(gdb));
+    gdb.active = 1;
+    gdb.client_fd = sv[0];
+    gdb.g_thread = 0;
+
+    gdb_test_drive(sv[1], "?", 0);
+
+    /* The first thing on the wire is the stop reply, then an ACK ('+') for the
+     * packet we sent. Both must appear. */
+    int fl;
+    gdb_test_drain(sv[1], &fl);
+    int saw_stop = 0, saw_ack = 0;
+    unsigned char c;
+    while (read(sv[1], &c, 1) == 1) {
+        if (c == '$') saw_stop = 1;
+        if (c == '+') saw_ack = 1;
+    }
+    gdb_test_undrain(sv[1], fl);
+    ASSERT_TRUE(saw_stop, "the emulator must announce a stop reply");
+    ASSERT_TRUE(saw_ack, "a valid packet must be acknowledged with '+'");
+
+    gdb.active = 0;
+    close(sv[0]); close(sv[1]);
+    PASS();
+}
+
+/* The RSP framing carries a two-digit checksum of the payload. Accepting a
+ * packet without checking it ACKs a corrupted write as intact, so the debugger
+ * and the emulator silently disagree about what was sent. */
+TEST(test_gdb_rsp_rejects_a_bad_checksum) {
+    int sv[2];
+    ASSERT_TRUE(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair");
+    if (sv[0] < 0) PASS();
+
+    memset(&gdb, 0, sizeof(gdb));
+    gdb.active = 1;
+    gdb.client_fd = sv[0];
+    gdb.g_thread = 0;
+
+    gdb_test_send_packet(sv[1], "?", 1);   /* wrong checksum */
+    (void)!write(sv[1], "\x03", 1);
+    (void)!write(sv[1], "$", 1);
+    shutdown(sv[1], SHUT_WR);
+    (void)gdb_handle();
+
+    int fl;
+    gdb_test_drain(sv[1], &fl);
+    int saw_ack = 0, saw_nak = 0;
+    unsigned char c;
+    while (read(sv[1], &c, 1) == 1) {
+        if (c == '+') saw_ack = 1;
+        if (c == '-') saw_nak = 1;
+    }
+    gdb_test_undrain(sv[1], fl);
+    ASSERT_TRUE(saw_nak, "a bad checksum must be NAKed with '-'");
+    ASSERT_TRUE(!saw_ack, "a bad checksum must not be acknowledged");
+
+    gdb.active = 0;
+    close(sv[0]); close(sv[1]);
+    PASS();
+}
+
+/* A single oversized packet must not walk past its buffer. */
+TEST(test_gdb_rsp_handles_an_oversized_packet) {
+    int sv[2];
+    ASSERT_TRUE(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair");
+    if (sv[0] < 0) PASS();
+
+    memset(&gdb, 0, sizeof(gdb));
+    gdb.active = 1;
+    gdb.client_fd = sv[0];
+    gdb.g_thread = 0;
+
+    /* Build a packet far larger than the 4096-byte receive buffer. */
+    static char big[16384];
+    size_t n = 0;
+    big[n++] = '$';
+    for (size_t i = 0; i < sizeof(big) - 8; i++)
+        big[n++] = (char)('a' + (i % 26));
+    uint8_t sum = 0;
+    for (size_t i = 1; i < n; i++)
+        sum += (uint8_t)big[i];
+    n += (size_t)snprintf(big + n, sizeof(big) - n, "#%02x", sum);
+
+    (void)!write(sv[1], big, n);
+    (void)!write(sv[1], "\x03", 1);
+    (void)!write(sv[1], "$", 1);
+    shutdown(sv[1], SHUT_WR);
+    (void)gdb_handle();      /* must survive */
+
+    gdb.active = 0;
+    close(sv[0]); close(sv[1]);
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6734,6 +6881,9 @@ int main(void) {
     RUN_TEST(test_fat16_rejects_out_of_bounds_directory_entries);
     RUN_TEST(test_bme280_register_protocol);
     RUN_TEST(test_net_bridge_rejects_out_of_range_uart_index);
+    RUN_TEST(test_gdb_rsp_accepts_a_valid_packet);
+    RUN_TEST(test_gdb_rsp_rejects_a_bad_checksum);
+    RUN_TEST(test_gdb_rsp_handles_an_oversized_packet);
     RUN_TEST(test_cyw43_gpio_intercept_only_claims_wifi_pins);
     RUN_TEST(test_cyw43_bitbang_spi_state_machine);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
