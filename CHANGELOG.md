@@ -39,7 +39,7 @@ numbering. Where they differ, decoding is now per chip.
 - **PIO**: `SIDESET_BASE` is bits 14:10 (was bit 20), `IN_BASE` is modulo 32, PIO2 is gated to RP2350.
 - **TIMER0/TIMER1**: RP2350 TIMER1 has its own base and four IRQs, which were never signalled.
 - **Clocks**: RP2350 FC0 offsets shifted a word (so the SDK's `frequency_count_khz()` could never complete); `CLK_DIV` is 16.16 not 8.8, and the old reset was divide-by-zero on RP2350; 8 generators not 10; ROSC mapped per register identity (it is *not* a monotone shift — `COUNT` moves down, `RANDOMBIT` up) with a corrected `STATUS` decode that had reported `BADWRITE` as `ENABLED` and hard-wired `DIV_RUNNING`.
-- **PWM**: RP2040's base is RP2350's `PLL_SYS`, so the PWM shadowed the PLL; `0x400A8000` now routes to the PWM model.
+- **PWM**: RP2040's base is RP2350's `PLL_SYS`, so the PWM shadowed the PLL; `0x400A8000` now routes to the PWM model. The register body is also decoded per chip -- RP2350 has 12 slices, its global block at `0xF0` rather than `0xA0`, 12-bit global registers, and *two* interrupt outputs at `0x104`/`0x108`/`0x10C` that did not previously exist.
 
 ### Removed
 
@@ -54,7 +54,7 @@ wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/P
 registers and never read them back, and which passed straight through the SIO
 GPIO write-drop bug. All three now assert real behaviour.
 
-- 345/345 tests passing, up from 319.
+- 347/347 tests passing, up from 319.
 - 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
   and riscv64, across the test suite and all eight bundled firmware images
   (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,
@@ -65,10 +65,10 @@ GPIO write-drop bug. All three now assert real behaviour.
 
 Unfixed, with reasons, in `docs/full_audit.md`:
 
-- **VFP load/store (16-bit T2, `0xD8xx`/`0xD9xx`) is not implemented.** VCVT
-  float<->int *is* implemented again as of this release. The load/store forms
-  need the ARM ARM's VD1R/VS1R field layout; until then they fail loudly with
-  `instr_unimplemented` instead of silently mis-executing.
+- **VFP load/store is not implemented.** VCVT float<->int *is* implemented again
+  as of this release. Note these are *not* the 16-bit `0xD8xx`/`0xD9xx` forms
+  that an earlier revision of this file claimed -- the ARM ARM maps 16-bit
+  `1101xx` to conditional branch, so those slots are already correctly used.
 - **Core `LDRD`/`STRD` are not implemented** either. The emulator's VFP path
   used to intercept them, which this release stops -- see the VFP section above.
 

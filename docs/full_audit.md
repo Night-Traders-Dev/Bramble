@@ -430,12 +430,33 @@ map and `STATUS` decode are all per-chip now. ROSC needed mapping by register
 identity rather than a shift, because RP2350 moves `COUNT` *down* to `0x0C` while
 `RANDOMBIT` moves *up* to `0x20`.
 
-### D6 — RP2350 PWM 12-slice body
-`41e59ee` stopped RP2040's PWM at `0x40050000` shadowing RP2350's PLL_SYS, and
-routed `0x400A8000` to the PWM model. The **register body** is still RP2040's
-8-slice layout: RP2350's PWM is a different 12-slice block with two IRQ outputs,
-so slice and channel registers decode wrongly. That needs the RP2350 §12.19 map,
-which was not reachable when this was written.
+### D6 — RP2350 PWM — **fixed in `fc9042f`**
+`41e59ee` had already stopped RP2040's PWM shadowing RP2350's PLL_SYS and routed
+`0x400A8000` to the PWM model. What remained was that the *body* was still
+RP2040's, so on RP2350 every access to the global register block landed on a
+slice register or on nothing.
+
+Offsets from pico-sdk `src/rp2350/hardware_regs/include/hardware/regs/pwm.h`:
+
+| | RP2040 | RP2350 |
+|---|---|---|
+| slices | 8 | 12 |
+| slice region | 0x00-0x9F | 0x00-0xEF |
+| EN | 0xA0 | 0xF0 |
+| INTR | 0xA4 | 0xF4 |
+| IRQ0_INTE / INTF / INTS | 0xA8 / 0xAC / 0xB0 | 0xF8 / 0xFC / 0x100 |
+| IRQ1_INTE / INTF / INTS | -- | 0x104 / 0x108 / 0x10C |
+| global width | 8 bits | 12 bits |
+
+So slice 11 (CSR at 0xDC) did not exist; `PWM_EN` was masked to `0xFF` so slices
+8-11 could never be enabled; the interrupt block sat 0x50 too low, so firmware
+masking an interrupt was writing PWM compare values; and the second interrupt
+output did not exist at all. All four are fixed, with the per-chip slice count,
+offsets and widths selected at decode time. The per-slice registers are
+identical on both chips and are unchanged.
+
+Two tests cover it, one pinning RP2350 and one pinning RP2040 so the per-chip
+selection cannot regress the original target.
 
 ### F1/F4 — remaining per-chip register differences
 RP2350 PIO diverges past `0x124` (`IRQ0_INTE` at `0x170`, so PIO interrupts
