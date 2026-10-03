@@ -31,7 +31,12 @@ static uint32_t num_clock_generators(void) {
 }
 
 void clocks_init(void) {
-    clocks_reset();
+    /* A cold boot, not a soft reset: REASON reads 0 (hardware reset) and the
+     * scratch registers do not survive losing power. clocks_reset() preserves
+     * both, so init must not simply delegate to it. */
+    memset(&clocks_state, 0, sizeof(clocks_state_t));
+    clocks_state.reset = resets_all_mask();
+    watchdog_reboot_pending = 0;
 }
 
 /* Reset to power-on defaults */
@@ -326,6 +331,21 @@ static void pll_write(pll_state_t *pll, uint32_t offset, uint32_t val,
  * Watchdog
  * ======================================================================== */
 
+void clocks_note_soft_reset(void) {
+    clocks_state.wdog_reason = WATCHDOG_REASON_SOFT;
+}
+
+void clocks_watchdog_tick(uint32_t us) {
+    if (clocks_state.wdog_remaining == 0) return;   /* disarmed */
+    if (us >= clocks_state.wdog_remaining) {
+        clocks_state.wdog_remaining = 0;
+        watchdog_reboot_pending = 1;
+        clocks_state.wdog_reason = WATCHDOG_REASON_WDOG;
+    } else {
+        clocks_state.wdog_remaining -= us;
+    }
+}
+
 static uint32_t watchdog_read(uint32_t addr) {
     uint32_t offset = addr & 0xFFF;
     switch (offset) {
@@ -377,8 +397,13 @@ static void watchdog_write(uint32_t addr, uint32_t val, uint32_t alias) {
             }
             break;
         }
-        case 0x04: /* LOAD */
-            clocks_state.wdog_load = val; /* Reload value, always direct write */
+        case 0x04: /* LOAD
+             * Writing LOAD arms the watchdog: there is no separate enable bit.
+             * The old code stored the value and never counted, so firmware that
+             * relied on the watchdog to recover from a hang would spin forever
+             * instead of getting the reset it asked for. */
+            clocks_state.wdog_load = val & 0xFFFFFFu;
+            clocks_state.wdog_remaining = clocks_state.wdog_load;
             break;
         case 0x2C: /* TICK -- RP2040 only, see the read side. */
             if (membus_rp2350_mode)

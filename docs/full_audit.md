@@ -495,6 +495,18 @@ The WATCHDOG entry is now done — see below.
 
 Two tests: one pins the RP2350 map, one pins RP2040 so `TICK` still works.
 
+Follow-up in 0.48.5, from re-checking the parts 0.48.4 did not close:
+
+- **The watchdog never fired.** `LOAD` was stored and never counted, so firmware
+  that armed the watchdog to recover from a hang would spin forever. WATCHDOG has
+  no enable bit -- writing `LOAD` arms it -- so the value sat unused. The
+  countdown now advances on the microsecond tick and fires once at expiry.
+- **`SYSRESETREQ` did not set `REASON`**, though the datasheet gives bit 1 for a
+  software reset. Only the watchdog path recorded anything.
+- **`clocks_init()` leaked a stale `REASON`**, because it delegated to
+  `clocks_reset()`, which preserves the reason across a soft reset. Cold boot now
+  clears it; a soft reset preserves it.
+
 ### O20 — VFP decoders — **fixed in this release; build is warning-free**
 `src/thumb32.c`. The audit recorded "masks that disagree with their patterns".
 Chasing that down found two separate defects, one of them a real mis-decode.

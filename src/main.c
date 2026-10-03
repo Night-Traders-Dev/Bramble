@@ -1287,6 +1287,7 @@ skip_fuse:
                 /* A microsecond elapsed — tick the SDK-visible TIMER0 alias and TIMER1. */
                 timer_tick(1);
                 rp2350_timer1_tick(&rv_bus.periph, 1);
+                clocks_watchdog_tick(1);
             }
 
             /* Check and deliver interrupts to both harts */

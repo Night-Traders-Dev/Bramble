@@ -510,6 +510,11 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
                 if (val & (1u << 2)) {
                     extern int watchdog_reboot_pending;
                     watchdog_reboot_pending = 1;
+                    /* SYSRESETREQ is a software reset, so it must show up in
+                     * WATCHDOG REASON rather than being indistinguishable from
+                     * a power-on reset. */
+                    extern void clocks_note_soft_reset(void);
+                    clocks_note_soft_reset();
                 }
             }
             break;

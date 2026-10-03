@@ -167,6 +167,7 @@ typedef struct {
     uint32_t wdog_scratch[WATCHDOG_NUM_SCRATCH];
     uint32_t wdog_tick;
     uint32_t wdog_reason;   /* RP2350: why the last reset happened */
+    uint32_t wdog_remaining; /* countdown ticks left, 0 = disarmed */
 
     /* PSM */
     uint32_t psm_frce_on;
@@ -186,6 +187,14 @@ typedef struct {
 /* Functions */
 void clocks_init(void);
 void clocks_reset(void);
+
+/* Advance the WATCHDOG countdown by `us` microseconds.
+ * LOAD holds up to 0xffffff, which the datasheet puts at "approximately 16
+ * seconds", so the watchdog counts at ~1MHz. */
+void clocks_watchdog_tick(uint32_t us);
+
+/* Record that the last reset came from AIRCR SYSRESETREQ. */
+void clocks_note_soft_reset(void);
 uint32_t clocks_read32(uint32_t addr);
 void clocks_write32(uint32_t addr, uint32_t val);
 

@@ -1,5 +1,31 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.5] - 2026-10-01
+
+### Fixed
+
+- **The watchdog never actually fired.** Writing `LOAD` stored the value and
+  nothing counted it down, so firmware that armed the watchdog to recover from a
+  hang would spin forever instead of getting the reset it asked for. There is no
+  separate enable bit on WATCHDOG -- writing `LOAD` arms it -- so the value sat
+  unused. The countdown now advances with the microsecond tick, clamps to the
+  documented 24-bit maximum (`0xffffff`, "approximately 16 seconds"), fires once
+  and does not re-arm itself.
+- **`SYSRESETREQ` did not show up in `REASON`.** The datasheet gives bit 1 for a
+  software reset; only the watchdog path recorded anything. Firmware could not
+  tell a reset it requested from one it did not.
+- **`clocks_init()` reported a stale `REASON`.** It delegated to
+  `clocks_reset()`, which deliberately preserves the reason across a soft reset,
+  so a REASON set by an earlier reset leaked into what should read as a cold boot.
+  Cold boot now clears it -- both bits zero means a hardware reset -- while a
+  soft reset preserves it, which is the distinction the register exists to make.
+
+Tests cover the countdown (disarmed never fires, arming alone does not fire, it
+fires exactly at `LOAD`, one-shot, 24-bit clamp) and the cold-boot/soft-reset
+distinction.
+
+---
+
 ## [0.48.4] - 2026-10-01
 
 ### Fixed

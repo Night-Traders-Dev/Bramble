@@ -6360,6 +6360,63 @@ TEST(test_watchdog_reason_and_rp2350_map) {
     PASS();
 }
 
+/* Writing LOAD arms the watchdog -- there is no separate enable bit. LOAD was
+ * stored and never counted, so firmware that relied on the watchdog to recover
+ * from a hang would spin forever instead of getting the reset it asked for. */
+TEST(test_watchdog_countdown_expires) {
+    extern int watchdog_reboot_pending;
+    clocks_init();
+    membus_rp2350_mode = 0;
+
+    /* Disarmed: ticking must never arm anything by itself. */
+    clocks_watchdog_tick(1000);
+    ASSERT_EQ(0, watchdog_reboot_pending, "an unarmed watchdog must not fire");
+
+    /* Arm with a short LOAD, then tick past it. */
+    clocks_write32(WATCHDOG_BASE + 0x04, 10);
+    ASSERT_EQ(0, watchdog_reboot_pending, "arming alone must not fire");
+    clocks_watchdog_tick(9);
+    ASSERT_EQ(0, watchdog_reboot_pending, "must not fire before the countdown ends");
+    clocks_watchdog_tick(1);
+    ASSERT_TRUE(watchdog_reboot_pending != 0, "the watchdog must fire once LOAD expires");
+    ASSERT_EQ(WATCHDOG_REASON_WDOG, clocks_read32(WATCHDOG_BASE + 0x08),
+              "an expired watchdog must be recorded in REASON");
+
+    /* Firing is one-shot: the countdown must not re-trigger every tick. */
+    watchdog_reboot_pending = 0;
+    clocks_watchdog_tick(1000);
+    ASSERT_EQ(0, watchdog_reboot_pending, "an expired watchdog must not re-arm itself");
+
+    /* LOAD masks to 24 bits -- the datasheet's documented maximum. */
+    clocks_init();
+    clocks_write32(WATCHDOG_BASE + 0x04, 0xFFFFFFFFu);
+    clocks_watchdog_tick(0x1000000u + 1u);   /* just past the masked maximum */
+    ASSERT_TRUE(watchdog_reboot_pending != 0,
+                "LOAD above 0xffffff must clamp to the 24-bit maximum");
+    PASS();
+}
+
+/* A software reset must be distinguishable from a power-on reset. */
+TEST(test_watchdog_reason_soft_reset) {
+    clocks_init();
+    membus_rp2350_mode = 0;
+
+    ASSERT_EQ(WATCHDOG_REASON_RESET, clocks_read32(WATCHDOG_BASE + 0x08),
+              "a cold boot reports a hardware reset");
+    clocks_note_soft_reset();
+    ASSERT_EQ(WATCHDOG_REASON_SOFT, clocks_read32(WATCHDOG_BASE + 0x08),
+              "a software reset must set REASON bit 1");
+
+    /* REASON must survive the soft reset that caused it, and cold boot clears it. */
+    clocks_reset();
+    ASSERT_EQ(WATCHDOG_REASON_SOFT, clocks_read32(WATCHDOG_BASE + 0x08),
+              "REASON must survive the soft reset that set it");
+    clocks_init();
+    ASSERT_EQ(WATCHDOG_REASON_RESET, clocks_read32(WATCHDOG_BASE + 0x08),
+              "a cold boot must clear REASON");
+    PASS();
+}
+
 /* RP2040 does have TICK, so the same offset must keep working there. */
 TEST(test_watchdog_tick_exists_on_rp2040) {
     clocks_init();
@@ -7156,6 +7213,8 @@ int main(void) {
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
     RUN_TEST(test_watchdog_reason_and_rp2350_map);
+    RUN_TEST(test_watchdog_countdown_expires);
+    RUN_TEST(test_watchdog_reason_soft_reset);
     RUN_TEST(test_watchdog_tick_exists_on_rp2040);
     RUN_TEST(test_rp2350_ticks_generator_stride);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
