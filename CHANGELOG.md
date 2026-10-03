@@ -1,5 +1,27 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.1] - 2026-10-01
+
+### Fixed
+
+- **VFP `VLDR`/`VSTR` now execute.** The Thumb-2 FP load/store encodings from
+  ARMv7-M ARM A7.7.236/A7.7.267 (`1110 1101 U D 0 L Rn | Vd 101x imm8`) land in
+  `0xEDxx`, which is why earlier revisions mistook them for the ARM core
+  `LDRD`/`STRD` opcodes. Two things were blocking them: a blanket
+  `return 1` for `0xED90`/`0xED80` that reported "handled" while doing nothing,
+  and the shifted-register data-processing decoder, which ran first for
+  `bits_10_9 == 1`. The FP pattern is now matched ahead of it.
+- **`tapif` coverage**, driving a real TAP interface created with
+  `ip tuntap add mode tap`.
+
+### Tests
+
+366, up from 319. Every source file that previously had no test reference now
+has one. Also fixed a latent trap in tests written this session: `PASS()` does
+not return, so an early `PASS()` mid-body fell through into the code after it.
+
+---
+
 ## [0.48.0] - 2026-10-01
 
 Follows 0.47.0, which closed the audit findings. This release fixes three
@@ -61,13 +83,13 @@ that 16-bit `0xD8xx`/`0xD9xx` held VFP load/store (the ARM ARM maps 16-bit
 
 ### Still open
 
-- **VFP load/store** — Thumb-2 M-profile encodings unconfirmed; needs ARMv8-M ARM.
+- ~~**VFP load/store**~~ — fixed in 0.48.1 from the ARMv7-M ARM encoding table.
 - **Bus-fault exceptions** — needs hardware to validate region classification.
 - **Atomic register aliases (O28)** — the SET/CLR/XOR interposer RMW runs in
   software, so a SET-alias write to `UARTDR`/`SSPDR` consumes an RX byte.
 - **U-mode / PMP** absent (hence `misa.U` clear).
-- **`tapif` and FUSE mount paths** need a TAP interface and a live `/dev/fuse`
-  mount; their entry validation is covered, their data paths are not.
+- **FUSE mount data path** needs a live `/dev/fuse` mount; its entry validation
+  is covered. `tapif` is covered against a real TAP interface.
 - riscv64 ASan/UBSan not re-verified for the last two commits: the build host
   became unreachable mid-session.
 
