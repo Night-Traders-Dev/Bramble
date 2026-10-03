@@ -296,6 +296,7 @@ static void t32_ldst_multiple(uint32_t pc, uint16_t upper, uint16_t lower) {
  * ======================================================================== */
 
 static uint32_t vfp_s[32];
+static uint64_t vfp_d[16];   /* D0-D15; VLDR/VSTR .64 targets */
 
 static int vfp_sn_from_insn(uint32_t insn) {
     return (int)(((insn >> 16) & 0xFu) * 2u + ((insn >> 6) & 1u));
@@ -413,26 +414,70 @@ static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
         return 1;
     }
 
-    /* VLDR/VSTR single- and double-precision are NOT implemented here.
+    /* VLDR / VSTR (ARMv7-M ARM A7.7.236 and A7.7.267):
      *
-     * The arms that used to be here matched 0xED9x / 0xED8x / 0xED5x / 0xED4x.
-     * Those are the ARM *core* LDRD/STRD immediate opcodes, not VFP: 0xED40
-     * is STRD (U=0), 0xED50 is LDRD (U=1), 0xED80/0xED90 are the register
-     * forms. So they were double-wrong -- the opcode was a different
-     * instruction class, and the mask bits could not even all match, which is
-     * what GCC's -Wtautological-compare was reporting.
+     *   VLDR  1 1 1 0 1 1 0 1 U D 0 1 | Rn | Vd | 1 0 1 1 | imm8   (double)
+     *   VLDR  1 1 1 0 1 1 0 1 U D 0 1 | Rn | Vd | 1 0 1 0 | imm8   (single)
+     *   VSTR  1 1 1 0 1 1 0 1 U D 0 0 | Rn | Vd | 1 0 1 1 | imm8   (double)
+     *   VSTR  1 1 1 0 1 1 0 1 U D 0 0 | Rn | Vd | 1 0 1 0 | imm8   (single)
      *
-     * Executing them as VFP would also have been actively wrong rather than
-     * merely dead: 0xED4x/0xED5x are self-consistent, so genuine core
-     * LDRD/STRD would have been intercepted and turned into VFP accesses,
-     * moving 4 or 8 bytes of float register file in place of the pair of core
-     * registers the instruction asked for.
+     * so the first halfword is 0xEDxx with bit 4 selecting load (1) from store
+     * (0), and the second halfword's bits 11:8 select the width: 1011 is
+     * double-precision (register number D:Vd), 1010 is single (Sd = Vd:D).
+     * imm32 = ZeroExtend(imm8:'00', 32), i.e. imm8 scaled by four, and U
+     * selects add versus subtract.
      *
-     * The real VFP load/store encodings are 16-bit T2 forms in 0xD8xx/0xD9xx,
-     * which reach the 16-bit dispatch table and never this function. Adding
-     * that decoder is a feature; see docs/full_audit.md ("O20"). Until then,
-     * firmware using them gets instr_unimplemented instead of silently
-     * executing a core LDRD as a float load. */
+     * These are 32-bit Thumb-2 encodings whose first halfword lands in 0xEDxx.
+     * Earlier revisions of this file tried to match 0xED9x/0xED8x/0xED5x/0xED4x,
+     * which are the ARM *core* LDRD/STRD opcodes; the emulator therefore
+     * intercepted genuine core LDRD/STRD and ran them as float accesses. See
+     * docs/full_audit.md ("O20").
+     */
+    {
+        /* bits 15:11 == 11101 marks a 32-bit Thumb-2 instruction; require the
+         * rest of the first halfword to be 0b101 pattern bits. */
+        uint16_t hw1 = (uint16_t)(insn >> 16);
+        uint16_t hw2 = (uint16_t)(insn & 0xFFFFu);
+        if ((hw1 & 0xFF00u) == 0xED00u) {
+            int load = (hw1 >> 4) & 1;          /* bit 4: 1 = VLDR, 0 = VSTR */
+            int add  = (hw1 >> 7) & 1;          /* U */
+            int dbit = (hw1 >> 6) & 1;          /* D */
+            uint32_t rn   = hw1 & 0xFu;
+            uint32_t vd   = (hw2 >> 12) & 0xFu;
+            uint32_t size = (hw2 >> 8) & 0xFu;  /* 1011 = double, 1010 = single */
+            uint32_t imm8 = hw2 & 0xFFu;
+
+            if (size == 0xBu || size == 0xAu) {
+                int is_double = (size == 0xBu);
+                /* D is the MSB of a double register number, and the LSB of a
+                 * single one. */
+                int reg = is_double ? (int)((dbit << 4) | vd)
+                                    : (int)((vd << 1) | dbit);
+                uint32_t imm32 = imm8 << 2;
+                uint32_t base = cpu.r[rn];
+                uint32_t addr = add ? (base + imm32) : (base - imm32);
+
+                if (is_double) {
+                    if (load) {
+                        uint64_t v = (uint64_t)mem_read32(addr) |
+                                     ((uint64_t)mem_read32(addr + 4) << 32);
+                        vfp_d[reg] = v;
+                    } else {
+                        uint64_t v = vfp_d[reg];
+                        mem_write32(addr, (uint32_t)v);
+                        mem_write32(addr + 4, (uint32_t)(v >> 32));
+                    }
+                } else {
+                    int sn = reg;
+                    if (load)
+                        vfp_s[sn] = mem_read32(addr);
+                    else
+                        mem_write32(addr, vfp_s[sn]);
+                }
+                return 1;
+            }
+        }
+    }
     return 0;
 }
 
@@ -1293,6 +1338,23 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
             }
             return 1;
         }
+        /* VFP load/store must be tried before the general 0xED00 handling.
+         * Per A7.7.236 the first halfword is exactly
+         *   1110 1101 U D 0 L Rn      (L = 1 load, 0 store)
+         * so bits 15:8 are 0xED, bit 5 is 0 and bit 4 is the direction. U
+         * (bit 7), D (bit 6) and Rn (bits 3:0) are free, which is why the
+         * mask is 0xFF30 and not 0xFF0F -- masking the wrong bits would make
+         * every Rn but zero fail to match. Without this, 0xED90 reaches the
+         * shifted-register data-processing decoder below and executes as an
+         * ordinary DP instruction. */
+        /* The mask covers bits 15:8 plus bit 5 and bit 4. Bit 5 is a required
+         * zero, so it contributes nothing to the comparison value: load is
+         * 0xED10 and store 0xED00. */
+        if ((upper & 0xFF30u) == 0xED10u || (upper & 0xFF30u) == 0xED00u) {
+            if (thumb32_vfp_exec(pc, upper, lower))
+                return 1;
+        }
+
         if (bits_10_9 == 1) {
             /* 0xEA/0xEB: data-processing (add.w etc.); 0xE9: LDRD/STRD T2 */
             if ((upper & 0x0F00) >= 0x0A00) {
@@ -1304,10 +1366,13 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
             }
             return 1;
         }
-        /* VLDR/VSTR Dn (0xED9x / 0xED8x) — not generic 0xED00 data-processing */
-        if ((upper & 0xFFF0) == 0xED90 || (upper & 0xFFF0) == 0xED80) {
-            return 1;
-        }
+        /* A blanket `return 1` used to sit here for 0xED90/0xED80, on the belief
+         * those were "VLDR/VSTR Dn" rather than generic 0xED00 data-processing.
+         * They are neither: per A7.7.236 the Thumb-2 FP load/store first
+         * halfword is 1110 1101 U D 0 L Rn, so 0xED90 is an ordinary
+         * VLDR D0, [r0]. Claiming it returned "handled" while doing nothing at
+         * all, so the instruction silently did nothing. thumb32_vfp_exec()
+         * below now handles the real encoding. */
         /* RP2350 SIO GPIO via CP0 (gpio_set/clr_mask): EE40/EE60.
          * Must NOT fall through to t32_dp_shifted_reg — that mis-decodes
          * EE60 3010 as ORN and clobbers r0 (broke MegaFlash DoCommand). */

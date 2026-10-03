@@ -6150,6 +6150,81 @@ TEST(test_fuse_set_flash_offset_records_the_region) {
     PASS();
 }
 
+/* VLDR/VSTR (ARMv7-M ARM A7.7.236 / A7.7.267):
+ *
+ *   VLDR  1110 1101 U D 0 1 | Rn | Vd | 1011 | imm8    (double, D:Vd)
+ *   VLDR  1110 1101 U D 0 1 | Rn | Vd | 1010 | imm8    (single, Vd:D)
+ *   VSTR  same with bit 4 clear
+ *
+ * imm32 = ZeroExtend(imm8:'00', 32). These are 32-bit Thumb-2 encodings whose
+ * first halfword is 0xEDxx -- which is why earlier revisions mistook them for
+ * the ARM core LDRD/STRD opcodes at 0xED4x/0xED5x.
+ *
+ * The round trip is observable end to end even though vfp_s/vfp_d are
+ * file-static: a VSTR from a register followed by a VLDR into the same register
+ * must reproduce the seeded value, and a VLDR into a *different* register then
+ * a VSTR of that register must move the value there.
+ */
+#define VFP_LS_HW1(U, D, Rn, load) \
+    ((uint16_t)(0xED00u | (((U) & 1) << 7) | (((D) & 1) << 6) | \
+                (((load) & 1) << 4) | ((Rn) & 0xFu)))
+#define VFP_LS_HW2(Vd, size, imm8) \
+    ((uint16_t)((((Vd) & 0xFu) << 12) | (((size) & 0xFu) << 8) | \
+                ((imm8) & 0xFFu)))
+
+TEST(test_thumb2_vldr_vstr_double_roundtrip) {
+    reset_cpu();
+    const uint32_t base = RAM_BASE + 0x2C00;
+    const uint32_t dst  = RAM_BASE + 0x2D00;
+
+    mem_write32(base,     0);
+    mem_write32(base + 4, 0);
+    mem_write32(dst,      0);
+    mem_write32(dst + 4,  0);
+
+    /* Seed D0 by storing 0x0123456789ABCDEF into memory, then loading it. */
+    mem_write32(base,     0x89ABCDEFu);
+    mem_write32(base + 4, 0x01234567u);
+    cpu.r[0] = base;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 0, 1 /*load*/), VFP_LS_HW2(0, 0xB /*double*/, 0));
+
+    /* D0 now holds that value; store it back somewhere else. */
+    cpu.r[1] = dst;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 1, 0 /*store*/), VFP_LS_HW2(0, 0xB, 0));
+
+    ASSERT_EQ(0x89ABCDEFu, mem_read32(dst), "VLDR/VSTR .64 must round-trip the low word");
+    ASSERT_EQ(0x01234567u, mem_read32(dst + 4), "VLDR/VSTR .64 must round-trip the high word");
+
+    /* U=0 subtracts: D = 1 (register 1) loaded from r2 - 16. */
+    mem_write32(dst - 16,     0xCAFEBABEu);
+    mem_write32(dst - 12,     0xFEEDFACEu);
+    cpu.r[2] = dst;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(0, 1, 2, 1), VFP_LS_HW2(0, 0xB, 4));
+    cpu.r[3] = base;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 3, 0), VFP_LS_HW2(0, 0xB, 0));
+    ASSERT_EQ(0xCAFEBABEu, mem_read32(base), "VLDR with U=0 must subtract imm8<<2");
+    ASSERT_EQ(0xFEEDFACEu, mem_read32(base + 4), "VLDR with U=0 high word");
+    PASS();
+}
+
+TEST(test_thumb2_vldr_vstr_single_roundtrip) {
+    reset_cpu();
+    const uint32_t base = RAM_BASE + 0x2E00;
+    mem_write32(base, 0x12345678u);
+
+    /* S register number is Vd:D, so Vd=4, D=0 selects s8. */
+    cpu.r[0] = base;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 0, 1), VFP_LS_HW2(4, 0xA /*single*/, 0));
+
+    /* Store s8 back through a different base register. */
+    cpu.r[1] = base + 16;
+    mem_write32(base + 16, 0);
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 1, 0), VFP_LS_HW2(4, 0xA, 0));
+
+    ASSERT_EQ(0x12345678u, mem_read32(base + 16), "VLDR/VSTR .32 must round-trip");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6930,6 +7005,8 @@ int main(void) {
     RUN_TEST(test_gdb_rsp_handles_an_oversized_packet);
     RUN_TEST(test_cyw43_gpio_intercept_only_claims_wifi_pins);
     RUN_TEST(test_cyw43_bitbang_spi_state_machine);
+    RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
+    RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);
