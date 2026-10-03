@@ -22,7 +22,7 @@ subsystem, networking stack, and developer tools.
 |--------|-------|
 | Source lines | 33,660 (47 `.c` files) |
 | Header files | 44 `.h` files |
-| Test suite | 362 tests across 60+ categories |
+| Test suite | 366 tests across 60+ categories |
 | Compiler warnings | Zero (`-Wall -Wextra -pedantic`) |
 | Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350-ARM + RP2350-RV) |
 | Version | 0.48.1 |
@@ -303,7 +303,7 @@ ctest --test-dir build --output-on-failure
 ./build/bramble_tests
 ```
 
-The test suite contains **362 tests** organized into 60+ categories:
+The test suite contains **366 tests** organized into 60+ categories:
 
 | Category Group | Tests | Description |
 |----------------|-------|-------------|

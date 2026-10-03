@@ -637,11 +637,21 @@ part. Covered against a FUSE-enabled build, which matters -- with
 pass without exercising anything, the same trap as `cyw43.enabled` and
 `bme280_i2c_start()`.
 
-### O21 — ten of eleven covered
-Ten of the eleven uncovered files now have coverage. Still none: `tapif`, which
-needs a TAP interface. `fuse_mount`'s entry validation is covered; its data path
-needs a live mount and is exercised manually via `-mount` rather than in the
-suite.
+### O21 — closed: every source file has a test reference
+All eleven previously-uncovered files now have coverage. `tapif` is the last,
+tested against a real TAP interface (`ip tuntap add mode tap dev brtest0`),
+gated on `BRAMBLE_TEST_TAP` so the suite still passes without root.
+
+`fuse_mount`'s entry validation is covered and its data path needs a live
+`/dev/fuse` mount, exercised manually via `-mount` rather than in the suite.
+
+The coverage figure in the original report (19.9%) is superseded: 366 tests, up
+from 319, and no source file is unreferenced.
+
+One trap worth recording for anyone adding tests here: `PASS()` does **not**
+return. An early `if (bad) PASS();` therefore falls through into whatever
+follows. Several tests written during this work had that shape and could have
+dereferenced NULL or used fd -1; all now `PASS(); return;`.
 
 ### O18-O24 — hygiene items, status at 0.48.0
 Warnings: **zero** under `-Wall -Wextra -pedantic`, verified on a clean rebuild.
