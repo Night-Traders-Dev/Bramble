@@ -630,11 +630,28 @@ The checksum test was confirmed load-bearing by bypassing the comparison: the
 suite drops to 359/360, so it exercises the validation rather than passing either
 way.
 
-Nine of the eleven uncovered files now have coverage. Still none: `tapif` and
-`fuse_mount`. Both need real infrastructure -- a TAP interface and a live
-`/dev/fuse` mount respectively -- rather than a mock. `fuse_mount` is the more
-valuable of the two, because it turns guest-supplied lengths into host file
-offsets.
+`fuse_mount`: `fuse_mount_start()` is the point where a guest-supplied image
+becomes a host-visible filesystem, so its validation is the security-relevant
+part. Covered against a FUSE-enabled build, which matters -- with
+`-DENABLE_FUSE=OFF` the stub returns non-zero immediately and the test would
+pass without exercising anything, the same trap as `cyw43.enabled` and
+`bme280_i2c_start()`.
+
+### O21 — ten of eleven covered
+Ten of the eleven uncovered files now have coverage. Still none: `tapif`, which
+needs a TAP interface. `fuse_mount`'s entry validation is covered; its data path
+needs a live mount and is exercised manually via `-mount` rather than in the
+suite.
+
+### O18-O24 — hygiene items, status at 0.48.0
+Warnings: **zero** under `-Wall -Wextra -pedantic`, verified on a clean rebuild.
+That closes the warning half of O18 and O19; the four unreachable VFP load/store
+arms were removed rather than fixed, and the TMDS/PWM/LDRD defects above came
+out of the same investigation. O20 (duplicate macros) is closed -- `clocks.h` now
+includes `rp2350_memmap.h`. O22 is closed for the three tests that asserted
+nothing. O23 is closed (`test_invariant_cyw43.c` deleted). O21 is the item above.
+O24 (reproducible builds) and the 19.9%-coverage figure quoted in the original
+report are both superseded by the numbers in this release.
 
 ### F1 — largely fixed in `e810fe4`, plus `f57db6b`
 Now fixed: the instruction cache is invalidated after `flash_range_program` and

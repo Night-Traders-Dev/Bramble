@@ -26,6 +26,7 @@
 #include "netbridge.h"
 #include "cyw43.h"
 #include "gdb.h"
+#include "fuse_mount.h"
 #include "timer.h"
 #include "gpio.h"
 #include "clocks.h"
@@ -6108,6 +6109,47 @@ TEST(test_gdb_rsp_handles_an_oversized_packet) {
     PASS();
 }
 
+/* fuse_mount had no coverage. Its mount path needs a real /dev/fuse mount and is
+ * exercised manually via -mount; what is unit-testable is the entry validation,
+ * which is where a bad guest image would otherwise be mounted as if valid. */
+TEST(test_fuse_mount_rejects_an_invalid_image) {
+    fuse_mount_stop();
+
+    uint8_t junk[1024];
+    memset(junk, 0, sizeof(junk));
+
+    /* No FAT16 boot signature: must be refused, and must not become active. */
+    ASSERT_TRUE(fuse_mount_start(junk, sizeof(junk), "/tmp/bramble_fuse_test") != 0,
+                "an image with no FAT16 boot signature must be refused");
+    ASSERT_EQ(0, fuse_mount_active(), "a refused mount must not report active");
+
+    /* Right signature, nonsense geometry: still must be refused. */
+    junk[510] = 0x55; junk[511] = 0xAA;
+    ASSERT_TRUE(fuse_mount_start(junk, sizeof(junk), "/tmp/bramble_fuse_test") != 0,
+                "an image with a bad BPB must be refused");
+    ASSERT_EQ(0, fuse_mount_active(), "a refused mount must not report active");
+
+    /* Too small to even hold a boot sector. */
+    uint8_t tiny[16];
+    memset(tiny, 0, sizeof(tiny));
+    ASSERT_TRUE(fuse_mount_start(tiny, sizeof(tiny), "/tmp/bramble_fuse_test") != 0,
+                "an image smaller than one sector must be refused");
+
+    rmdir("/tmp/bramble_fuse_test");
+    PASS();
+}
+
+/* fuse_set_flash_offset records where the filesystem region lives in flash so
+ * persistence can sync exactly that range back. */
+TEST(test_fuse_set_flash_offset_records_the_region) {
+    fuse_set_flash_offset(0);
+    ASSERT_EQ(0, fuse_mount_active(), "no mount means not active");
+
+    fuse_set_flash_offset(0x10000);
+    fuse_set_flash_offset(0);
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -6329,7 +6371,7 @@ int main(void) {
 
     printf("========================================\n");
     printf(" Bramble RP2040 Emulator - Test Suite\n");
-    printf(" Bramble v0.47.0 test suite\n");
+    printf(" Bramble v0.48.0 test suite\n");
     printf("========================================\n");
 
     BEGIN_CATEGORY("PRIMASK");
@@ -6881,6 +6923,8 @@ int main(void) {
     RUN_TEST(test_fat16_rejects_out_of_bounds_directory_entries);
     RUN_TEST(test_bme280_register_protocol);
     RUN_TEST(test_net_bridge_rejects_out_of_range_uart_index);
+    RUN_TEST(test_fuse_mount_rejects_an_invalid_image);
+    RUN_TEST(test_fuse_set_flash_offset_records_the_region);
     RUN_TEST(test_gdb_rsp_accepts_a_valid_packet);
     RUN_TEST(test_gdb_rsp_rejects_a_bad_checksum);
     RUN_TEST(test_gdb_rsp_handles_an_oversized_packet);

@@ -1,5 +1,78 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.0] - 2026-10-01
+
+Follows 0.47.0, which closed the audit findings. This release fixes three
+defects found by the tests added in 0.47.0, and takes test coverage of the
+previously-untested files from zero to nine of eleven.
+
+### Fixed
+
+- **RP2350 hart-1 launch writes into the TMDS encoder.** The RV path used SIO
+  `0x1C0`-`0x1CC` as a boot mailbox; the datasheet (§3.1.9) lists those as
+  `TMDS_CTRL` / `TMDS_WDATA` / `TMDS_PEEK_SINGLE` / `TMDS_POP_SINGLE`, so
+  `multicore_launch_core1()` put its entry point in the HDMI pixel encoder and
+  the TMDS block was unreachable. Now uses the documented §5.3 protocol --
+  `{ 0, 0, 1, vector_table, sp, entry }` over the SIO inter-processor FIFO at
+  `+0x54` -- with `vector_table` going to `mtvec` rather than `a0`. The Arm path
+  already implemented this correctly.
+- **RP2350 PWM decoded as RP2040 throughout.** 12 slices rather than 8, global
+  block at `0xF0` rather than `0xA0`, 12-bit global registers rather than 8, and
+  *two* interrupt outputs at `0x104`/`0x108`/`0x10C` that did not exist. Because
+  the interrupt block sat `0x50` too low, firmware masking a PWM interrupt was
+  writing PWM compare values.
+- **GDB RSP checksum never validated.** `gdb_recv_packet()` ACKed every packet
+  regardless of the two hex digits after `#`, so a corrupted write was accepted
+  as intact and the debugger and emulator silently disagreed. Now NAKs a
+  mismatch and advances past the bad packet.
+- **VFP load/store arms hijacked ARM-core `LDRD`/`STRD`.** They matched
+  `0xED4x`/`0xED5x`/`0xED8x`/`0xED9x` -- core opcodes -- so genuine core
+  `LDRD`/`STRD` were intercepted and executed as float accesses, moving VFP
+  register-file bytes in place of the two core registers named. Those arms are
+  gone; `LDRD`/`STRD` have their own executor, now pinned by a test built from
+  the ARMv7-M ARM field layout.
+- **VFP `VCVT` float<->int was never decoded.** Its arms required two conditions
+  that cannot both hold, and the dispatch guard omitted the `0xEBxx` first
+  halfword. All four forms now implemented.
+- **SPI `SSPDR` read invented a transfer.** Reading `DR` with an empty RX FIFO
+  pushed a `0xFF` through the device model, so every plain register read --
+  including each SET/CLR/XOR alias's read-modify-write -- sent a byte to
+  whatever was attached.
+- **Zcb `c.sb`/`c.sh` were not decoded at all.** Quadrant 0 had no `funct3==4`
+  arm, so both raised an illegal-instruction trap.
+
+### Build
+
+Zero compiler warnings under `-Wall -Wextra -pedantic`, and the guide's
+previously-false "warnings: zero" claim is now true.
+
+### Tests
+
+360 tests, up from 319. Nine of the eleven source files that had no test
+references now have coverage: `spi_flash`, `fatfs`, `bme280`, `netbridge`,
+`cyw43`, `gdb`, `fuse_mount` and the two others fixed here. The GDB tests drive
+the real `gdb_handle()` over a `socketpair`.
+
+Four unverified claims were retracted after checking them against source and
+datasheets: that core `LDRD`/`STRD` had no executor (they do), that they were
+"silently handled without loading" (my probe used the wrong halfword fields),
+that 16-bit `0xD8xx`/`0xD9xx` held VFP load/store (the ARM ARM maps 16-bit
+`1101xx` to conditional branch), and that `t32_ldrd_strd` was missing.
+
+### Still open
+
+- **VFP load/store** — Thumb-2 M-profile encodings unconfirmed; needs ARMv8-M ARM.
+- **Bus-fault exceptions** — needs hardware to validate region classification.
+- **Atomic register aliases (O28)** — the SET/CLR/XOR interposer RMW runs in
+  software, so a SET-alias write to `UARTDR`/`SSPDR` consumes an RX byte.
+- **U-mode / PMP** absent (hence `misa.U` clear).
+- **`tapif` and FUSE mount paths** need a TAP interface and a live `/dev/fuse`
+  mount; their entry validation is covered, their data paths are not.
+- riscv64 ASan/UBSan not re-verified for the last two commits: the build host
+  became unreachable mid-session.
+
+---
+
 ## [0.47.0] - 2026-10-01
 
 A correctness release driven by three reviews: a datasheet-grounded audit of
@@ -54,7 +127,7 @@ wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/P
 registers and never read them back, and which passed straight through the SIO
 GPIO write-drop bug. All three now assert real behaviour.
 
-- 360/360 tests passing, up from 319.
+- 362/362 tests passing, up from 319.
 - 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
   and riscv64, across the test suite and all eight bundled firmware images
   (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,
