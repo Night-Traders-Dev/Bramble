@@ -1,5 +1,28 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.2] - 2026-10-01
+
+### Fixed
+
+- **stdin is now available in an interactive session without `-stdin`.**
+  `-stdin` was the only way to enable stdin polling, so `./bramble littleos.uf2`
+  in a terminal reached the littleOS prompt and then sat there until the
+  instruction limit with every keystroke discarded -- the guest was polling a UART
+  that never received anything, which reads as a hang. A tty now implies stdin
+  polling.
+
+  Deliberately **not** changed for pipes and redirects: those are scripted runs
+  that may have no stdin at all, and polling it would consume the script's input.
+  They still pass `-stdin` explicitly. Verified both ways -- piped input without
+  `-stdin` is still ignored, and a pseudo-terminal now echoes and executes
+  commands without the flag.
+
+  Not a regression: the session's base commit `d0f96bd` behaves identically with
+  and without `-stdin`. This makes the interactive case work rather than
+  restoring something that worked.
+
+---
+
 ## [0.48.1] - 2026-10-01
 
 ### Fixed

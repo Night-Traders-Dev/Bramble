@@ -1005,6 +1005,19 @@ skip_fuse:
                timing_config.cycles_per_us, timing_config.cycles_per_us);
     }
 
+    /* An interactive session always wants a console, so a tty implies stdin
+     * polling even without -stdin. Previously -stdin was the only way to enable
+     * it, so `./bramble littleos.uf2` in a terminal reached the littleOS prompt
+     * and then sat there forever with every keystroke discarded -- the guest
+     * was reading a UART that never received anything.
+     *
+     * Deliberately *not* enabled for a pipe or a file: those are scripted runs
+     * that may have no stdin at all, and polling it would consume the script's
+     * input or block. Those still pass -stdin explicitly. */
+    if (!stdin_enabled && isatty(STDIN_FILENO)) {
+        stdin_enabled = 1;
+    }
+
     if (stdin_enabled) {
         uart_stdin_init();
         fprintf(stderr,"[Init] Stdin polling enabled for UART0 Rx\n");
