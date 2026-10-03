@@ -27,6 +27,8 @@
  * Each generator has CTRL (enable + cycles) and CYCLES registers.
  * ======================================================================== */
 
+/* Datasheet Table 649 lists six generators (PROC0, PROC1, TIMER0, TIMER1,
+ * WATCHDOG, RISCV) at a 12-byte stride. The array is sized generously. */
 #define RP2350_TICKS_NUM_GENERATORS  9
 /* Generator indices: PROC0=0, PROC1=1, TIMER0=2, TIMER1=3, WATCHDOG=4,
  * RISCV=5, REFTICK=6, ADC=7, reserved=8 */
@@ -34,6 +36,7 @@
 typedef struct {
     uint32_t ctrl[RP2350_TICKS_NUM_GENERATORS];   /* Enable + cycle count */
     uint32_t cycles[RP2350_TICKS_NUM_GENERATORS]; /* Running cycle counter */
+    uint32_t count[RP2350_TICKS_NUM_GENERATORS];  /* COUNT latch (RP2350 Table 649) */
 } rp2350_ticks_state_t;
 
 /* ========================================================================
@@ -139,6 +142,9 @@ typedef struct {
  * ======================================================================== */
 
 void rp2350_periph_init(rp2350_periph_state_t *state, int for_arm);
+
+/* Advance the COUNT latch of every enabled TICKS generator. */
+void rp2350_ticks_tick(rp2350_ticks_state_t *t, uint32_t ticks);
 
 /* Returns 1 if addr is handled, 0 otherwise */
 int rp2350_periph_match(uint32_t addr);

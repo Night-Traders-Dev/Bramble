@@ -6284,6 +6284,46 @@ TEST(test_tapif_read_write_against_a_real_interface) {
     PASS();
 }
 
+/* RP2350 datasheet Table 649: TICKS has three registers per generator at a
+ * 12-byte stride. The decoder assumed 8, so TIMER1_CTRL at 0x024 resolved as
+ * generator 4, register 4 -- the watchdog's CYCLES. */
+TEST(test_rp2350_ticks_generator_stride) {
+    rp2350_periph_state_t st;
+    rp2350_periph_init(&st, 0);
+
+    /* Table 649 offsets for each generator's CTRL. */
+    static const uint32_t ctrl_off[] = {
+        0x000,  /* PROC0_CTRL    */
+        0x00c,  /* PROC1_CTRL    */
+        0x018,  /* TIMER0_CTRL   */
+        0x024,  /* TIMER1_CTRL   */
+        0x030,  /* WATCHDOG_CTRL */
+        0x03c,  /* RISCV_CTRL    */
+    };
+
+    /* Write a distinct, non-default value to each CTRL and read it back. With
+     * an 8-byte stride the later generators would alias onto a neighbour. */
+    for (unsigned g = 0; g < sizeof(ctrl_off) / sizeof(ctrl_off[0]); g++) {
+        rp2350_periph_write32(&st, RP2350_TICKS_BASE + ctrl_off[g], 0x10u + g);
+    }
+    for (unsigned g = 0; g < sizeof(ctrl_off) / sizeof(ctrl_off[0]); g++) {
+        uint32_t v = rp2350_periph_read32(&st, RP2350_TICKS_BASE + ctrl_off[g]);
+        ASSERT_EQ(0x10u + g, v, "TICKS generator CTRL must not alias");
+    }
+
+    /* CYCLES and COUNT are read-only: writing must not change them. */
+    rp2350_periph_write32(&st, RP2350_TICKS_BASE + 0x028, 0xDEADBEEFu); /* TIMER1_CYCLES */
+    ASSERT_EQ(0, rp2350_periph_read32(&st, RP2350_TICKS_BASE + 0x028),
+              "TIMER1_CYCLES is read-only");
+
+    /* COUNT must exist as its own register, distinct from CYCLES. */
+    rp2350_ticks_tick(&st.ticks, 5);
+    ASSERT_TRUE(rp2350_periph_read32(&st, RP2350_TICKS_BASE + 0x02C) !=
+                rp2350_periph_read32(&st, RP2350_TICKS_BASE + 0x028),
+                "TIMER1_COUNT and TIMER1_CYCLES must be distinct registers");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -7068,6 +7108,7 @@ int main(void) {
     RUN_TEST(test_tapif_read_write_against_a_real_interface);
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
+    RUN_TEST(test_rp2350_ticks_generator_stride);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);
     RUN_TEST(test_rv_mret_clears_mpp);

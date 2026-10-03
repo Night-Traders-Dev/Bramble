@@ -392,6 +392,21 @@ the read-modify-write each SET/CLR/XOR alias performs -- sent a byte to whatever
 was attached. `name_prompt.uf2` produces identical output and runs ~3% fewer
 instructions, since it was doing phantom transfers in its poll loop.
 
+### TICKS register decode — **fixed in 0.48.3**
+`src/rp2350_rv/rp2350_periph.c`. Two independent defects:
+
+1. The decoder passed `base - RP2350_TICKS_BASE` where `base` was 16KB-aligned,
+   discarding the register offset entirely. Every register in the block --
+   `TIMER1_CTRL`, `WATCHDOG_COUNT`, `RISCV_CTRL` -- resolved to generator 0.
+2. The generator stride was 8 bytes; RP2350 datasheet Table 649 gives three
+   registers (CTRL, CYCLES, COUNT) at a **12-byte** stride. Even with the offset
+   fixed, `TIMER1_CTRL` at `0x024` resolves as generator 4 register 4 -- the
+   watchdog's CYCLES.
+
+Added the missing per-generator COUNT latch plus `rp2350_ticks_tick()`. The test
+writes a distinct value to all six CTRL registers from Table 649 and reads them
+back; it fails under either defect alone.
+
 ### Bus-fault exceptions — **not attempted, and reassessed**
 Raising mcause 1/5/7 requires the bus to say *whether* an address is mapped, and
 `mem_read32()` has no such answer: it falls through to the shared RP2040 bus,

@@ -92,22 +92,59 @@ int rp2350_periph_match(uint32_t addr) {
 
 /* ========================================================================
  * TICKS (0x40108000)
- * Each generator: CTRL at +0, CYCLES at +4, 8 bytes per generator
+ *
+ * RP2350 datasheet Table 649 gives *three* registers per generator at a 12-byte
+ * stride, not two at 8:
+ *
+ *   0x000 PROC0_CTRL    0x004 PROC0_CYCLES    0x008 PROC0_COUNT
+ *   0x00c PROC1_CTRL    0x010 PROC1_CYCLES    0x014 PROC1_COUNT
+ *   0x018 TIMER0_CTRL   0x01c TIMER0_CYCLES   0x020 TIMER0_COUNT
+ *   0x024 TIMER1_CTRL   0x028 TIMER1_CYCLES   0x02c TIMER1_COUNT
+ *   0x030 WATCHDOG_CTRL 0x034 WATCHDOG_CYCLES 0x038 WATCHDOG_COUNT
+ *   0x03c RISCV_CTRL    0x040 RISCV_CYCLES    0x044 RISCV_COUNT
+ *
+ * The old decoder assumed an 8-byte stride, so every generator past the first
+ * aliased onto the wrong registers: TIMER1_CTRL at 0x024 decoded as
+ * 0x24/8 = generator 4, register 4 -- i.e. the CYCLES of the *watchdog*.
+ * Firmware that selected TIMER1's tick source, or read the RISC-V platform
+ * timer through TICKS, got another peripheral's register.
+ *
+ * CTRL is read/write, CYCLES and COUNT are read-only.
  * ======================================================================== */
 
+#define TICKS_STRIDE   12u
+#define TICKS_REG_CTRL   0u
+#define TICKS_REG_CYCLES 4u
+#define TICKS_REG_COUNT  8u
+
 static uint32_t ticks_read(rp2350_ticks_state_t *t, uint32_t offset) {
-    uint32_t gen = offset / 8;
-    uint32_t reg = offset % 8;
+    uint32_t gen = offset / TICKS_STRIDE;
+    uint32_t reg = offset % TICKS_STRIDE;
     if (gen >= RP2350_TICKS_NUM_GENERATORS) return 0;
-    return (reg == 0) ? t->ctrl[gen] : t->cycles[gen];
+    switch (reg) {
+    case TICKS_REG_CTRL:   return t->ctrl[gen];
+    case TICKS_REG_CYCLES: return t->cycles[gen];
+    case TICKS_REG_COUNT:  return t->count[gen];
+    default: return 0;
+    }
 }
 
 static void ticks_write(rp2350_ticks_state_t *t, uint32_t offset, uint32_t val) {
-    uint32_t gen = offset / 8;
-    uint32_t reg = offset % 8;
+    uint32_t gen = offset / TICKS_STRIDE;
+    uint32_t reg = offset % TICKS_STRIDE;
     if (gen >= RP2350_TICKS_NUM_GENERATORS) return;
-    if (reg == 0) t->ctrl[gen] = val;
-    /* CYCLES is read-only */
+    if (reg == TICKS_REG_CTRL)
+        t->ctrl[gen] = val;
+    /* CYCLES and COUNT are read-only. */
+}
+
+/* Advance the COUNT latches of every enabled generator. */
+void rp2350_ticks_tick(rp2350_ticks_state_t *t, uint32_t ticks) {
+    if (ticks == 0) return;
+    for (uint32_t g = 0; g < RP2350_TICKS_NUM_GENERATORS; g++) {
+        if (t->ctrl[g] != 0)
+            t->count[g] += ticks;
+    }
 }
 
 /* ========================================================================
@@ -360,9 +397,12 @@ void rp2350_timer1_tick(rp2350_periph_state_t *state, uint32_t us) {
 uint32_t rp2350_periph_read32(rp2350_periph_state_t *state, uint32_t addr) {
     uint32_t base = addr & ~0x3000u;
 
-    /* TICKS */
-    if (base >= RP2350_TICKS_BASE && base < RP2350_TICKS_BASE + 0x100)
-        return ticks_read(&state->ticks, base - RP2350_TICKS_BASE);
+    /* TICKS. The register offset must come from the full address, not from
+     * `base`: `base` is 16KB-aligned, so subtracting it threw the offset away
+     * and every TICKS register -- TIMER1_CTRL, WATCHDOG_COUNT, all of them --
+     * resolved to generator 0's CTRL. */
+    if (addr >= RP2350_TICKS_BASE && addr < RP2350_TICKS_BASE + 0x100)
+        return ticks_read(&state->ticks, addr - RP2350_TICKS_BASE);
 
     /* POWMAN */
     if (base >= RP2350_POWMAN_BASE && base < RP2350_POWMAN_BASE + 0x100)
@@ -416,9 +456,9 @@ uint32_t rp2350_periph_read32(rp2350_periph_state_t *state, uint32_t addr) {
 void rp2350_periph_write32(rp2350_periph_state_t *state, uint32_t addr, uint32_t val) {
     uint32_t base = addr & ~0x3000u;
 
-    /* TICKS */
-    if (base >= RP2350_TICKS_BASE && base < RP2350_TICKS_BASE + 0x100) {
-        ticks_write(&state->ticks, base - RP2350_TICKS_BASE, val);
+    /* TICKS -- see the note on the read side about not using `base`. */
+    if (addr >= RP2350_TICKS_BASE && addr < RP2350_TICKS_BASE + 0x100) {
+        ticks_write(&state->ticks, addr - RP2350_TICKS_BASE, val);
         return;
     }
 

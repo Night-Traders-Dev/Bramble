@@ -1,5 +1,27 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.3] - 2026-10-01
+
+### Fixed
+
+- **RP2350 TICKS register offsets were being discarded entirely.** The
+  peripheral decoder computed a 16KB-aligned  and passed
+   to the TICKS handler, so *every* register in the
+  block resolved to generator 0: , , 
+  and the rest all read and wrote PROC0's control register. Firmware that
+  selected TIMER1's tick source or read the RISC-V platform timer through TICKS
+  was talking to the wrong generator entirely.
+- **TICKS used an 8-byte generator stride instead of 12.** RP2350 datasheet
+  Table 649 gives three registers per generator at a 12-byte stride (CTRL, CYCLES,
+  COUNT); the decoder assumed two at 8. Even with the offset fixed, TIMER1_CTRL at
+   would have resolved as generator 4 register 4 -- the watchdog's
+  CYCLES. Added the missing per-generator COUNT latch and a tick function.
+
+The test writes a distinct value to each of the six CTRL registers from Table 649
+and reads them all back, which fails under either defect alone.
+
+---
+
 ## [0.48.2] - 2026-10-01
 
 ### Fixed
@@ -39,7 +61,7 @@
 
 ### Tests
 
-366, up from 319. Every source file that previously had no test reference now
+367, up from 319. Every source file that previously had no test reference now
 has one. Also fixed a latent trap in tests written this session: `PASS()` does
 not return, so an early `PASS()` mid-body fell through into the code after it.
 
@@ -172,7 +194,7 @@ wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/P
 registers and never read them back, and which passed straight through the SIO
 GPIO write-drop bug. All three now assert real behaviour.
 
-- 366/366 tests passing, up from 319.
+- 367/367 tests passing, up from 319.
 - 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
   and riscv64, across the test suite and all eight bundled firmware images
   (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,
