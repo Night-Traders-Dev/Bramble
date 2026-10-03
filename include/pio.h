@@ -63,14 +63,30 @@
 #define PIO_SM0_PINCTRL      0x0DC
 #define PIO_SM_STRIDE        0x018  /* 6 registers * 4 bytes */
 
-/* Interrupt registers */
-#define PIO_INTR            0x128
-#define PIO_IRQ0_INTE       0x12C
-#define PIO_IRQ0_INTF       0x130
-#define PIO_IRQ0_INTS       0x134
-#define PIO_IRQ1_INTE       0x138
-#define PIO_IRQ1_INTF       0x13C
-#define PIO_IRQ1_INTS       0x140
+/* Interrupt registers. The old PIO_INTR was 0x128, which on RP2350 is
+ * RXF0_PUTGET0 rather than INTR.
+ * RP2350 places the interrupt block after the RX FIFO PUTGET window
+ * (RXF0_PUTGET0..RXF3_PUTGET3 at 0x128..0x164) and GPIOBASE/INTR. The previous
+ * values started at 0x12C, which is RXF0_PUTGET1 -- so on RP2350 every write to
+ * an IRQ enable/force register landed in the PUTGET window and PIO interrupts
+ * could never be enabled or forced. RP2040 has no PUTGET window and its PIO
+ * block ends at SM3_PINCTRL (0x124), so these registers are RP2350-only. */
+#define PIO_GPIOBASE        0x168
+#define PIO_INTR            0x16C
+#define PIO_IRQ0_INTE       0x170
+#define PIO_IRQ0_INTF       0x174
+#define PIO_IRQ0_INTS       0x178
+#define PIO_IRQ1_INTE       0x17C
+#define PIO_IRQ1_INTF       0x180
+#define PIO_IRQ1_INTS       0x184
+
+/* RX FIFO PUTGET window: four entries per state machine, four state machines. */
+#define PIO_RXF0_PUTGET     0x128
+#define PIO_RXF_PUTGET_N    16
+
+/* RP2350 has eight state machines (IRQ flag bits 7:0); RP2040 has four. */
+#define PIO_SM_COUNT_RP2040 4
+#define PIO_SM_COUNT_RP2350 8
 
 /* ========================================================================
  * CTRL bits

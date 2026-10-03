@@ -634,6 +634,14 @@ int pio_match(uint32_t addr) {
  * Register Read
  * ======================================================================== */
 
+/* Number of PIO state-machine IRQ bits on the selected chip. */
+static uint32_t pio_irq_mask(void) {
+    extern int membus_rp2350_mode;
+    return membus_rp2350_mode
+        ? ((1u << PIO_SM_COUNT_RP2350) - 1u)
+        : ((1u << PIO_SM_COUNT_RP2040) - 1u);
+}
+
 uint32_t pio_read32(int pio_num, uint32_t offset) {
     pio_block_t *p = &pio_state[pio_num];
 
@@ -722,7 +730,9 @@ uint32_t pio_read32(int pio_num, uint32_t offset) {
     case PIO_DBG_CFGINFO:
         return (PIO_FIFO_DEPTH << 16) | (PIO_INSTR_MEM_SIZE << 8) | (PIO_NUM_SM << 0);
 
-    /* Interrupt registers */
+    /* Interrupt registers. Only the low state-machine bits exist: RP2350 has eight
+     * state machines, RP2040 has four, so the old 0xFFF mask let four bits
+     * through that are reserved on both chips. */
     case PIO_INTR:
         return pio_compute_intr(p);
     case PIO_IRQ0_INTE:
@@ -855,16 +865,16 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
         break;
 
     case PIO_IRQ0_INTE:
-        p->irq0_inte = val & 0xFFF;
+        p->irq0_inte = val & pio_irq_mask();
         break;
     case PIO_IRQ0_INTF:
-        p->irq0_intf = val & 0xFFF;
+        p->irq0_intf = val & pio_irq_mask();
         break;
     case PIO_IRQ1_INTE:
-        p->irq1_inte = val & 0xFFF;
+        p->irq1_inte = val & pio_irq_mask();
         break;
     case PIO_IRQ1_INTF:
-        p->irq1_intf = val & 0xFFF;
+        p->irq1_intf = val & pio_irq_mask();
         break;
 
     default:

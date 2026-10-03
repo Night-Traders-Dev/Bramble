@@ -474,12 +474,20 @@ Two tests cover it, one pinning RP2350 and one pinning RP2040 so the per-chip
 selection cannot regress the original target.
 
 ### F1/F4 — remaining per-chip register differences
-RP2350 PIO diverges past `0x124` (`IRQ0_INTE` at `0x170`, so PIO interrupts
-cannot be enabled on RP2350) and RP2350 DMA has 4 IRQ lines but 2 are
-implemented. Each is a self-contained per-chip variant of an existing model and
-should be done one block at a time with firmware to test against, not in one pass.
+RP2350 DMA has 4 IRQ lines but 2 are implemented. It is a self-contained
+per-chip variant of an existing model and should be done with firmware to test
+against, not in one pass.
 
-The WATCHDOG entry is now done — see below.
+The PIO and WATCHDOG entries are now done — see below.
+
+### RP2350 PIO interrupt registers — **fixed in 0.48.6**
+`include/pio.h`. The interrupt block was placed as if RP2350 had no RX FIFO
+PUTGET window. Real layout: PUTGET at `0x128`–`0x164`, `GPIOBASE` `0x168`,
+`INTR` `0x16c`, then `IRQ0_INTE/INTF/INTS` at `0x170`/`0x174`/`0x178` and
+`IRQ1_*` at `0x17c`/`0x180`/`0x184`. The old defines started at `0x128`, so every
+driver write to an IRQ enable register landed in the PUTGET window and PIO IRQ0
+and IRQ1 were unreachable on RP2350. Separately, both lines masked with `0xFFF`
+though the chips have 4 and 8 state machines.
 
 ### RP2350 WATCHDOG map — **fixed in 0.48.4**
 `src/clocks.c`. Three defects in one block:

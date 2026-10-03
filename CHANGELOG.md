@@ -1,5 +1,34 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.6] - 2026-10-01
+
+### Fixed
+
+- **RP2350 PIO interrupts could not be enabled at all.** The interrupt register
+  offsets were wrong by a whole block. RP2350 inserts an RX FIFO PUTGET window
+  (`RXF0_PUTGET0`..`RXF3_PUTGET3`) and `GPIOBASE`/`INTR` ahead of the interrupt
+  registers:
+
+      0x128-0x164  RXF0..RXF3 PUTGET0..3
+      0x168       GPIOBASE
+      0x16c       INTR
+      0x170       IRQ0_INTE     0x174 IRQ0_INTF     0x178 IRQ0_INTS
+      0x17c       IRQ1_INTE     0x180 IRQ1_INTF     0x184 IRQ1_INTS
+
+  The old defines started at `0x128`/`0x12c`, which are `RXF0_PUTGET0` and
+  `RXF0_PUTGET1`. Every write a driver made to `IRQ0_INTE` therefore landed in
+  the PUTGET window, so `irq0_inte` stayed 0 and `pio_check_irq`'s condition
+  could never be true -- PIO IRQ0/IRQ1 were dead on RP2350. The NVIC routing was
+  already correct; only the offsets were wrong.
+- **PIO IRQ masks accepted four bits that exist on neither chip.** Both lines
+  masked with `0xFFF`, but RP2040 has four state machines and RP2350 has eight.
+  The mask is now selected per chip.
+
+Tests pin the datasheet offsets, the independence of the two interrupt lines,
+that writing `RXF0_PUTGET0` does not disturb `IRQ0_INTE`, and the per-chip mask.
+
+---
+
 ## [0.48.5] - 2026-10-01
 
 ### Fixed

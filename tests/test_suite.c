@@ -6360,6 +6360,70 @@ TEST(test_watchdog_reason_and_rp2350_map) {
     PASS();
 }
 
+/* RP2350 places the PIO interrupt block after the RX FIFO PUTGET window:
+ * GPIOBASE 0x168, INTR 0x16c, IRQ0_INTE 0x170 ... IRQ1_INTS 0x184. The defines
+ * started at 0x128/0x12c, which are RXF0_PUTGET0/PUTGET1, so every access to a
+ * PIO IRQ register landed in the PUTGET window and PIO interrupts could not be
+ * enabled or forced at all. */
+TEST(test_pio_rp2350_irq_register_offsets) {
+    pio_init();
+    extern int membus_rp2350_mode;
+    membus_rp2350_mode = 1;
+
+    /* The datasheet offsets must be distinct and decodable. */
+    pio_write32(0, PIO_IRQ0_INTE, 0x5u);
+    ASSERT_EQ(0x5u, pio_read32(0, PIO_IRQ0_INTE), "IRQ0_INTE must be at 0x170");
+    ASSERT_EQ(0, pio_read32(0, PIO_IRQ0_INTF), "a fresh block has no forced IRQs");
+
+    /* Force bit 0, which is enabled (0x5 = bits 0 and 2), and confirm status. */
+    pio_write32(0, PIO_IRQ0_INTF, 0x1u);
+    ASSERT_EQ(0x1u, pio_read32(0, PIO_IRQ0_INTF), "IRQ0_INTF must be at 0x174");
+    ASSERT_EQ(0x1u, pio_read32(0, PIO_IRQ0_INTS),
+              "IRQ0_INTS must show a forced IRQ that is enabled");
+
+    /* Bit 1 is forced but not enabled, so it must not appear in status. */
+    pio_write32(0, PIO_IRQ0_INTF, 0x3u);
+    ASSERT_EQ(0x1u, pio_read32(0, PIO_IRQ0_INTS),
+              "a forced but disabled IRQ must not set the status");
+
+    /* The two interrupt lines are independent. */
+    pio_write32(0, PIO_IRQ1_INTE, 0x8u);
+    ASSERT_EQ(0x8u, pio_read32(0, PIO_IRQ1_INTE), "IRQ1_INTE must be at 0x17c");
+    pio_write32(0, PIO_IRQ1_INTF, 0x8u);
+    ASSERT_EQ(0x8u, pio_read32(0, PIO_IRQ1_INTF), "IRQ1_INTF must be at 0x180");
+    ASSERT_EQ(0x8u, pio_read32(0, PIO_IRQ1_INTS),
+              "irq1 must see its own force, independently of irq0");
+
+    /* Writing PUTGET must not disturb the IRQ registers -- the bug made these
+     * the same storage. */
+    pio_write32(0, PIO_RXF0_PUTGET, 0xDEADBEEFu);
+    ASSERT_EQ(0x5u, pio_read32(0, PIO_IRQ0_INTE),
+              "writing RXF0_PUTGET0 must not alias IRQ0_INTE");
+
+    /* Only the state-machine bits exist: RP2350 has eight, so bits 8+ are
+     * reserved and must not be retained. */
+    pio_write32(0, PIO_IRQ0_INTE, 0xFFFFFFFFu);
+    ASSERT_EQ(0xFFu, pio_read32(0, PIO_IRQ0_INTE),
+              "IRQ enables must mask to the eight RP2350 state machines");
+
+    membus_rp2350_mode = 0;
+    PASS();
+}
+
+/* RP2040 has four state machines, so the mask must be narrower there. */
+TEST(test_pio_rp2040_irq_mask) {
+    pio_init();
+    extern int membus_rp2350_mode;
+    membus_rp2350_mode = 0;
+
+    pio_write32(0, PIO_IRQ0_INTE, 0xFFFFFFFFu);
+    ASSERT_EQ(0x0Fu, pio_read32(0, PIO_IRQ0_INTE),
+              "RP2040 PIO has only four state machine IRQ bits");
+
+    membus_rp2350_mode = 0;
+    PASS();
+}
+
 /* Writing LOAD arms the watchdog -- there is no separate enable bit. LOAD was
  * stored and never counted, so firmware that relied on the watchdog to recover
  * from a hang would spin forever instead of getting the reset it asked for. */
@@ -7212,6 +7276,8 @@ int main(void) {
     RUN_TEST(test_tapif_read_write_against_a_real_interface);
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
+    RUN_TEST(test_pio_rp2350_irq_register_offsets);
+    RUN_TEST(test_pio_rp2040_irq_mask);
     RUN_TEST(test_watchdog_reason_and_rp2350_map);
     RUN_TEST(test_watchdog_countdown_expires);
     RUN_TEST(test_watchdog_reason_soft_reset);
