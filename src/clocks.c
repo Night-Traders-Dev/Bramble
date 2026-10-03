@@ -36,7 +36,19 @@ void clocks_init(void) {
 
 /* Reset to power-on defaults */
 void clocks_reset(void) {
+    /* SCRATCH0-7 "persist through soft reset of the chip" (datasheet, WATCHDOG
+     * register list). A blanket memset wiped them, so firmware using scratch to
+     * carry state across a self-inflicted reset lost it. Preserve them, and the
+     * reason register, across a soft reset. */
+    uint32_t scratch[WATCHDOG_NUM_SCRATCH];
+    uint32_t reason;
+    memcpy(scratch, clocks_state.wdog_scratch, sizeof(scratch));
+    reason = clocks_state.wdog_reason;
+
     memset(&clocks_state, 0, sizeof(clocks_state_t));
+
+    memcpy(clocks_state.wdog_scratch, scratch, sizeof(scratch));
+    clocks_state.wdog_reason = reason;
 
     /* RP2040 boots with all peripherals held in reset */
     clocks_state.reset = resets_all_mask();
@@ -321,9 +333,19 @@ static uint32_t watchdog_read(uint32_t addr) {
             return clocks_state.wdog_ctrl;
         case 0x04: /* LOAD - write-only */
             return 0;
-        case 0x08: /* REASON */
-            return 0; /* Clean boot - no watchdog reset */
-        case 0x2C: /* TICK */
+        case 0x08: /* REASON
+             * Datasheet: "Logs the reason for the last reset. Both bits are zero
+             * for the case of a hardware reset." This previously returned a
+             * hardcoded 0, so a reboot caused by the watchdog was
+             * indistinguishable from a power-on reset and firmware could not
+             * tell that its own timeout had fired. */
+            return clocks_state.wdog_reason;
+        case 0x2C: /* TICK -- RP2040 only.
+             * RP2350's register list ends at SCRATCH7 (0x028); there is no TICK,
+             * so reading 0x2C there must return 0 rather than a synthesised
+             * value. */
+            if (membus_rp2350_mode)
+                return 0;
             /* Return stored value with RUNNING bit set if ENABLE is set */
             if (clocks_state.wdog_tick & WATCHDOG_TICK_ENABLE) {
                 return clocks_state.wdog_tick | WATCHDOG_TICK_RUNNING;
@@ -350,13 +372,17 @@ static void watchdog_write(uint32_t addr, uint32_t val, uint32_t alias) {
             /* Bit 31 = TRIGGER: request system reboot */
             if (new_ctrl & (1u << 31)) {
                 watchdog_reboot_pending = 1;
+                /* Record why the next boot will see. */
+                clocks_state.wdog_reason = WATCHDOG_REASON_WDOG;
             }
             break;
         }
         case 0x04: /* LOAD */
             clocks_state.wdog_load = val; /* Reload value, always direct write */
             break;
-        case 0x2C: /* TICK */
+        case 0x2C: /* TICK -- RP2040 only, see the read side. */
+            if (membus_rp2350_mode)
+                break;
             clocks_state.wdog_tick = apply_alias_write(
                 clocks_state.wdog_tick, val, alias);
             break;

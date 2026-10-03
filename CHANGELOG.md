@@ -1,5 +1,30 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.4] - 2026-10-01
+
+### Fixed
+
+- **RP2350 WATCHDOG `REASON` read a hardcoded 0.** The datasheet says it "logs
+  the reason for the last reset. Both bits are zero for the case of a hardware
+  reset." Because the register was stubbed to a constant, a reboot caused by the
+  watchdog was indistinguishable from a power-on reset: firmware that saved state
+  or a fault handler that reacted to a watchdog timeout had no way to learn that
+  its own timeout had fired. A `CTRL.TRIGGER` now records the reason for the next
+  boot.
+- **WATCHDOG scratch registers were wiped by a soft reset.** The register list
+  states SCRATCH0-7 "persist through soft reset of the chip", but `clocks_reset()`
+  memset the whole state block, discarding them. Firmware carrying data across a
+  self-inflicted reset lost it.
+- **0x2c was decoded as a TICK register on RP2350, which has none.** RP2040 has
+  WATCHDOG_TICK there; the RP2350 register list ends at SCRATCH7 (`0x028`). The
+  address is now per-chip, so writes to a register that does not exist on the
+  selected chip are ignored rather than silently accepted.
+
+Two tests cover it: one pins the RP2350 map (REASON, no TICK at 0x2c, scratch
+surviving reset) and one pins RP2040 so TICK still works.
+
+---
+
 ## [0.48.3] - 2026-10-01
 
 ### Fixed
@@ -194,7 +219,7 @@ wrong thing — notably `test_peripheral_writes_no_crash`, which wrote SPI/I2C/P
 registers and never read them back, and which passed straight through the SIO
 GPIO write-drop bug. All three now assert real behaviour.
 
-- 367/367 tests passing, up from 319.
+- 369/369 tests passing, up from 319.
 - 0 AddressSanitizer and 0 UndefinedBehaviorSanitizer reports on **both** x86_64
   and riscv64, across the test suite and all eight bundled firmware images
   (littleOS on RP2040 and on RP2350-RISC-V, RP2350-ARM, GPIO, timer, interrupt,

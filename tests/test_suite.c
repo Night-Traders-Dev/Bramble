@@ -6324,6 +6324,53 @@ TEST(test_rp2350_ticks_generator_stride) {
     PASS();
 }
 
+/* RP2350 WATCHDOG register list ends at SCRATCH7 (0x028) and REASON "logs the
+ * reason for the last reset". Both were wrong: REASON returned a hardcoded 0, so
+ * a watchdog reboot looked identical to a power-on reset, and 0x2C was decoded
+ * as a TICK register that does not exist on this chip. */
+TEST(test_watchdog_reason_and_rp2350_map) {
+    clocks_init();
+    membus_rp2350_mode = 1;
+
+    /* A clean start reads zero -- both bits zero means a hardware reset. */
+    ASSERT_EQ(WATCHDOG_REASON_RESET,
+              clocks_read32(RP2350_WATCHDOG_BASE + 0x08),
+              "a clean boot must report REASON 0");
+
+    /* Triggering the watchdog must be visible on the next boot. */
+    clocks_write32(RP2350_WATCHDOG_BASE + 0x00, 1u << 31);   /* CTRL.TRIGGER */
+    ASSERT_EQ(WATCHDOG_REASON_WDOG, clocks_read32(RP2350_WATCHDOG_BASE + 0x08),
+              "a watchdog reset must be distinguishable from a power-on reset");
+
+    /* 0x2C does not exist on RP2350 (no TICK register). */
+    clocks_write32(RP2350_WATCHDOG_BASE + 0x2C, 0xFFFFFFFFu);
+    ASSERT_EQ(0, clocks_read32(RP2350_WATCHDOG_BASE + 0x2C),
+              "RP2350 has no TICK register at 0x2C");
+
+    /* SCRATCH0-7 persist through a soft reset. */
+    clocks_write32(RP2350_WATCHDOG_BASE + 0x0C, 0xC0FFEE01u);
+    clocks_write32(RP2350_WATCHDOG_BASE + 0x28, 0x0BADF00Du);   /* SCRATCH7 */
+    clocks_reset();
+    ASSERT_EQ(0xC0FFEE01u, clocks_read32(RP2350_WATCHDOG_BASE + 0x0C),
+              "SCRATCH0 must survive a soft reset");
+    ASSERT_EQ(0x0BADF00Du, clocks_read32(RP2350_WATCHDOG_BASE + 0x28),
+              "SCRATCH7 must survive a soft reset");
+
+    membus_rp2350_mode = 0;
+    PASS();
+}
+
+/* RP2040 does have TICK, so the same offset must keep working there. */
+TEST(test_watchdog_tick_exists_on_rp2040) {
+    clocks_init();
+    membus_rp2350_mode = 0;
+
+    clocks_write32(WATCHDOG_BASE + 0x2C, WATCHDOG_TICK_ENABLE | 0x1234u);
+    ASSERT_TRUE((clocks_read32(WATCHDOG_BASE + 0x2C) & WATCHDOG_TICK_ENABLE) != 0,
+                "RP2040 has a TICK register and ENABLE must read back");
+    PASS();
+}
+
 /* C9: SIO CPUID must return the hart id, not a constant. Hart 1's boot sequence
  * branches on it to decide whether it is the secondary core. */
 TEST(test_rv_sio_cpuid_is_hart_dependent) {
@@ -7108,6 +7155,8 @@ int main(void) {
     RUN_TEST(test_tapif_read_write_against_a_real_interface);
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
+    RUN_TEST(test_watchdog_reason_and_rp2350_map);
+    RUN_TEST(test_watchdog_tick_exists_on_rp2040);
     RUN_TEST(test_rp2350_ticks_generator_stride);
     RUN_TEST(test_rv_sio_cpuid_is_hart_dependent);
     RUN_TEST(test_rv_misa_and_id_csr_values);

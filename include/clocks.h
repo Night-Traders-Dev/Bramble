@@ -112,6 +112,12 @@
 
 /* Watchdog TICK bits */
 #define WATCHDOG_TICK_RUNNING   (1u << 10)
+/* WATCHDOG REASON bits: 0 = hardware/power-on reset, 1 = watchdog, 2 = software.
+ * Datasheet: "Both bits are zero for the case of a hardware reset." */
+#define WATCHDOG_REASON_RESET  0u
+#define WATCHDOG_REASON_WDOG   1u
+#define WATCHDOG_REASON_SOFT   2u
+
 #define WATCHDOG_TICK_ENABLE    (1u << 9)
 
 /* Number of watchdog scratch registers */
@@ -160,6 +166,7 @@ typedef struct {
     uint32_t wdog_load;
     uint32_t wdog_scratch[WATCHDOG_NUM_SCRATCH];
     uint32_t wdog_tick;
+    uint32_t wdog_reason;   /* RP2350: why the last reset happened */
 
     /* PSM */
     uint32_t psm_frce_on;

@@ -475,10 +475,25 @@ selection cannot regress the original target.
 
 ### F1/F4 — remaining per-chip register differences
 RP2350 PIO diverges past `0x124` (`IRQ0_INTE` at `0x170`, so PIO interrupts
-cannot be enabled on RP2350), RP2350 DMA has 4 IRQ lines but 2 are implemented,
-and RP2350 WATCHDOG has no TICK register. Each is a self-contained per-chip
-variant of an existing model and should be done one block at a time with
-firmware to test against, not in one pass.
+cannot be enabled on RP2350) and RP2350 DMA has 4 IRQ lines but 2 are
+implemented. Each is a self-contained per-chip variant of an existing model and
+should be done one block at a time with firmware to test against, not in one pass.
+
+The WATCHDOG entry is now done — see below.
+
+### RP2350 WATCHDOG map — **fixed in 0.48.4**
+`src/clocks.c`. Three defects in one block:
+
+- `REASON` returned a hardcoded 0. The datasheet specifies it logs the reason for
+  the last reset, with both bits zero for a hardware reset. Stubbed to a
+  constant, a watchdog reboot was indistinguishable from a power-on reset.
+- `clocks_reset()` memset the whole state block, wiping SCRATCH0-7 even though the
+  register list states they persist through a soft reset.
+- `0x2c` was decoded as `TICK` on both chips. RP2350 has no TICK — its register
+  list ends at SCRATCH7 (`0x028`) — so writes to a nonexistent register were
+  silently accepted. Now selected per chip.
+
+Two tests: one pins the RP2350 map, one pins RP2040 so `TICK` still works.
 
 ### O20 — VFP decoders — **fixed in this release; build is warning-free**
 `src/thumb32.c`. The audit recorded "masks that disagree with their patterns".
