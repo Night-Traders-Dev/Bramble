@@ -5,17 +5,17 @@
 ### Fixed
 
 - **RP2350 TICKS register offsets were being discarded entirely.** The
-  peripheral decoder computed a 16KB-aligned  and passed
-   to the TICKS handler, so *every* register in the
-  block resolved to generator 0: , , 
+  peripheral decoder computed a 16KB-aligned `base` and passed
+  `base - RP2350_TICKS_BASE` to the TICKS handler, so *every* register in the
+  block resolved to generator 0: `TIMER1_CTRL`, `WATCHDOG_COUNT`, `RISCV_CTRL`
   and the rest all read and wrote PROC0's control register. Firmware that
   selected TIMER1's tick source or read the RISC-V platform timer through TICKS
   was talking to the wrong generator entirely.
 - **TICKS used an 8-byte generator stride instead of 12.** RP2350 datasheet
-  Table 649 gives three registers per generator at a 12-byte stride (CTRL, CYCLES,
-  COUNT); the decoder assumed two at 8. Even with the offset fixed, TIMER1_CTRL at
-   would have resolved as generator 4 register 4 -- the watchdog's
-  CYCLES. Added the missing per-generator COUNT latch and a tick function.
+  Table 649 gives three registers per generator at a 12-byte stride (CTRL,
+  CYCLES, COUNT); the decoder assumed two at 8. Even with the offset fixed,
+  `TIMER1_CTRL` at `0x024` resolves as generator 4 register 4 -- the watchdog's
+  CYCLES. Added the missing per-generator COUNT latch and `rp2350_ticks_tick()`.
 
 The test writes a distinct value to each of the six CTRL registers from Table 649
 and reads them all back, which fails under either defect alone.
