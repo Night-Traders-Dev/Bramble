@@ -480,6 +480,37 @@ against, not in one pass.
 
 The PIO and WATCHDOG entries are now done — see below.
 
+### VFP register file — **fixed in 0.48.7**
+`src/thumb32.c`. Found by AddressSanitizer on riscv64.
+
+- `VLDR`/`VSTR` `.64` indexed a 16-entry `vfp_d` by a decoded register number
+  reaching D31, overwriting the adjacent `exclusive_monitor` global.
+- The single and double views were separate arrays, so a 64-bit write was
+  invisible to a 32-bit access of the overlapping register.
+- D16-D31 were not aliased to D0-D15. The register file is 32 words; masking the
+  double index to 4 bits is both the aliasing rule and what keeps it in bounds.
+
+Register-count assertions now turn a wrong-sized file into a build failure.
+
+### VMOV GPR<->VFP — **still broken, not fixed**
+`src/thumb32.c`. Found while writing the VFP aliasing tests, which need VMOV to
+write a single register from a GPR.
+
+The opcode test is `(insn & 0xFFF00FF0u) == 0xEE000A90u`. That mask pins bits
+23:20 to `0xE`, but the ARM encoding for VMOV between a core register and a
+single-precision register uses `0xA` (to FP) or `0xB` (from FP) there, so the arm
+matches almost no real instruction. The direction test that follows,
+`((insn >> 16) & 0xFF) >= 0x17`, is always true for a match, so the
+"to FP" direction is unreachable.
+
+The register number is also derived as `((insn >> 16) & 0xF) * 2 + ((insn >> 6) & 1)`,
+but the opcode mask forces bits 19:16 to zero and bit 6 is a fixed 1 in the ARM
+encoding, so only S0 and S1 are reachable.
+
+Left unfixed rather than folded into the register-file commit: it is a decode
+correction with its own ARM ARM references, and it should be done against the
+instruction encoding rather than by inference from the current code.
+
 ### RP2350 PIO interrupt registers — **fixed in 0.48.6**
 `include/pio.h`. The interrupt block was placed as if RP2350 had no RX FIFO
 PUTGET window. Real layout: PUTGET at `0x128`–`0x164`, `GPIOBASE` `0x168`,

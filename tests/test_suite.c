@@ -6360,6 +6360,123 @@ TEST(test_watchdog_reason_and_rp2350_map) {
     PASS();
 }
 
+/* The VFP register file is 32 words: S0-S31 are the storage, D0-D15 overlay them
+ * as pairs (Dn = {S(2n), S(2n+1)}), and D16-D31 alias D0-D15.
+ *
+ * The double and single views used to be separate arrays, so a 64-bit value
+ * written by VLDR was invisible to a 32-bit access of the overlapping register.
+ *
+ * Encodings: a double register is (D << 4) | Vd, a single is (Vd << 1) | D.
+ * So D1 is D=0,Vd=1 and covers S2 (D=0,Vd=1) and S3 (D=1,Vd=1). */
+TEST(test_vfp_double_aliases_single_pair) {
+    reset_cpu();
+    const uint32_t src = RAM_BASE + 0x3100;
+    const uint32_t out = RAM_BASE + 0x3140;
+
+    mem_write32(src,     0x89ABCDEFu);
+    mem_write32(src + 4, 0x01234567u);
+
+    cpu.r[0] = src;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 0, 1), VFP_LS_HW2(1, 0xB, 0));  /* D1 */
+
+    cpu.r[1] = out;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 1, 0), VFP_LS_HW2(1, 0xA, 0));  /* S2 */
+    ASSERT_EQ(0x89ABCDEFu, mem_read32(out), "D1's low word must appear in S2");
+
+    cpu.r[1] = out + 4;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 1, 0), VFP_LS_HW2(1, 0xA, 0));  /* S3 */
+    ASSERT_EQ(0x01234567u, mem_read32(out + 4), "D1's high word must appear in S3");
+
+    /* The reverse direction needs VMOV (the only way to write S from a GPR),
+     * which has its own defect -- see the VMOV entry in docs/full_audit.md.
+     * Until that is fixed this test covers the single->observer direction. */
+    PASS();
+}
+
+/* VLDR/VSTR .64 with a double register number of 16-31 indexed a 16-entry array
+ * and wrote past the end of the global, into `exclusive_monitor`. */
+TEST(test_vfp_double_registers_16_to_31) {
+    reset_cpu();
+    const uint32_t src = RAM_BASE + 0x2E00;
+    const uint32_t dst = RAM_BASE + 0x2F00;
+
+    mem_write32(src,     0x89ABCDEFu);
+    mem_write32(src + 4, 0x01234567u);
+    mem_write32(dst,     0);
+    mem_write32(dst + 4, 0);
+
+    cpu.r[0] = src;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 0, 1), VFP_LS_HW2(15, 0xB, 0)); /* D31 */
+    cpu.r[1] = dst;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 1, 0), VFP_LS_HW2(15, 0xB, 0)); /* D31 */
+
+    ASSERT_EQ(0x89ABCDEFu, mem_read32(dst),
+              "VLDR/VSTR .64 through D31 must round-trip the low word");
+    ASSERT_EQ(0x01234567u, mem_read32(dst + 4),
+              "VLDR/VSTR .64 through D31 must round-trip the high word");
+    PASS();
+}
+
+/* D16-D31 are aliases of D0-D15, not distinct registers. */
+TEST(test_vfp_high_doubles_alias_low_ones) {
+    reset_cpu();
+    const uint32_t src = RAM_BASE + 0x3200;
+    const uint32_t out = RAM_BASE + 0x3240;
+
+    mem_write32(src,     0x0BADF00Du);
+    mem_write32(src + 4, 0xFEEDFACEu);
+
+    /* Load D31, then read it back through D15. */
+    cpu.r[0] = src;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 0, 1), VFP_LS_HW2(15, 0xB, 0)); /* D31 */
+    cpu.r[1] = out;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 1, 0), VFP_LS_HW2(15, 0xB, 0)); /* D15 */
+    ASSERT_EQ(0x0BADF00Du, mem_read32(out), "D31 must alias D15, low word");
+    ASSERT_EQ(0xFEEDFACEu, mem_read32(out + 4), "D31 must alias D15, high word");
+
+    /* Write through D17 and read back through D1. */
+    mem_write32(src + 0x10u, 0x5A5A5A5Au);
+    mem_write32(src + 0x14u, 0xA5A5A5A5u);
+    cpu.r[0] = src + 0x10u;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 0, 1), VFP_LS_HW2(1, 0xB, 0));  /* D17 */
+    cpu.r[1] = out + 0x10u;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 1, 0), VFP_LS_HW2(1, 0xB, 0));  /* D17 */
+    cpu.r[1] = out + 0x20u;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 1, 0), VFP_LS_HW2(1, 0xB, 0));  /* D1 */
+    ASSERT_EQ(0x5A5A5A5Au, mem_read32(out + 0x20u), "D17 must alias D1");
+    ASSERT_EQ(0xA5A5A5A5u, mem_read32(out + 0x24u), "D17/D1 high word");
+    PASS();
+}
+
+/* D30 and D31 alias D14 and D15, so they must stay distinct from each other. */
+TEST(test_vfp_high_doubles_do_not_clobber_low_ones) {
+    reset_cpu();
+    const uint32_t src30 = RAM_BASE + 0x3000;
+    const uint32_t src31 = RAM_BASE + 0x3010;
+    const uint32_t out   = RAM_BASE + 0x3040;
+
+    mem_write32(src30,     0xAAAAAAAAu);
+    mem_write32(src30 + 4, 0xBBBBBBBBu);
+    mem_write32(src31,     0xCCCCCCCCu);
+    mem_write32(src31 + 4, 0xDDDDDDDDu);
+
+    cpu.r[0] = src30;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 0, 1), VFP_LS_HW2(14, 0xB, 0)); /* D30 */
+    cpu.r[0] = src31;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 0, 1), VFP_LS_HW2(15, 0xB, 0)); /* D31 */
+
+    cpu.r[1] = out;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 1, 0), VFP_LS_HW2(14, 0xB, 0)); /* D30 */
+    ASSERT_EQ(0xAAAAAAAAu, mem_read32(out), "D30 must survive a load into D31");
+    ASSERT_EQ(0xBBBBBBBBu, mem_read32(out + 4), "D30's high word");
+
+    cpu.r[1] = out + 8;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 1, 1, 0), VFP_LS_HW2(15, 0xB, 0)); /* D31 */
+    ASSERT_EQ(0xCCCCCCCCu, mem_read32(out + 8), "D31 must hold its own value");
+    ASSERT_EQ(0xDDDDDDDDu, mem_read32(out + 12), "D31's high word");
+    PASS();
+}
+
 /* RP2350 places the PIO interrupt block after the RX FIFO PUTGET window:
  * GPIOBASE 0x168, INTR 0x16c, IRQ0_INTE 0x170 ... IRQ1_INTS 0x184. The defines
  * started at 0x128/0x12c, which are RXF0_PUTGET0/PUTGET1, so every access to a
@@ -7276,6 +7393,10 @@ int main(void) {
     RUN_TEST(test_tapif_read_write_against_a_real_interface);
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
+    RUN_TEST(test_vfp_double_aliases_single_pair);
+    RUN_TEST(test_vfp_double_registers_16_to_31);
+    RUN_TEST(test_vfp_high_doubles_alias_low_ones);
+    RUN_TEST(test_vfp_high_doubles_do_not_clobber_low_ones);
     RUN_TEST(test_pio_rp2350_irq_register_offsets);
     RUN_TEST(test_pio_rp2040_irq_mask);
     RUN_TEST(test_watchdog_reason_and_rp2350_map);

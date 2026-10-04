@@ -1,5 +1,46 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.7] - 2026-10-01
+
+### Fixed
+
+- **VFP double-precision loads and stores wrote past the end of a global.**
+  Found by AddressSanitizer on riscv64, after the register-offset work in 0.48.6
+  reopened that verification. `VLDR`/`VSTR` `.64` indexes `vfp_d[reg]` by the
+  decoded double register number, which reaches D31, but the array held 16
+  entries -- so a load into D16-D31 overwrote the adjacent `exclusive_monitor`
+  global. A normal build overflowed silently.
+- **The double and single register views did not alias.** They were two separate
+  arrays, so a 64-bit value written by `VLDR .64` was invisible to any 32-bit
+  access of the overlapping single register, and vice versa. They are now one
+  union, which is what the hardware does.
+- **D16-D31 were not aliased to D0-D15.** VFP has 32 single registers (32 words);
+  D0-D15 overlay them as pairs and D16-D31 are *aliases* of D0-D15, not
+  distinct storage. The double index is now masked to 4 bits, which is both the
+  aliasing rule and what keeps the access in bounds.
+
+Register-count assertions now make a wrong-sized register file a build failure
+rather than a silent overrun.
+
+### Notes
+
+Four VFP tests were added. Two of them genuinely fail against the previous
+implementation (the D/S aliasing and the D16-D31 aliasing); the other two are
+round-trip smoke tests that pass either way and are labelled as such.
+
+The `VMOV` between a GPR and a single register was found to have a separate
+defect while writing these tests and is **not** fixed here: its opcode mask
+(`0xFFF00FF0 == 0xEE000A90`) pins bits 23:20 to `0xE`, whereas the ARM encoding
+uses `0xA`/`0xB` there, so the arm matches almost no real encoding. Recorded in
+`docs/full_audit.md`.
+
+### Verification
+
+- riscv64 ASan/UBSan: 377/377 tests and all eight firmware images, zero findings.
+- x86_64: zero warnings on a clean rebuild, 377/377 tests, all eight firmware.
+
+---
+
 ## [0.48.6] - 2026-10-01
 
 ### Fixed

@@ -295,8 +295,32 @@ static void t32_ldst_multiple(uint32_t pc, uint16_t upper, uint16_t lower) {
  * for MHz float sprintf. Previous stubs left FP regs stale and _dtoa_r spun.
  * ======================================================================== */
 
-static uint32_t vfp_s[32];
-static uint64_t vfp_d[16];   /* D0-D15; VLDR/VSTR .64 targets */
+/* The VFP register file is 32 words total: S0-S31 are the physical storage,
+ * D0-D15 overlay them as pairs (Dn = {S(2n), S(2n+1)}), and D16-D31 are
+ * *aliases* of D0-D15 rather than distinct registers.
+ *
+ * So the union is 128 bytes, not 256. Modelling d[] as 32 entries would give the
+ * union the wrong size and let D16 read bytes belonging to S4/S5 rather than
+ * aliasing D0.
+ *
+ * The array was originally uint64_t d[16] indexed by a raw register number, so
+ * VLDR/VSTR .64 with D16-D31 wrote past the end of the global and into
+ * `exclusive_monitor`. AddressSanitizer on riscv64 caught it; a normal build
+ * overflowed silently. Doubles must be indexed with the number masked to 4 bits,
+ * which is exactly the D16-D31 aliasing rule. */
+static union {
+    uint32_t s[32];
+    uint64_t d[16];
+} vfp_regs;
+
+/* Negative-array-size assertions -- the project builds with -std=c99, where
+ * _Static_assert is only a -Wpedantic warning. These make the mistake a build
+ * failure rather than a silent overrun. */
+typedef char vfp_assert_s32[(sizeof(vfp_regs.s) / sizeof(vfp_regs.s[0])) == 32
+                            ? 1 : -1];
+typedef char vfp_assert_d16[(sizeof(vfp_regs.d) / sizeof(vfp_regs.d[0])) == 16
+                            ? 1 : -1];
+typedef char vfp_assert_same[(sizeof(vfp_regs.d) == sizeof(vfp_regs.s)) ? 1 : -1];
 
 static int vfp_sn_from_insn(uint32_t insn) {
     return (int)(((insn >> 16) & 0xFu) * 2u + ((insn >> 6) & 1u));
@@ -310,12 +334,12 @@ static int vfp_sm_from_insn(uint32_t insn) {
 
 static float vfp_read_s(int sn) {
     float f;
-    memcpy(&f, &vfp_s[sn], sizeof(f));
+    memcpy(&f, &vfp_regs.s[sn], sizeof(f));
     return f;
 }
 
 static void vfp_write_s(int sn, float f) {
-    memcpy(&vfp_s[sn], &f, sizeof(f));
+    memcpy(&vfp_regs.s[sn], &f, sizeof(f));
 }
 
 /* Pico SDK gpioc_lo_out/oe set/clr via .inst (EE40/EE60 + lower 0xR010/0xR014). */
@@ -354,9 +378,9 @@ static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
         int rt = (int)((insn >> 12) & 0xFu);
         int sn = vfp_sn_from_insn(insn);
         if (((insn >> 16) & 0xFFu) >= 0x17u) {
-            cpu.r[rt] = vfp_s[sn];
+            cpu.r[rt] = vfp_regs.s[sn];
         } else {
-            vfp_s[sn] = cpu.r[rt];
+            vfp_regs.s[sn] = cpu.r[rt];
         }
         return 1;
     }
@@ -390,13 +414,13 @@ static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
         int vm = (int)((((insn >> 1) & 0x1Fu) << 1) | (insn & 1u));
 
         if (to_float) {
-            uint32_t raw = vfp_s[vm * 2];          /* integer source */
+            uint32_t raw = vfp_regs.s[vm * 2];          /* integer source */
             float f = is_signed ? (float)(int32_t)raw : (float)raw;
             vfp_write_s(vd * 2, f);                /* float destination */
         } else {
             float f = vfp_read_s(vm * 2);          /* float source */
             uint32_t raw = is_signed ? (uint32_t)(int32_t)f : (uint32_t)f;
-            vfp_s[vd * 2] = raw;                   /* integer destination */
+            vfp_regs.s[vd * 2] = raw;                   /* integer destination */
         }
         return 1;
     }
@@ -458,21 +482,24 @@ static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
                 uint32_t addr = add ? (base + imm32) : (base - imm32);
 
                 if (is_double) {
+                    /* D16-D31 alias D0-D15, so mask to 4 bits. Without this the
+                     * index reaches 31 and runs off the end of vfp_regs.d. */
+                    reg &= 0xF;
                     if (load) {
                         uint64_t v = (uint64_t)mem_read32(addr) |
                                      ((uint64_t)mem_read32(addr + 4) << 32);
-                        vfp_d[reg] = v;
+                        vfp_regs.d[reg] = v;
                     } else {
-                        uint64_t v = vfp_d[reg];
+                        uint64_t v = vfp_regs.d[reg];
                         mem_write32(addr, (uint32_t)v);
                         mem_write32(addr + 4, (uint32_t)(v >> 32));
                     }
                 } else {
                     int sn = reg;
                     if (load)
-                        vfp_s[sn] = mem_read32(addr);
+                        vfp_regs.s[sn] = mem_read32(addr);
                     else
-                        mem_write32(addr, vfp_s[sn]);
+                        mem_write32(addr, vfp_regs.s[sn]);
                 }
                 return 1;
             }
