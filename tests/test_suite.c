@@ -6477,6 +6477,72 @@ TEST(test_vfp_high_doubles_do_not_clobber_low_ones) {
     PASS();
 }
 
+/* VMOV between an Arm core register and a single-precision register,
+ * ARM ARM A7.7.243 encoding T1:
+ *
+ *   1110 1110 000 op | Vn | Rt | 1010 | N 0 0 1 0 | 0000
+ *                       ^op = bit 20
+ *
+ * The old decode pinned op to 0, took its direction from bits 23:16 (always
+ * below the 0x17 threshold, so the "to core register" path was unreachable),
+ * and took the register number's low bit from bit 6 where the encoding pins 0.
+ */
+static void vfp_vmov_exec(unsigned op, unsigned vn, unsigned rt, unsigned n) {
+    uint32_t insn = 0xEE000A10u | ((uint32_t)(op) << 20) |
+                    ((uint32_t)(vn) << 16) | ((uint32_t)(rt) << 12) |
+                    ((uint32_t)(n) << 7);
+    thumb32_step(RAM_BASE, (uint16_t)(insn >> 16), (uint16_t)insn);
+}
+
+TEST(test_vfp_vmov_both_directions) {
+    reset_cpu();
+    const uint32_t out = RAM_BASE + 0x3300;
+
+    /* op=0: core register -> S1 (Vn=0, N=1). */
+    cpu.r[0] = 0x12345678u;
+    vfp_vmov_exec(0, 0, 0, 1);
+
+    /* op=1: S1 -> core register, the path the old decode made dead. */
+    cpu.r[1] = 0;
+    vfp_vmov_exec(1, 0, 1, 1);
+    ASSERT_EQ(0x12345678u, cpu.r[1],
+              "VMOV to core register must read back what was written");
+
+    /* The two directions must be genuinely independent, not symmetric by
+     * accident: writing a different value to S1 must be visible through D0. */
+    cpu.r[2] = 0xCAFEBABEu;
+    vfp_vmov_exec(0, 0, 2, 1);
+    cpu.r[1] = 0;
+    vfp_vmov_exec(1, 0, 1, 1);
+    ASSERT_EQ(0xCAFEBABEu, cpu.r[1], "VMOV must return the latest S1 value");
+
+    /* And the write must reach the double view, proving VMOV and VLDR share
+     * one register file. */
+    cpu.r[3] = out;
+    thumb32_step(RAM_BASE, VFP_LS_HW1(1, 0, 3, 0), VFP_LS_HW2(0, 0xB, 0)); /* VSTR D0 */
+    ASSERT_EQ(0xCAFEBABEu, mem_read32(out),
+              "a VMOV into S1 must be visible through D0");
+    PASS();
+}
+
+/* The single register number is (Vn << 1) | N, so all 32 must be reachable.
+ * The old decode used bit 6, which the encoding pins to 0. */
+TEST(test_vfp_vmov_reaches_all_single_registers) {
+    reset_cpu();
+
+    for (unsigned n = 0; n < 32u; n++) {
+        cpu.r[0] = 0xC0DE0000u | n;
+        vfp_vmov_exec(0, n >> 1, 0, n & 1u);
+    }
+    for (unsigned n = 0; n < 32u; n++) {
+        cpu.r[1] = 0;
+        vfp_vmov_exec(1, n >> 1, 1, n & 1u);
+        ASSERT_EQ(0xC0DE0000u | n, cpu.r[1],
+                  "every single register S0-S31 must be independently reachable");
+    }
+    PASS();
+}
+
 /* RP2350 places the PIO interrupt block after the RX FIFO PUTGET window:
  * GPIOBASE 0x168, INTR 0x16c, IRQ0_INTE 0x170 ... IRQ1_INTS 0x184. The defines
  * started at 0x128/0x12c, which are RXF0_PUTGET0/PUTGET1, so every access to a
@@ -7393,6 +7459,9 @@ int main(void) {
     RUN_TEST(test_tapif_read_write_against_a_real_interface);
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
+    RUN_TEST(test_vfp_vmov_both_directions);
+    RUN_TEST(test_vfp_vmov_reaches_all_single_registers);
+    RUN_TEST(test_vfp_vmov_reaches_all_single_registers);
     RUN_TEST(test_vfp_double_aliases_single_pair);
     RUN_TEST(test_vfp_double_registers_16_to_31);
     RUN_TEST(test_vfp_high_doubles_alias_low_ones);

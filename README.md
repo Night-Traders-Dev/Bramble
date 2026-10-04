@@ -2,11 +2,11 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.48.7
+## Current Status: v0.48.8
 
-377 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
+380 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
 
-**v0.48.7** is a correctness release driven by two datasheet-grounded audits (RP2040/RP2350/Hazard3) plus a full correctness, concurrency and security review of the emulator itself. The headline fixes:
+**v0.48.8** is a correctness release driven by two datasheet-grounded audits (RP2040/RP2350/Hazard3) plus a full correctness, concurrency and security review of the emulator itself. The headline fixes:
 
 - **RISC-V interrupts actually work.** Peripheral IRQs are now routed from the NVIC into the Hazard3 Xh3irq controller, so `mip.MEIP` can be set and a RISC-V hart can trap on a UART, timer or GPIO interrupt. Previously the pending bit was latched in a structure the RV core never read, so firmware waiting on any peripheral interrupt hung indefinitely.
 - **The Xh3irq CSRs are the ones the hardware has** — MEIEA/MEIPA/MEIFA/MEIPRA/MEINEXT at their real addresses, implemented as the indexed 16-bit array accesses the SDK emits, so `csrs 0xbe0, index | (mask << 16)` does what it looks like.
@@ -15,7 +15,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 - **Concurrency.** Real ARM `WFE` event register, latched `SEV`, spinlock and FIFO wakeups, correct thread lifecycle, and no more PIO/USB core starvation or timer double-tick.
 - **Storage.** FAT16/FAT32 geometry, cluster and directory-entry bounds checks; 32-bit sector counts; validated FUSE offsets; and `emu_flash_size` used consistently by ELF and UF2 loading.
 
-Verification: 377/377 tests, and 0 AddressSanitizer / UndefinedBehaviorSanitizer reports on both x86_64 and riscv64 across the suite and all eight bundled firmware images. See `docs/full_audit.md` and `docs/datasheet_audit.md` for the findings and what remains open.
+Verification: 380/380 tests, and 0 AddressSanitizer / UndefinedBehaviorSanitizer reports on both x86_64 and riscv64 across the suite and all eight bundled firmware images. See `docs/full_audit.md` and `docs/datasheet_audit.md` for the findings and what remains open.
 
 ### Coverage
 
@@ -42,7 +42,7 @@ Verification: 377/377 tests, and 0 AddressSanitizer / UndefinedBehaviorSanitizer
 | Firmware Auto-Detect | UF2 + ELF | Auto-detects RP2040/RP2350-ARM/RP2350-RV from UF2 family ID or ELF machine type |
 | RV Performance | ICache | 64K-entry decoded instruction cache for flash/ROM fetches |
 | RV Semihosting | EBREAK | Full ARM semihosting protocol: SYS_WRITE0, SYS_WRITEC, SYS_WRITE, SYS_READC, SYS_EXIT, etc. via EBREAK |
-| Tests | 377 | CTest integrated, 57+ categories (44 RV + 4 M33 + 19 networking tests) |
+| Tests | 380 | CTest integrated, 57+ categories (44 RV + 4 M33 + 19 networking tests) |
 
 ### Peripherals
 

@@ -1,5 +1,38 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.8] - 2026-10-01
+
+### Fixed
+
+- **`VMOV` between a core register and a single-precision VFP register did not
+  work.** Three separate defects, against ARM ARM A7.7.243 (encoding T1):
+
+  - The instruction was never dispatched. `VMOV`'s first halfword is
+    `1110 1110 000 op Vn`, giving `top5 == 0x1D`, but the only `0xEE00` route to
+    the VFP decoder sat under `top5 == 0x1E`, which those encodings never
+    satisfy. They were executed as ordinary data-processing instructions.
+  - The opcode mask included bit 20 in the masked bits, pinning `op` to 0 -- the
+    direction flag. `VMOV <Rt>, <Sn>` was therefore unreachable and only the
+    core-to-VFP direction could ever match. The mask is now `0xFFE00F70`
+    against `0xEE000A10`, with `op`, `Vn`, `Rt` and `N` free.
+  - The direction test was `((insn >> 16) & 0xFF) >= 0x17`, examining bits
+    23:16. Bits 23:19 are `0000` in this encoding and bit 20 is `op`, so for any
+    instruction that matched, the test was never true.
+  - The register number's low bit was read from bit 6, which the encoding pins to
+    0, so only S0 was reachable. Per the ARM ARM pseudocode `n = UInt(Vn:N)` it
+    is bit 7, giving `(Vn << 1) | N` and all 32 single registers.
+
+Two tests cover both directions and all 32 single registers; both fail against
+the previous implementation.
+
+### Notes
+
+This was recorded as an open defect in 0.48.7 and is now closed. It was found
+while writing the register-file tests, which needed `VMOV` to write a single
+register from a core register.
+
+---
+
 ## [0.48.7] - 2026-10-01
 
 ### Fixed

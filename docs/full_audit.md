@@ -492,24 +492,22 @@ The PIO and WATCHDOG entries are now done — see below.
 
 Register-count assertions now turn a wrong-sized file into a build failure.
 
-### VMOV GPR<->VFP — **still broken, not fixed**
-`src/thumb32.c`. Found while writing the VFP aliasing tests, which need VMOV to
-write a single register from a GPR.
+### VMOV GPR<->VFP — **fixed in 0.48.8**
+`src/thumb32.c`. Recorded as broken in 0.48.7; closed against ARM ARM A7.7.243
+(encoding T1), which the fix was written against rather than inferred from the
+existing code.
 
-The opcode test is `(insn & 0xFFF00FF0u) == 0xEE000A90u`. That mask pins bits
-23:20 to `0xE`, but the ARM encoding for VMOV between a core register and a
-single-precision register uses `0xA` (to FP) or `0xB` (from FP) there, so the arm
-matches almost no real instruction. The direction test that follows,
-`((insn >> 16) & 0xFF) >= 0x17`, is always true for a match, so the
-"to FP" direction is unreachable.
+Four defects:
 
-The register number is also derived as `((insn >> 16) & 0xF) * 2 + ((insn >> 6) & 1)`,
-but the opcode mask forces bits 19:16 to zero and bit 6 is a fixed 1 in the ARM
-encoding, so only S0 and S1 are reachable.
-
-Left unfixed rather than folded into the register-file commit: it is a decode
-correction with its own ARM ARM references, and it should be done against the
-instruction encoding rather than by inference from the current code.
+- Not dispatched at all. `VMOV`'s first halfword is `1110 1110 000 op Vn`, giving
+  `top5 == 0x1D`, but the only `0xEE00` route to the VFP decoder was under
+  `top5 == 0x1E`, which those encodings never satisfy.
+- The opcode mask masked bit 20, pinning `op` -- the direction -- to 0, so
+  `VMOV <Rt>, <Sn>` was unreachable. Now `0xFFE00F70` against `0xEE000A10`.
+- The direction test examined bits 23:16 against a `0x17` threshold; those bits
+  are `0000` plus `op`, so it was never true for a matching instruction.
+- The register number's low bit came from bit 6, pinned to 0 by the encoding.
+  Per `n = UInt(Vn:N)` it is bit 7, so `(Vn << 1) | N` and all 32 registers.
 
 ### RP2350 PIO interrupt registers — **fixed in 0.48.6**
 `include/pio.h`. The interrupt block was placed as if RP2350 had no RX FIFO

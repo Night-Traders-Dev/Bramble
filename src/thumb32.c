@@ -322,8 +322,17 @@ typedef char vfp_assert_d16[(sizeof(vfp_regs.d) / sizeof(vfp_regs.d[0])) == 16
                             ? 1 : -1];
 typedef char vfp_assert_same[(sizeof(vfp_regs.d) == sizeof(vfp_regs.s)) ? 1 : -1];
 
+/* ARM ARM A7.7.243 (VMOV, encoding T1):
+ *
+ *   1 1 1 0 1 1 1 0 0 0 0 op | Vn | Rt | 1 0 1 0 | N 0 0 1 0 | 0 0 0 0
+ *                            ^op is bit 20
+ *
+ * and the pseudocode gives n = UInt(Vn:N), so the single register number is
+ * (Vn << 1) | N with N at bit 7. The previous version read bit 6, which the
+ * encoding pins to 0, so only S0 was ever reachable.
+ */
 static int vfp_sn_from_insn(uint32_t insn) {
-    return (int)(((insn >> 16) & 0xFu) * 2u + ((insn >> 6) & 1u));
+    return (int)((((insn >> 16) & 0xFu) << 1) | ((insn >> 7) & 1u));
 }
 
 /* Unreferenced: kept for symmetry with the other VFP register decoders. */
@@ -370,14 +379,33 @@ static int thumb32_pico_gpioc(uint16_t upper, uint16_t lower) {
 }
 
 static int thumb32_vfp_exec(uint32_t pc, uint16_t upper, uint16_t lower) {
-    (void)pc;   /* only the VFP load/store arms needed the PC */
+    (void)pc;
     uint32_t insn = ((uint32_t)upper << 16) | lower;
 
-    /* VMOV between ARM core register and single-precision VFP register */
-    if ((insn & 0xFFF00FF0u) == 0xEE000A90u) {
+    /* VMOV between ARM core register and single-precision VFP register,
+     * ARM ARM A7.7.243 encoding T1:
+     *
+     *   1110 1110 000 op | Vn | Rt | 1010 | N 0 0 1 0 | 0000
+     *
+     * Free fields: op (bit 20, the direction), Vn (19:16), Rt (15:12), N
+     * (bit 7). Fixed: bits 31:21, 11:8 == 1010, 6:4 == 001, 3:0 == 0000.
+     * That gives mask 0xFFE00F70 against 0xEE000A10.
+     *
+     * The previous mask, 0xFFF00FF0 against 0xEE000A90, included bit 20 in the
+     * mask, so op was pinned to 0 and the "to core register" direction could
+     * never match. */
+    if ((insn & 0xFFE00F70u) == 0xEE000A10u) {
         int rt = (int)((insn >> 12) & 0xFu);
         int sn = vfp_sn_from_insn(insn);
-        if (((insn >> 16) & 0xFFu) >= 0x17u) {
+        /* op selects direction: 1 copies the single register to the core
+         * register, 0 copies the core register into the single register.
+         *
+         * The old code used ((insn >> 16) & 0xFF) >= 0x17, which tests bits
+         * 23:16. Bits 23:19 are 0000 in this encoding and bit 20 is op, so for
+         * any instruction that matched the opcode the test was never true and
+         * the "to core register" direction was unreachable. */
+        int to_arm = (int)((insn >> 20) & 1u);
+        if (to_arm) {
             cpu.r[rt] = vfp_regs.s[sn];
         } else {
             vfp_regs.s[sn] = cpu.r[rt];
@@ -1377,7 +1405,14 @@ int thumb32_step(uint32_t pc, uint16_t upper, uint16_t lower) {
         /* The mask covers bits 15:8 plus bit 5 and bit 4. Bit 5 is a required
          * zero, so it contributes nothing to the comparison value: load is
          * 0xED10 and store 0xED00. */
-        if ((upper & 0xFF30u) == 0xED10u || (upper & 0xFF30u) == 0xED00u) {
+        /* VMOV (A7.7.243) also lives in this group: its first halfword is
+         * 1110 1110 000 op Vn, so bits 15:5 are 1110 1110 000 and the mask is
+         * 0xFFE0. Without this, upper 0xEE00 has top5 == 0x1D and was routed
+         * to the shifted-register data-processing decoder instead -- the only
+         * 0xEE00 VFP route sat under `top5 == 0x1E`, which these encodings
+         * never satisfy. thumb32_vfp_exec() does the precise match. */
+        if ((upper & 0xFF30u) == 0xED10u || (upper & 0xFF30u) == 0xED00u ||
+            (upper & 0xFFE0u) == 0xEE00u) {
             if (thumb32_vfp_exec(pc, upper, lower))
                 return 1;
         }
