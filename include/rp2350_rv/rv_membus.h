@@ -19,6 +19,7 @@
 #include "rp2350_rv/rv_clint.h"
 #include "rp2350_rv/rv_cpu.h"
 #include "rp2350_rv/rp2350_periph.h"
+#include "tmds.h"
 
 /* RP2350 SRAM: 520KB (10 banks of 64KB + 8KB scratch) */
 #define RV_SRAM_SIZE    (520 * 1024)
@@ -67,6 +68,7 @@ typedef struct {
 
     /* RP2350 SIO extra state */
     uint32_t gpio_hi_out;     /* GPIO pins 32-47 output */
+    tmds_state_t tmds;        /* RP2350 SIO TMDS encoder (DVI), 0x1c0-0x1e4 */
     uint32_t gpio_hi_oe;      /* GPIO pins 32-47 output enable */
     uint32_t gpio_hi_in;      /* GPIO pins 32-47 input */
 

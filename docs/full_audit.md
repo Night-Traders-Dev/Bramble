@@ -489,6 +489,27 @@ were each per-chip variants of an existing model; all are now done — see below
 
 Register-count assertions now turn a wrong-sized file into a build failure.
 
+### RP2350 TMDS encoder — **implemented in 0.49.0, data path unvalidated**
+`src/tmds.c`, `include/tmds.h`. The SIO range `0x1c0`-`0x1e4` was unmapped
+(the fake hart-launch mailbox that used to occupy it was removed without a
+replacement), so DVI firmware read the unhandled marker instead of symbols.
+
+Implemented the register map, `CTRL` semantics, colour extraction with rotation
+and `NBITS` masking, `PEEK`-versus-`POP` shifting, per-layer DC balance, both
+packing formats, and the 8b/10b encoder. Four bugs were found while writing the
+tests: the `NBITS` mask shifted by the wrong amount, the control symbol table had
+`C1` as `0x2AB` instead of `0x0AB` (an invalid symbol) with lane 1's symbols
+transposed, decoded symbols were being discarded by the SIO read fallthrough,
+and the `DOUBLE_L*` lane index stepped by 4 instead of 8 (`PEEK` and `POP`
+alternate every 4 bytes) so it indexed past the end of the symbol arrays. The
+last of those was found only by AddressSanitizer on riscv64, which is a good
+argument for running the sanitizer build routinely rather than on the ARM host.
+
+**Open risk:** the datasheet does not specify the symbol patterns, so they come
+from the DVI specification, and the data-symbol path has never been checked
+against a reference decoder or a real DVI link. The control symbols, register
+semantics, packing and rotation are tested; the encoded data symbols are not.
+
 ### RP2350 DMA interrupt lines — **fixed in 0.48.9**
 `src/dma.c`, `include/dma.h`, `src/nvic.c`. RP2350 has four DMA interrupt lines
 (`INTE0`-`INTE3` at `0x404`/`0x414`/`0x424`/`0x434`); RP2040 has two. Lines 2

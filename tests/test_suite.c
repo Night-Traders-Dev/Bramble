@@ -6477,6 +6477,185 @@ TEST(test_vfp_high_doubles_do_not_clobber_low_ones) {
     PASS();
 }
 
+/* CTRL's NBITS fields are encoded 0-7 meaning 1-8 valid bits, so a full byte
+ * per lane needs all three fields set to 7. CTRL == 0 means a single valid bit. */
+#define TMDS_NBITS8 \
+    ((7u << TMDS_CTRL_NBITS_SHIFT(0)) | (7u << TMDS_CTRL_NBITS_SHIFT(1)) | \
+     (7u << TMDS_CTRL_NBITS_SHIFT(2)))
+
+/* The RP2350 TMDS encoder occupies SIO 0x1c0-0x1e4. That range was unmapped --
+ * the fake hart-launch mailbox that used to sit there was removed and nothing
+ * replaced it -- so firmware using the DVI encoder read the unhandled marker. */
+TEST(test_tmds_register_map_and_control_symbols) {
+    tmds_state_t st;
+    tmds_init(&st);
+
+    /* CTRL is read/write; CLEAR_BALANCE is self-clearing. */
+    uint32_t ctrl = 0;
+    ASSERT_TRUE(tmds_write(&st, TMDS_CTRL, 0x0000001Fu) == 1, "CTRL must write");
+    ASSERT_TRUE(tmds_read(&st, TMDS_CTRL, &ctrl) == 1, "CTRL must read");
+    ASSERT_EQ(0x1Fu, ctrl, "CTRL bits must read back");
+    tmds_write(&st, TMDS_CTRL, 0x10000000u);            /* CLEAR_BALANCE */
+    tmds_read(&st, TMDS_CTRL, &ctrl);
+    ASSERT_EQ(0, ctrl, "CLEAR_BALANCE must be self-clearing");
+
+    /* WDATA is write-only. */
+    tmds_write(&st, TMDS_WDATA, 0x1234u);
+    ASSERT_TRUE(tmds_read(&st, TMDS_WDATA, &ctrl) == 1, "WDATA must be mapped");
+    ASSERT_EQ(0, ctrl, "WDATA is write-only");
+
+    /* All-black and all-white select the fixed control symbols, which the DVI
+     * specification pins exactly and which no disparity affects. */
+    tmds_write(&st, TMDS_CTRL, TMDS_NBITS8);              /* no rotate, 8 bits */
+    tmds_write(&st, TMDS_WDATA, 0x0000u);
+    uint32_t peek;
+    tmds_read(&st, TMDS_PEEK_SINGLE, &peek);
+    /* Without INTERLEAVE the three symbols are contiguous, lane 0 at bit 0. */
+    ASSERT_EQ(0x354u, peek & 0x3FFu, "lane 0 of 0x0000 must be control C0");
+    ASSERT_EQ(0x0ABu, (peek >> 10) & 0x3FFu, "lane 1 of 0x0000 must be control C1");
+    ASSERT_EQ(0x0A4u, (peek >> 20) & 0x3FFu, "lane 2 of 0x0000 must be control C2");
+
+    tmds_write(&st, TMDS_WDATA, 0xFFFFu);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &peek);
+    ASSERT_EQ(0x0ABu, peek & 0x3FFu, "lane 0 of 0xffff must be control C1");
+    ASSERT_EQ(0x354u, (peek >> 10) & 0x3FFu, "lane 1 of 0xffff must be control C0");
+    ASSERT_EQ(0x0A4u, (peek >> 20) & 0x3FFu, "lane 2 of 0xffff must be control C2");
+    PASS();
+}
+
+/* PEEK advances the DC balance but does not shift the colour register;
+ * POP does both. */
+TEST(test_tmds_peek_does_not_shift_but_pop_does) {
+    tmds_state_t st;
+    uint32_t a, b;
+
+    tmds_init(&st);
+    tmds_write(&st, TMDS_CTRL, TMDS_NBITS8);
+    tmds_write(&st, TMDS_WDATA, 0x1234u);
+
+    /* With PIX_SHIFT = 0 (no shift), POP and PEEK must agree. */
+    tmds_read(&st, TMDS_POP_SINGLE, &a);
+    tmds_write(&st, TMDS_WDATA, 0x1234u);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &b);
+    ASSERT_EQ(a, b, "with PIX_SHIFT=0, POP and PEEK must return the same word");
+
+    /* PIX_SHIFT=1 shifts by one bit per POP. */
+    tmds_init(&st);
+    tmds_write(&st, TMDS_CTRL, TMDS_NBITS8 | (1u << TMDS_CTRL_PIX_SHIFT_SHIFT));
+    tmds_write(&st, TMDS_WDATA, 0x0001u);        /* 0x0001 -> 0x0002 -> 0x0004 */
+    tmds_read(&st, TMDS_POP_SINGLE, &a);         /* encodes 0x0001 */
+    tmds_write(&st, TMDS_CTRL, 0);
+    tmds_write(&st, TMDS_WDATA, 0x0002u);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &b);
+    ASSERT_EQ(a, b, "one POP with PIX_SHIFT=1 must advance the colour by one bit");
+
+    /* PEEK must leave the colour register alone, so repeated PEEKs of a
+     * control symbol are identical. */
+    tmds_init(&st);
+    tmds_write(&st, TMDS_CTRL, TMDS_NBITS8);
+    tmds_write(&st, TMDS_WDATA, 0x0000u);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &a);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &b);
+    ASSERT_EQ(a, b, "PEEK must not shift the colour register");
+    PASS();
+}
+
+/* INTERLEAVE repacks the same three symbols differently: 5 chunks of
+ * 3 lanes x 2 bits rather than three contiguous 10-bit fields. */
+TEST(test_tmds_interleave_packing) {
+    tmds_state_t st;
+    uint32_t plain, interleaved;
+
+    tmds_init(&st);
+    tmds_write(&st, TMDS_CTRL, TMDS_NBITS8);
+    tmds_write(&st, TMDS_WDATA, 0x0000u);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &plain);
+
+    tmds_init(&st);
+    tmds_write(&st, TMDS_CTRL, TMDS_NBITS8 | TMDS_CTRL_INTERLEAVE);
+    tmds_write(&st, TMDS_WDATA, 0x0000u);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &interleaved);
+
+    ASSERT_TRUE(plain != interleaved, "INTERLEAVE must change the packing");
+
+    /* Unpack both and confirm the same three symbols are present. */
+    uint16_t p[3];
+    for (unsigned l = 0; l < 3u; l++)
+        p[l] = (uint16_t)((plain >> (10u * l)) & 0x3FFu);
+    for (unsigned bit = 0; bit < 10u; bit++) {
+        for (unsigned l = 0; l < 3u; l++) {
+            unsigned chunk = bit / 2u, slot = bit % 2u;
+            unsigned pos = chunk * 6u + l * 2u + slot;
+            uint16_t got = (uint16_t)(((interleaved >> pos) & 1u) << bit);
+            ASSERT_EQ(p[l] & (1u << bit), got,
+                      "interleaved bit must land in the same symbol position");
+        }
+    }
+    PASS();
+}
+
+/* ROT brings the wanted lane colour into the top of the byte. Datasheet
+ * example: in RGB565 red is bits 15:11, so right-rotate by 8 to align. */
+TEST(test_tmds_lane_rotation) {
+    tmds_state_t st;
+    uint32_t out;
+
+    /* All lanes are 0xFF when unrotated. Rotating lane 2 by 8 brings colour
+     * bits 15:8 to the top, so feeding 0xFF00 keeps lane 2 all ones. */
+    tmds_init(&st);
+    tmds_write(&st, TMDS_CTRL, TMDS_NBITS8 | (8u << TMDS_CTRL_ROT_SHIFT(2)));
+    tmds_write(&st, TMDS_WDATA, 0xFF00u);
+    tmds_read(&st, TMDS_PEEK_SINGLE, &out);
+    ASSERT_EQ(0x0A4u, (out >> 20) & 0x3FFu,
+              "lane 2 must be control C2 after rotating 0xff00 by 8");
+    PASS();
+}
+
+/* The TMDS unit tests above call tmds_read()/tmds_write() directly, so they
+ * cannot catch the block being unreachable from the bus -- which is exactly the
+ * original defect. This goes through rv_mem_write32/rv_mem_read32, which is how
+ * firmware reaches it. */
+TEST(test_tmds_reachable_through_rv_sio_bus) {
+    rv_membus_state_t bus;
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+
+    /* CTRL must round-trip through the bus, proving the SIO decode routes the
+     * 0x1c0-0x1e4 range to the encoder rather than falling through. */
+    uint32_t ctrl = TMDS_NBITS8;
+    rv_mem_write32(&bus, RP2350_SIO_BASE + TMDS_CTRL, ctrl);
+    ASSERT_EQ(ctrl, rv_mem_read32(&bus, RP2350_SIO_BASE + TMDS_CTRL),
+              "TMDS_CTRL must be reachable through the RV SIO bus");
+
+    /* A black pixel written through WDATA must read back as the control
+     * symbols, not the unhandled marker (0xDEAD____) this range used to give. */
+    rv_mem_write32(&bus, RP2350_SIO_BASE + TMDS_WDATA, 0x0000u);
+    uint32_t peek = rv_mem_read32(&bus, RP2350_SIO_BASE + TMDS_PEEK_SINGLE);
+    ASSERT_TRUE((peek & 0xFFFF0000u) != 0xDEAD0000u,
+                "TMDS_PEEK_SINGLE must not return the unhandled marker");
+    ASSERT_EQ(0x354u, peek & 0x3FFu, "lane 0 must be control C0 through the bus");
+    ASSERT_EQ(0x0ABu, (peek >> 10) & 0x3FFu, "lane 1 must be control C1");
+    ASSERT_EQ(0x0A4u, (peek >> 20) & 0x3FFu, "lane 2 must be control C2");
+
+    /* All six DOUBLE registers must decode and return two 10-bit symbols.
+     * PEEK and POP alternate every 4 bytes, so the lane index must step by 8;
+     * dividing by 4 indexed past the end of the symbol arrays, which only
+     * AddressSanitizer on riscv64 caught. */
+    static const uint32_t dbl[6] = {
+        TMDS_PEEK_DOUBLE_L0, TMDS_POP_DOUBLE_L0,
+        TMDS_PEEK_DOUBLE_L1, TMDS_POP_DOUBLE_L1,
+        TMDS_PEEK_DOUBLE_L2, TMDS_POP_DOUBLE_L2,
+    };
+    for (unsigned k = 0; k < 6u; k++) {
+        uint32_t v = rv_mem_read32(&bus, RP2350_SIO_BASE + dbl[k]);
+        /* Two 10-bit symbols packed at the bottom; nothing above bit 20. */
+        ASSERT_EQ(0, v >> 20,
+                  "DOUBLE registers must return exactly two 10-bit symbols");
+        ASSERT_TRUE((v & 0x3FFu) != 0 || ((v >> 10) & 0x3FFu) != 0,
+                    "a DOUBLE register must return a non-empty symbol");
+    }
+    PASS();
+}
+
 /* RP2350 has four DMA interrupt lines (INTE0-INTE3 at 0x404..0x43c) where
  * RP2040 has two. INTE2/INTE3 did not decode at all, and only two lines were
  * signalled, so a channel could never raise DMA_IRQ_2 or DMA_IRQ_3. */
@@ -7514,6 +7693,11 @@ int main(void) {
     RUN_TEST(test_tapif_read_write_against_a_real_interface);
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
+    RUN_TEST(test_tmds_register_map_and_control_symbols);
+    RUN_TEST(test_tmds_peek_does_not_shift_but_pop_does);
+    RUN_TEST(test_tmds_interleave_packing);
+    RUN_TEST(test_tmds_lane_rotation);
+    RUN_TEST(test_tmds_reachable_through_rv_sio_bus);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);
     RUN_TEST(test_dma_extra_irqs_are_rp2350_only);
     RUN_TEST(test_vfp_vmov_both_directions);

@@ -1,5 +1,62 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.0] - 2026-10-01
+
+### Added
+
+- **RP2350 TMDS encoder.** The SIO block contains a DVI-compatible TMDS encoder
+  at `0x1c0`-`0x1e4`: `TMDS_CTRL`, `TMDS_WDATA`, `PEEK`/`POP` for single pixels
+  and `PEEK`/`POP_DOUBLE_L0`-`L2`. That range was entirely unmapped -- the fake
+  hart-launch mailbox that used to occupy it had been removed and nothing
+  replaced it -- so firmware using the DVI encoder read zeros (and the
+  `0xDEAD____` unhandled marker) instead of symbols.
+
+  Implemented: the register map, `CTRL` semantics (self-clearing `CLEAR_BALANCE`,
+  `PIX_SHIFT`, `PIX2_NOSHIFT`, `INTERLEAVE`, per-lane `NBITS` and `ROT`), colour
+  extraction with rotation and bit masking, `PEEK`-versus-`POP` shifting, DC
+  balance state carried per encoder layer, both packing formats, and the 8b/10b
+  encoder.
+
+### Fixed
+
+- **The NBITS mask zeroed the wrong bits.** Masking with `0xFF00 << (8 - nbits)`
+  is wrong: at `nbits == 1` that shift is 7, which moves the mask to `0x8000` and
+  leaves the low seven bits of the encoder input unconstrained instead of zeroed.
+  Now masks with `0xFFFF << (16 - nbits)`.
+- **The control symbol table was wrong.** `C1` is `0x0AB` (`0010101011`), not
+  `0x2AB`, and lanes 1's control symbols are swapped relative to lane 0's.
+  `0x2AB` is `1010101011`, which is not a valid TMDS symbol at all.
+- **The `DOUBLE_L*` lane index ran off the end of the symbol arrays.** `PEEK` and
+  `POP` alternate every 4 bytes (`PEEK_L0`, `POP_L0`, `PEEK_L1`, `POP_L1`, ...),
+  so the lane index is the offset divided by 8, not 4. Dividing by 4 yields 0, 2
+  and 4 and indexes past the end of the three-element symbol arrays. Found by
+  AddressSanitizer on riscv64; the plain build did not catch it.
+- **Decoded TMDS symbols were discarded on read.** `rv_sio_read()` only
+  early-returned for four specific SIO offsets; everything else fell through to
+  the shared RP2040 SIO model, which has no TMDS block and returns 0. The symbol
+  was computed and then thrown away.
+
+### Verification
+
+- riscv64 ASan/UBSan: 387/387 tests and all eight firmware images, zero findings.
+- x86_64 ASan/UBSan: 387/387 tests and all eight firmware images, zero findings.
+- x86_64 plain build: zero warnings on a clean rebuild.
+
+### Notes
+
+The RP2350 datasheet documents the TMDS register interface but **not** the
+symbol bit patterns -- those come from the DVI specification -- so the control
+symbols and the 8b/10b data path are written from the standard.
+
+**The data-symbol path has not been validated against a reference TMDS decoder
+or real DVI hardware.** What the tests do pin: the register map, `CTRL`
+semantics, `PEEK` not shifting while `POP` does, both packing formats, the
+control symbols for `0x00`/`0xFF`, and lane rotation. Anyone relying on actual
+video output should decode the emulator's symbol stream with a known-good TMDS
+decoder before trusting it.
+
+---
+
 ## [0.48.9] - 2026-10-01
 
 ### Fixed
