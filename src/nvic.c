@@ -549,6 +549,8 @@ uint32_t nvic_irq_number(uint32_t irq_rp2040) {
     case IRQ_PIO1_IRQ_1:     return RP2350_IRQ_PIO1_1;
     case IRQ_DMA_IRQ_0:      return RP2350_IRQ_DMA_0;
     case IRQ_DMA_IRQ_1:      return RP2350_IRQ_DMA_1;
+    case IRQ_DMA_IRQ_2:      return RP2350_IRQ_DMA_2;
+    case IRQ_DMA_IRQ_3:      return RP2350_IRQ_DMA_3;
     case IRQ_IO_IRQ_BANK0:   return RP2350_IRQ_IO_BANK0;
     case IRQ_IO_IRQ_QSPI:    return RP2350_IRQ_IO_QSPI;
     case IRQ_SIO_IRQ_PROC0:  return RP2350_IRQ_SIO_FIFO;

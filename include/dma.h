@@ -104,13 +104,21 @@
  * ======================================================================== */
 
 #define DMA_INTR                0x400
+/* RP2350 has four DMA interrupt lines at a 0x10 stride. RP2040 has only two.
+ * The offsets are the same on both chips; INTE2/INTE3 simply do not respond on
+ * RP2040, which has no DMA_IRQ_2/3. */
 #define DMA_INTE0               0x404
 #define DMA_INTF0               0x408
 #define DMA_INTS0               0x40C
-/* 0x410 reserved */
 #define DMA_INTE1               0x414
 #define DMA_INTF1               0x418
 #define DMA_INTS1               0x41C
+#define DMA_INTE2               0x424
+#define DMA_INTF2               0x428
+#define DMA_INTS2               0x42C
+#define DMA_INTE3               0x434
+#define DMA_INTF3               0x438
+#define DMA_INTS3               0x43C
 #define DMA_TIMER0              0x420
 #define DMA_TIMER1              0x424
 #define DMA_TIMER2              0x428
@@ -153,6 +161,10 @@ typedef struct {
     uint32_t inte0;         /* Interrupt enable for IRQ 0 */
     uint32_t intf0;         /* Interrupt force for IRQ 0 */
     uint32_t inte1;         /* Interrupt enable for IRQ 1 */
+    uint32_t inte2;         /* Interrupt enable for IRQ 2 (RP2350) */
+    uint32_t intf2;         /* Force interrupts on IRQ 2 (RP2350) */
+    uint32_t inte3;         /* Interrupt enable for IRQ 3 (RP2350) */
+    uint32_t intf3;         /* Force interrupts on IRQ 3 (RP2350) */
     uint32_t intf1;         /* Interrupt force for IRQ 1 */
 
     /* Misc */

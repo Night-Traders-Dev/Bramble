@@ -73,6 +73,13 @@
 #define IRQ_I2C1_IRQ                24     /* I2C1_IRQ */
 #define IRQ_RTC_IRQ                 25     /* RTC_IRQ (RP2040) */
 
+/* RP2350 adds DMA_IRQ_2 and DMA_IRQ_3 (datasheet interrupt table 10-13). The
+ * RP2040 Cortex-M0+ numbering above has no slots for them, so they are given
+ * numbers past the end of the RP2040 range: RP2040 has NUM_EXTERNAL_IRQS == 26,
+ * so 26 and 27 are rejected there and only reachable on RP2350. */
+#define IRQ_DMA_IRQ_2               26
+#define IRQ_DMA_IRQ_3               27
+
 /* ========================================================================
  * RP2350 interrupt vector table (datasheet Table 95)
  *

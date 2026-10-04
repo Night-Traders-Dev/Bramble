@@ -136,11 +136,18 @@ static void dma_do_transfer(int ch_idx) {
     /* Set interrupt if not IRQ_QUIET */
     if (!(c->ctrl & dma_ctrl_irq_quiet_bit())) {
         dma_state.intr |= (1u << ch_idx);
-        /* Signal NVIC if enabled in INTE0 or INTE1 */
+        /* Signal whichever interrupt lines are enabled. RP2350 has four
+         * (INTE0-INTE3); RP2040 has two. INTE2/INTE3 are only reachable on
+         * RP2350 because their internal IRQ numbers sit past NUM_EXTERNAL_IRQS
+         * for RP2040, where nvic_irq_valid() rejects them. */
         if (dma_state.inte0 & (1u << ch_idx))
             nvic_signal_irq(IRQ_DMA_IRQ_0);
         if (dma_state.inte1 & (1u << ch_idx))
             nvic_signal_irq(IRQ_DMA_IRQ_1);
+        if (dma_state.inte2 & (1u << ch_idx))
+            nvic_signal_irq(IRQ_DMA_IRQ_2);
+        if (dma_state.inte3 & (1u << ch_idx))
+            nvic_signal_irq(IRQ_DMA_IRQ_3);
     }
 
     /* Chain: if CHAIN_TO != self, trigger the chained channel */
@@ -245,6 +252,13 @@ uint32_t dma_read32(uint32_t offset) {
     case DMA_INTE1: return dma_state.inte1;
     case DMA_INTF1: return dma_state.intf1;
     case DMA_INTS1: return (dma_state.intr | dma_state.intf1) & dma_state.inte1;
+    /* INTE2/INTF2/INTS2 and INTE3/... exist on RP2350 only. */
+    case DMA_INTE2: return dma_state.inte2;
+    case DMA_INTF2: return dma_state.intf2;
+    case DMA_INTS2: return (dma_state.intr | dma_state.intf2) & dma_state.inte2;
+    case DMA_INTE3: return dma_state.inte3;
+    case DMA_INTF3: return dma_state.intf3;
+    case DMA_INTS3: return (dma_state.intr | dma_state.intf3) & dma_state.inte3;
     default:
         break;
     }
@@ -307,6 +321,18 @@ void dma_write32(uint32_t offset, uint32_t val) {
         return;
     case DMA_INTF1:
         dma_state.intf1 = val & ((1u << nchan) - 1);
+        return;
+    case DMA_INTE2:
+        dma_state.inte2 = val & ((1u << nchan) - 1);
+        return;
+    case DMA_INTF2:
+        dma_state.intf2 = val & ((1u << nchan) - 1);
+        return;
+    case DMA_INTE3:
+        dma_state.inte3 = val & ((1u << nchan) - 1);
+        return;
+    case DMA_INTF3:
+        dma_state.intf3 = val & ((1u << nchan) - 1);
         return;
     default:
         break;

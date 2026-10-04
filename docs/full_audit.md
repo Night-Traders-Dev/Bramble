@@ -474,11 +474,8 @@ Two tests cover it, one pinning RP2350 and one pinning RP2040 so the per-chip
 selection cannot regress the original target.
 
 ### F1/F4 — remaining per-chip register differences
-RP2350 DMA has 4 IRQ lines but 2 are implemented. It is a self-contained
-per-chip variant of an existing model and should be done with firmware to test
-against, not in one pass.
-
-The PIO and WATCHDOG entries are now done — see below.
+Closed. The PIO interrupt registers, the WATCHDOG map, and the DMA interrupt lines
+were each per-chip variants of an existing model; all are now done — see below.
 
 ### VFP register file — **fixed in 0.48.7**
 `src/thumb32.c`. Found by AddressSanitizer on riscv64.
@@ -491,6 +488,17 @@ The PIO and WATCHDOG entries are now done — see below.
   double index to 4 bits is both the aliasing rule and what keeps it in bounds.
 
 Register-count assertions now turn a wrong-sized file into a build failure.
+
+### RP2350 DMA interrupt lines — **fixed in 0.48.9**
+`src/dma.c`, `include/dma.h`, `src/nvic.c`. RP2350 has four DMA interrupt lines
+(`INTE0`-`INTE3` at `0x404`/`0x414`/`0x424`/`0x434`); RP2040 has two. Lines 2
+and 3 were not decoded and were never signalled, so a channel could not raise
+them.
+
+The extra lines take internal IRQ numbers 26 and 27, past the end of the RP2040
+range, because the RP2040 numbering has no free slot there (`IO_IRQ_BANK0` and
+`IO_IRQ_QSPI` occupy 13 and 14). They map to the datasheet's `DMA_IRQ_2`/`3`
+(12 and 13) and are rejected on RP2040 by `nvic_irq_valid()`.
 
 ### VMOV GPR<->VFP — **fixed in 0.48.8**
 `src/thumb32.c`. Recorded as broken in 0.48.7; closed against ARM ARM A7.7.243

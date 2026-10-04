@@ -1,5 +1,28 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.48.9] - 2026-10-01
+
+### Fixed
+
+- **RP2350 `DMA_IRQ_2` and `DMA_IRQ_3` could not be raised at all.** The chip has
+  four DMA interrupt lines (`INTE0`-`INTE3` at `0x404`, `0x414`, `0x424`, `0x434`),
+  where RP2040 has two. `INTE2`/`INTF2`/`INTS2` and `INTE3`/`INTF3`/`INTS3` were not
+  decoded, and transfer completion only signalled the first two lines -- so a
+  channel had no way to reach lines 2 and 3.
+
+The two extra lines need IRQ numbers past the end of the RP2040 Cortex-M0+ range
+(`NUM_EXTERNAL_IRQS == 26`, indices 0-25), where slots 26 and 27 would otherwise
+collide with `IO_IRQ_BANK0` and `IO_IRQ_QSPI`. They are mapped through
+`nvic_irq_number()` to the datasheet's `DMA_IRQ_2`/`DMA_IRQ_3` (12 and 13), and
+are rejected on RP2040 because `nvic_irq_valid()` bounds them out there. The
+channel count was already 16, so channels 3-15 were reachable -- only the
+interrupt lines were missing.
+
+Two tests: one pins all four lines and their independence, one pins the per-chip
+reachability. The first fails against the previous implementation.
+
+---
+
 ## [0.48.8] - 2026-10-01
 
 ### Fixed

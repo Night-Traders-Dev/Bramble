@@ -6477,6 +6477,61 @@ TEST(test_vfp_high_doubles_do_not_clobber_low_ones) {
     PASS();
 }
 
+/* RP2350 has four DMA interrupt lines (INTE0-INTE3 at 0x404..0x43c) where
+ * RP2040 has two. INTE2/INTE3 did not decode at all, and only two lines were
+ * signalled, so a channel could never raise DMA_IRQ_2 or DMA_IRQ_3. */
+TEST(test_dma_rp2350_has_four_interrupt_lines) {
+    dma_init();
+    extern int membus_rp2350_mode;
+    membus_rp2350_mode = 1;
+
+    /* The four enable registers must be independent. */
+    dma_write32(DMA_INTE0, 0x1u);
+    dma_write32(DMA_INTE1, 0x2u);
+    dma_write32(DMA_INTE2, 0x4u);
+    dma_write32(DMA_INTE3, 0x8u);
+
+    ASSERT_EQ(0x1u, dma_read32(DMA_INTE0), "INTE0 must be at 0x404");
+    ASSERT_EQ(0x2u, dma_read32(DMA_INTE1), "INTE1 must be at 0x414");
+    ASSERT_EQ(0x4u, dma_read32(DMA_INTE2), "INTE2 must be at 0x424");
+    ASSERT_EQ(0x8u, dma_read32(DMA_INTE3), "INTE3 must be at 0x434");
+
+    /* Forcing on one line must not set the others. */
+    dma_write32(DMA_INTF2, 0x4u);
+    ASSERT_EQ(0x4u, dma_read32(DMA_INTF2), "INTF2 must be at 0x428");
+    ASSERT_EQ(0x4u, dma_read32(DMA_INTS2),
+              "a forced IRQ on line 2 must appear in INTS2");
+    ASSERT_EQ(0, dma_read32(DMA_INTS0), "line 2 must not disturb line 0");
+    ASSERT_EQ(0, dma_read32(DMA_INTS1), "line 2 must not disturb line 1");
+    ASSERT_EQ(0, dma_read32(DMA_INTS3), "line 2 must not disturb line 3");
+
+    /* A forced IRQ whose line is not enabled must not show in status. */
+    dma_write32(DMA_INTF3, 0x1u);   /* channel 0, but INTE3 only has bit 3 */
+    ASSERT_EQ(0, dma_read32(DMA_INTS3), "a forced but disabled IRQ must not set");
+
+    /* Force registers must not alias the enable registers. */
+    ASSERT_EQ(0x8u, dma_read32(DMA_INTE3),
+              "writing INTF2 must not clobber INTE3");
+    PASS();
+}
+
+/* The extra lines are RP2350-only; on RP2040 their internal IRQ numbers must be
+ * rejected rather than landing on an unrelated vector. */
+TEST(test_dma_extra_irqs_are_rp2350_only) {
+    extern int membus_rp2350_mode;
+    ASSERT_TRUE(IRQ_DMA_IRQ_2 >= NUM_EXTERNAL_IRQS,
+                "DMA_IRQ_2 must sit past the RP2040 IRQ range");
+    ASSERT_TRUE(IRQ_DMA_IRQ_3 >= NUM_EXTERNAL_IRQS,
+                "DMA_IRQ_3 must sit past the RP2040 IRQ range");
+
+    membus_rp2350_mode = 0;
+    ASSERT_EQ(26, nvic_num_external_irqs(), "RP2040 has 26 external IRQs");
+    membus_rp2350_mode = 1;
+    ASSERT_TRUE(nvic_num_external_irqs() > IRQ_DMA_IRQ_3,
+                "RP2350 must be able to reach the extra DMA lines");
+    PASS();
+}
+
 /* VMOV between an Arm core register and a single-precision register,
  * ARM ARM A7.7.243 encoding T1:
  *
@@ -7459,6 +7514,8 @@ int main(void) {
     RUN_TEST(test_tapif_read_write_against_a_real_interface);
     RUN_TEST(test_thumb2_vldr_vstr_double_roundtrip);
     RUN_TEST(test_thumb2_vldr_vstr_single_roundtrip);
+    RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);
+    RUN_TEST(test_dma_extra_irqs_are_rp2350_only);
     RUN_TEST(test_vfp_vmov_both_directions);
     RUN_TEST(test_vfp_vmov_reaches_all_single_registers);
     RUN_TEST(test_vfp_vmov_reaches_all_single_registers);
