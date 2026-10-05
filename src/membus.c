@@ -80,6 +80,8 @@ int membus_rv_delegate = 0;
 #include "rp2350_rv/rp2350_periph.h"
 #include "rp2350_rv/rp2350_memmap.h"
 void *membus_rp2350_periph = NULL;
+
+static inline int sio_span(void);
 uint8_t *rp2350_sram_ptr = NULL;
 
 /* Helper to cast the void* to typed pointer */
@@ -269,7 +271,7 @@ static int gpio_bus_match(uint32_t addr) {
         if (addr >= iob + al && addr < iob + al + io_span) return 1;
         if (addr >= padb + al && addr < padb + al + pad_size) return 1;
     }
-    return (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100);
+    return (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + (uint32_t)sio_span());
 }
 
 static uint32_t pads_qspi_read(uint32_t offset) {
@@ -965,7 +967,23 @@ static uint32_t sio_fifo_status(int core_id) {
     return status;
 }
 
+
+/* SIO decode window. RP2040 stops at 0x100; RP2350's block is 0x200 bytes and
+ * holds the machine timer, the spinlocks and the TMDS encoder above that mark.
+ * Three separate call sites hard-coded 0x100, which is why TMDS at 0x1c0 was
+ * reachable only from the Hazard3 cores. */
+static inline int sio_span(void) {
+    return (membus_rp2350_mode && !membus_rv_delegate) ? 0x200 : 0x100;
+}
+
 static void sio_write32(uint32_t offset, uint32_t val) {
+    /* RP2350 TMDS encoder -- see the read side in sio_read32(). */
+    if (membus_rp2350_mode && offset >= TMDS_CTRL &&
+        offset <= TMDS_POP_DOUBLE_L2 && get_rp2350_periph()) {
+        tmds_write(&get_rp2350_periph()->tmds, offset, val);
+        return;
+    }
+
     int core_id = sio_current_core();
     int other_core = (core_id == CORE0) ? CORE1 : CORE0;
 
@@ -1049,6 +1067,19 @@ static uint32_t sio_read32(uint32_t offset) {
             return gpio_hi_read32(offset);
         }
         return gpio_read32(SIO_BASE + offset);
+    }
+
+    /* RP2350 TMDS encoder at SIO 0x1c0-0x1e4.
+     *
+     * This was reachable only from the Hazard3 cores, because the decoder lived
+     * in the RV SIO path. TMDS is a shared SIO peripheral, so the Arm cores read
+     * and write exactly the same registers -- and now share the same state, so
+     * a WDATA write from one core is visible to a PEEK from the other. */
+    if (membus_rp2350_mode && offset >= TMDS_CTRL &&
+        offset <= TMDS_POP_DOUBLE_L2 && get_rp2350_periph()) {
+        uint32_t tmds_val;
+        if (tmds_read(&get_rp2350_periph()->tmds, offset, &tmds_val))
+            return tmds_val;
     }
 
     switch (offset) {
@@ -1189,7 +1220,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
     }
 
     /* SIO core-local registers */
-    if (addr >= SIO_BASE && addr < SIO_BASE + 0x100) {
+    if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
         sio_write32(addr - SIO_BASE, val);
         return;
     }
@@ -1662,7 +1693,7 @@ uint32_t mem_read32(uint32_t addr) {
     }
 
     /* SIO core-local registers */
-    if (addr >= SIO_BASE && addr < SIO_BASE + 0x100) {
+    if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
         return sio_read32(addr - SIO_BASE);
     }
 

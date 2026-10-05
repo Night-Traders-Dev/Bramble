@@ -16,6 +16,7 @@
  * ======================================================================== */
 
 void rp2350_periph_init(rp2350_periph_state_t *state, int for_arm) {
+    tmds_init(&state->tmds);
     /* ARM: bx lr (0x4770) in Thumb. RISC-V: jalr x0, 0(ra) (0x00008067) */
     static const uint32_t bootram_stub_arm = 0x00004770u;
     static const uint32_t bootram_stub_rv  = 0x00008067u;

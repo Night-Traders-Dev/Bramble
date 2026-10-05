@@ -79,7 +79,6 @@ void rv_membus_init(rv_membus_state_t *bus, uint8_t *flash, uint32_t flash_size,
                     uint32_t cycles_per_us) {
     memset(bus->sram, 0, RV_SRAM_SIZE);
     memset(bus->rom, 0, sizeof(bus->rom));
-    tmds_init(&bus->tmds);
     bus->flash = flash;
     bus->flash_size = flash_size;
     bus->rom_size = 32 * 1024;
@@ -159,7 +158,7 @@ static uint32_t rv_sio_read(rv_membus_state_t *bus, uint32_t offset) {
      * the DVI encoder read the unhandled marker instead of symbols. */
     {
         uint32_t v;
-        if (tmds_read(&bus->tmds, offset, &v))
+        if (tmds_read(&bus->periph.tmds, offset, &v))
             return v;
     }
 
@@ -222,7 +221,7 @@ static int rv_sio_write(rv_membus_state_t *bus, uint32_t offset, uint32_t val) {
     }
 
     /* TMDS encoder — see the read side. */
-    if (tmds_write(&bus->tmds, offset, val))
+    if (tmds_write(&bus->periph.tmds, offset, val))
         return 1;
 
     return 0;  /* Not handled — fall through to RP2040 SIO */

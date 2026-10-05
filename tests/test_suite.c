@@ -6656,6 +6656,52 @@ TEST(test_tmds_reachable_through_rv_sio_bus) {
     PASS();
 }
 
+/* The RP2350 TMDS encoder lives in the shared SIO block, so the Arm cores must
+ * reach it. The decoder was originally in the RV SIO path only, which made
+ * TMDS unreachable from Arm entirely -- and it had its own private state copy,
+ * so the two cores would not have seen each other's writes even if both could
+ * decode it. */
+TEST(test_tmds_reachable_from_arm_and_shared_with_rv) {
+    extern int membus_rp2350_mode;
+    extern void *membus_rp2350_periph;
+
+    /* Publish a shared RP2350 peripheral block the same way main.c does for the
+     * M33. The Arm SIO path resolves TMDS through this pointer. */
+    static rp2350_periph_state_t shared;
+    rp2350_periph_init(&shared, 1);
+    void *saved_periph = membus_rp2350_periph;
+    int saved_mode = membus_rp2350_mode;
+    membus_rp2350_periph = &shared;
+    membus_rp2350_mode = 1;
+    reset_cpu();
+
+    uint32_t ctrl = TMDS_NBITS8;
+    mem_write32(SIO_BASE + TMDS_CTRL, ctrl);
+    ASSERT_EQ(ctrl, mem_read32(SIO_BASE + TMDS_CTRL),
+              "TMDS_CTRL must be reachable through the Arm SIO path");
+
+    /* Write a black pixel through the Arm core... */
+    mem_write32(SIO_BASE + TMDS_WDATA, 0x0000u);
+    uint32_t via_arm = mem_read32(SIO_BASE + TMDS_PEEK_SINGLE);
+    ASSERT_EQ(0x354u, via_arm & 0x3FFu, "lane 0 must be control C0 from Arm");
+    ASSERT_EQ(0x0ABu, (via_arm >> 10) & 0x3FFu, "lane 1 must be control C1");
+    ASSERT_EQ(0x0A4u, (via_arm >> 20) & 0x3FFu, "lane 2 must be control C2");
+
+    /* ...and read the same encoder state through a Hazard3 bus bound to the
+     * same block. With private per-core copies the RV read would see a zeroed
+     * WDATA and disagree. */
+    rv_membus_state_t bus;
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    bus.periph = shared;
+    uint32_t via_rv = rv_mem_read32(&bus, RP2350_SIO_BASE + TMDS_PEEK_SINGLE);
+    ASSERT_EQ(via_arm & 0x3FFu, via_rv & 0x3FFu,
+              "both cores must see the same TMDS register file");
+
+    membus_rp2350_periph = saved_periph;
+    membus_rp2350_mode = saved_mode;
+    PASS();
+}
+
 /* RP2350 has four DMA interrupt lines (INTE0-INTE3 at 0x404..0x43c) where
  * RP2040 has two. INTE2/INTE3 did not decode at all, and only two lines were
  * signalled, so a channel could never raise DMA_IRQ_2 or DMA_IRQ_3. */
@@ -7697,6 +7743,7 @@ int main(void) {
     RUN_TEST(test_tmds_peek_does_not_shift_but_pop_does);
     RUN_TEST(test_tmds_interleave_packing);
     RUN_TEST(test_tmds_lane_rotation);
+    RUN_TEST(test_tmds_reachable_from_arm_and_shared_with_rv);
     RUN_TEST(test_tmds_reachable_through_rv_sio_bus);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);
     RUN_TEST(test_dma_extra_irqs_are_rp2350_only);

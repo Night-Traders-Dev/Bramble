@@ -20,6 +20,7 @@
 #define RP2350_PERIPH_H
 
 #include <stdint.h>
+#include "tmds.h"
 
 /* ========================================================================
  * TICKS Peripheral (0x40108000)
@@ -125,6 +126,9 @@ typedef struct {
 
 typedef struct {
     rp2350_ticks_state_t ticks;
+    /* SIO TMDS encoder (DVI), 0x1c0-0x1e4. Lives in the shared block so
+     * the Arm cores reach the same registers as the Hazard3 cores. */
+    tmds_state_t tmds;
     rp2350_powman_state_t powman;
     rp2350_qmi_state_t qmi;
     rp2350_otp_state_t otp;

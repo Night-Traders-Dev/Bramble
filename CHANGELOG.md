@@ -1,5 +1,36 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.1] - 2026-10-01
+
+### Fixed
+
+- **The RP2350 TMDS encoder was unreachable from the Arm cores.** Two independent
+  defects stacked:
+  - The SIO decode window was hard-coded to `0x100` bytes in **three** separate
+    places. RP2350's SIO block is `0x200`, with the machine timer, the spinlocks
+    and the TMDS encoder above that mark, so `0x1c0`-`0x1e4` never reached any
+    decoder on the Arm path at all.
+  - The TMDS decoder itself lived only in the RV SIO path
+    (`src/rp2350_rv/rv_membus.c`), which is where it was added in 0.49.0.
+
+  TMDS is a shared SIO peripheral, so both architectures must reach it. The
+  window is now `sio_span()`, selected per chip, and the decoder is in the
+  shared `membus.c` path.
+
+- **The two cores had private TMDS state.** Even once both could decode the
+  registers, the RV bus owned a separate `tmds_state_t` from the one the Arm
+  path uses, so a `WDATA` write from one core would not have been visible to a
+  `PEEK` from the other. The state now lives in the shared
+  `rp2350_periph_state_t`, which both paths reference.
+
+### Verification
+
+- riscv64 ASan/UBSan: 388/388, zero findings
+- x86_64 ASan/UBSan: 388/388, zero findings
+- x86_64 plain build: zero warnings on a clean rebuild, all eight firmware
+
+---
+
 ## [0.49.0] - 2026-10-01
 
 ### Added

@@ -68,7 +68,6 @@ typedef struct {
 
     /* RP2350 SIO extra state */
     uint32_t gpio_hi_out;     /* GPIO pins 32-47 output */
-    tmds_state_t tmds;        /* RP2350 SIO TMDS encoder (DVI), 0x1c0-0x1e4 */
     uint32_t gpio_hi_oe;      /* GPIO pins 32-47 output enable */
     uint32_t gpio_hi_in;      /* GPIO pins 32-47 input */
 

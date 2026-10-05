@@ -489,7 +489,7 @@ were each per-chip variants of an existing model; all are now done — see below
 
 Register-count assertions now turn a wrong-sized file into a build failure.
 
-### RP2350 TMDS encoder — **implemented in 0.49.0, data path unvalidated**
+### RP2350 TMDS encoder — **fixed for Arm reachability in 0.49.1**
 `src/tmds.c`, `include/tmds.h`. The SIO range `0x1c0`-`0x1e4` was unmapped
 (the fake hart-launch mailbox that used to occupy it was removed without a
 replacement), so DVI firmware read the unhandled marker instead of symbols.
@@ -509,6 +509,14 @@ argument for running the sanitizer build routinely rather than on the ARM host.
 from the DVI specification, and the data-symbol path has never been checked
 against a reference decoder or a real DVI link. The control symbols, register
 semantics, packing and rotation are tested; the encoded data symbols are not.
+
+### TMDS reachability — **fixed in 0.49.1**
+Adding TMDS in 0.49.0 put the decoder in the RV SIO path only, and the Arm SIO
+decode window was hard-coded to `0x100` bytes in three places while RP2350's
+block is `0x200`. So the encoder was reachable only from Hazard3, and the two
+cores would not have shared register state even if both could decode it. The
+decoder moved to the shared `membus.c` path, the state into
+`rp2350_periph_state_t`, and the window is now `sio_span()`.
 
 ### RP2350 DMA interrupt lines — **fixed in 0.48.9**
 `src/dma.c`, `include/dma.h`, `src/nvic.c`. RP2350 has four DMA interrupt lines
