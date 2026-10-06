@@ -29,4 +29,7 @@ int tapif_write(int fd, const uint8_t *buf, int len);
  * Safe to call often; used when guest radio is asleep but TFTP still runs. */
 void tapif_service(int fd);
 
+/* Defined in src/tapif.c. */
+void tapif_tftp_transfer_done(void);
+
 #endif /* TAPIF_H */

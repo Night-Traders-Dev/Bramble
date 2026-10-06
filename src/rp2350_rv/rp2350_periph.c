@@ -11,6 +11,10 @@
 #include "nvic.h"
 #include "rp2350_rv/rp2350_memmap.h"
 
+/* Hoisted to file scope. */
+extern uint32_t timer_read32(uint32_t addr);
+extern void timer_write32(uint32_t addr, uint32_t val);
+
 /* ========================================================================
  * Initialization
  * ======================================================================== */
@@ -429,7 +433,6 @@ uint32_t rp2350_periph_read32(rp2350_periph_state_t *state, uint32_t addr) {
 
     /* TIMER0 at RP2350 address — redirect to RP2040 timer via offset translation */
     if (base >= RP2350_TIMER0_BASE && base < RP2350_TIMER0_BASE + 0x100) {
-        extern uint32_t timer_read32(uint32_t addr);
         return timer_read32(0x40054000 + (base - RP2350_TIMER0_BASE));
     }
 
@@ -495,7 +498,6 @@ void rp2350_periph_write32(rp2350_periph_state_t *state, uint32_t addr, uint32_t
 
     /* TIMER0 at RP2350 address — redirect */
     if (base >= RP2350_TIMER0_BASE && base < RP2350_TIMER0_BASE + 0x100) {
-        extern void timer_write32(uint32_t addr, uint32_t val);
         timer_write32(0x40054000 + (base - RP2350_TIMER0_BASE), val);
         return;
     }

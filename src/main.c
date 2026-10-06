@@ -446,7 +446,7 @@ int main(int argc, char **argv) {
     char *emmc_path = NULL;
     int emmc_spi = 0;
     size_t emmc_size = EMMC_DEFAULT_SIZE;
-    char *tap_name = NULL;
+    const char *tap_name = NULL;
     int jit_mode = 0;
     int semihosting_mode = 0;
     char *coverage_path = NULL;
@@ -772,7 +772,7 @@ int main(int argc, char **argv) {
 
             /* Build argv for sudo re-exec:
              * sudo -E BRAMBLE_ESCALATED=1 /path/to/bramble [original args...] */
-            char **sudo_argv = calloc((size_t)argc + 4, sizeof(char *));
+            const char **sudo_argv = calloc((size_t)argc + 4, sizeof(char *));
             if (!sudo_argv) {
                 fprintf(stderr, "[Error] Failed to allocate memory for sudo re-exec\n");
                 return EXIT_FAILURE;
@@ -799,7 +799,7 @@ int main(int argc, char **argv) {
             }
             sudo_argv[si] = NULL;
 
-            execvp("sudo", sudo_argv);
+            execvp("sudo", (char *const *)sudo_argv);
 
             /* execvp only returns on failure */
             fprintf(stderr, "[Error] Failed to execute sudo: %s\n", strerror(errno));

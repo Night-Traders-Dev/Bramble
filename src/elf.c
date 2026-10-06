@@ -11,6 +11,10 @@
 #include <limits.h>
 #include "emulator.h"
 
+/* Hoisted to file scope: these were declared inside function bodies,
+ * which is legal C but needlessly re-declares them per function. */
+extern int detected_arch;
+
 /* ELF32 Header */
 typedef struct {
     uint8_t  e_ident[16];    /* Magic number and other info */
@@ -135,7 +139,6 @@ int load_elf(const char *filename) {
     }
 
     /* Set detected architecture for auto-detection */
-    extern int detected_arch;
     if (ehdr.e_machine == EM_RISCV) {
         detected_arch = FW_ARCH_RV32;
         fprintf(stderr, "[ELF] Valid ELF32 RISC-V binary\n");

@@ -5,6 +5,13 @@
 #include "corepool.h"
 #include "devtools.h"
 
+/* Hoisted to file scope. */
+extern void clocks_note_soft_reset(void);
+
+/* Hoisted to file scope: these were declared inside function bodies,
+ * which is legal C but needlessly re-declares them per function. */
+extern int watchdog_reboot_pending;
+
 uint32_t nvic_num_external_irqs(void) {
     return membus_rp2350_mode ? NUM_EXTERNAL_IRQS_RP2350 : NUM_EXTERNAL_IRQS;
 }
@@ -508,12 +515,10 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
         case SCB_AIRCR:
             if ((val >> 16) == 0x05FA) {
                 if (val & (1u << 2)) {
-                    extern int watchdog_reboot_pending;
                     watchdog_reboot_pending = 1;
                     /* SYSRESETREQ is a software reset, so it must show up in
                      * WATCHDOG REASON rather than being indistinguishable from
                      * a power-on reset. */
-                    extern void clocks_note_soft_reset(void);
                     clocks_note_soft_reset();
                 }
             }

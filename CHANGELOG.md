@@ -1,5 +1,53 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.4] - 2026-10-01
+
+### Fixed
+
+Warning cleanup. The project's own flags (`-Wall -Wextra -pedantic`) were already
+clean; these came from building with a stricter set (`-Wshadow`,
+`-Wredundant-decls`, `-Wnested-externs`, `-Wmissing-prototypes`,
+`-Wdiscarded-qualifiers`, `-Wformat=2`, `-Wundef`, `-Wcast-align`,
+`-Wwrite-strings`, `-Wpointer-arith`), which reported **476** warnings.
+
+- **`include/emulator.h` and `include/nvic.h` declared things twice.** Six
+  duplicate `extern` variables and function prototypes, including
+  `membus_rp2350_periph` which appeared at both line 130 and line 265. This
+  accounted for 364 of the 476 on its own.
+- **22 `extern` declarations sat inside function bodies.** Legal C, but each
+  re-declared the symbol on every call path. Hoisted to file scope.
+- **`main.c` discarded `const` qualifiers.** `tap_name` was `char *` but only
+  ever held string literals or `argv` entries, and `sudo_argv` was `char **`
+  holding only literals. Both are now `const char *`, with one cast at the
+  `execvp` call site.
+- **`any_core_running` and `tapif_tftp_transfer_done` had no prototype.**
+  Both are externally visible, so both are now declared in their headers.
+- **`devtools.c` declared a local `cpu` shadowing the global `cpu`.** Renamed
+  to `st`.
+
+### Notes
+
+Two things I did *not* change, deliberately:
+
+- **30 `-Wshadow` warnings in `rv_cpu.c`** are `static inline` helpers whose
+  parameter is named `cpu`, shadowing the global RP2040 `cpu`. The parameter is
+  used consistently within each helper, so the behaviour is correct; renaming it
+  is cosmetic. My first attempt at a blanket rename broke the build by rewriting
+  `cpu->` at call sites that legitimately meant the *global* `cpu`, and my second
+  attempt, scoped per function, had the same problem because the function-extent
+  detection over-reached. Reverted both rather than ship something I could not
+  verify.
+- **`-Wunused-macros` (80)** flags register-bit defines that are not referenced
+  from a given translation unit. Removing them would be wrong.
+
+### Verification
+
+- Fresh `--clean`, `--clean` (FUSE), and `--clean --debug`: 0 warnings, 0 errors
+- riscv64 ASan/UBSan and x86_64 ASan/UBSan: 390/390, zero findings
+- All eight firmware images run
+
+---
+
 ## [0.49.3] - 2026-10-01
 
 ### Fixed

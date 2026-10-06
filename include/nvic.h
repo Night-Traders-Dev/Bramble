@@ -215,7 +215,6 @@ void nvic_write_register(uint32_t addr, uint32_t val);
 
 /* Signal from peripherals that interrupt occurred */
 void nvic_signal_irq(uint32_t irq);
-void nvic_clear_pending(uint32_t irq);
 
 /* Hook for the Hazard3 Xh3irq controller.
  *

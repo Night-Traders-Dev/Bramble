@@ -60,6 +60,19 @@
 #include "sdd.h"
 #include "w5500.h"
 
+/* Hoisted to file scope: these were declared inside function bodies,
+ * which is legal C but needlessly re-declares them per function. */
+extern uint32_t m33_basepri;
+extern int membus_rp2350_mode;
+extern int membus_rp2350_mode;
+extern int membus_rp2350_mode;
+extern void *membus_rp2350_periph;
+extern int membus_rp2350_mode;
+extern int membus_rp2350_mode;
+extern int membus_rp2350_mode;
+extern int membus_rp2350_mode;
+extern int watchdog_reboot_pending;
+
 /* ========================================================================
  * Test Framework (Verbose)
  * ======================================================================== */
@@ -4530,7 +4543,6 @@ TEST(test_m33_cpuid) {
 
 TEST(test_m33_basepri) {
     reset_cpu();
-    extern uint32_t m33_basepri;
     m33_basepri = 0;
     /* MSR BASEPRI, R0 (SYSm=0x11) — set BASEPRI to 0x40 */
     cpu.r[0] = 0x40;
@@ -6661,7 +6673,6 @@ TEST(test_tmds_reachable_through_rv_sio_bus) {
  * mem_read8 fell through to its unmapped path, so LDRB from SIO_GPIO_IN returned
  * 0xFF and STRB to SIO_GPIO_OUT did nothing. */
 TEST(test_sio_subword_access) {
-    extern int membus_rp2350_mode;
     int saved = membus_rp2350_mode;
     membus_rp2350_mode = 0;
     reset_cpu();
@@ -6695,7 +6706,6 @@ TEST(test_sio_subword_access) {
  * and swallowed every spinlock access on the Arm path. The 388-test suite still
  * passed, because nothing exercised spinlocks through mem_write32. */
 TEST(test_arm_spinlocks_survive_the_widened_sio_window) {
-    extern int membus_rp2350_mode;
     int saved = membus_rp2350_mode;
 
     /* spinlock_acquire() returns 1 << n when it takes the lock and 0 when it is
@@ -6755,8 +6765,6 @@ TEST(test_arm_spinlocks_survive_the_widened_sio_window) {
  * so the two cores would not have seen each other's writes even if both could
  * decode it. */
 TEST(test_tmds_reachable_from_arm_and_shared_with_rv) {
-    extern int membus_rp2350_mode;
-    extern void *membus_rp2350_periph;
 
     /* Publish a shared RP2350 peripheral block the same way main.c does for the
      * M33. The Arm SIO path resolves TMDS through this pointer. */
@@ -6800,7 +6808,6 @@ TEST(test_tmds_reachable_from_arm_and_shared_with_rv) {
  * signalled, so a channel could never raise DMA_IRQ_2 or DMA_IRQ_3. */
 TEST(test_dma_rp2350_has_four_interrupt_lines) {
     dma_init();
-    extern int membus_rp2350_mode;
     membus_rp2350_mode = 1;
 
     /* The four enable registers must be independent. */
@@ -6836,7 +6843,6 @@ TEST(test_dma_rp2350_has_four_interrupt_lines) {
 /* The extra lines are RP2350-only; on RP2040 their internal IRQ numbers must be
  * rejected rather than landing on an unrelated vector. */
 TEST(test_dma_extra_irqs_are_rp2350_only) {
-    extern int membus_rp2350_mode;
     ASSERT_TRUE(IRQ_DMA_IRQ_2 >= NUM_EXTERNAL_IRQS,
                 "DMA_IRQ_2 must sit past the RP2040 IRQ range");
     ASSERT_TRUE(IRQ_DMA_IRQ_3 >= NUM_EXTERNAL_IRQS,
@@ -6923,7 +6929,6 @@ TEST(test_vfp_vmov_reaches_all_single_registers) {
  * enabled or forced at all. */
 TEST(test_pio_rp2350_irq_register_offsets) {
     pio_init();
-    extern int membus_rp2350_mode;
     membus_rp2350_mode = 1;
 
     /* The datasheet offsets must be distinct and decodable. */
@@ -6969,7 +6974,6 @@ TEST(test_pio_rp2350_irq_register_offsets) {
 /* RP2040 has four state machines, so the mask must be narrower there. */
 TEST(test_pio_rp2040_irq_mask) {
     pio_init();
-    extern int membus_rp2350_mode;
     membus_rp2350_mode = 0;
 
     pio_write32(0, PIO_IRQ0_INTE, 0xFFFFFFFFu);
@@ -6984,7 +6988,6 @@ TEST(test_pio_rp2040_irq_mask) {
  * stored and never counted, so firmware that relied on the watchdog to recover
  * from a hang would spin forever instead of getting the reset it asked for. */
 TEST(test_watchdog_countdown_expires) {
-    extern int watchdog_reboot_pending;
     clocks_init();
     membus_rp2350_mode = 0;
 

@@ -821,3 +821,10 @@ coherence on flash writes, the identity CSRs, `MRET`/`MPP`, `CSRRW` semantics
 and hart-dependent `CPUID`. Still open: hart-1 launch uses invented SIO
 registers (`0x1c0`-`0x1cc`, which on RP2350 are TMDS) instead of the FIFO
 handshake, bus-fault exceptions, and U-mode/PMP.
+
+### Warning hygiene — **cleaned in 0.49.4**
+`include/emulator.h` and `include/nvic.h` carried duplicate declarations
+(`membus_rp2350_periph` at both line 130 and line 265), and 22 `extern`
+declarations sat inside function bodies. Both are now tidy, which takes a build
+under `-Wredundant-decls`/`-Wnested-externs` from 476 warnings to 0 across the
+project's own `-Wall -Wextra -pedantic` plus the common extras.

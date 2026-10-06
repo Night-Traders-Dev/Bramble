@@ -134,19 +134,27 @@ int semihosting_handle(void) {
 
 #include "rp2350_rv/rv_cpu.h"
 
+/* Hoisted to file scope. */
+extern void uart_rx_push(int uart_num, uint8_t byte);
+extern void gpio_set_input_pin(uint8_t pin, uint8_t value);
+
+/* Hoisted to file scope: these were declared inside function bodies,
+ * which is legal C but needlessly re-declares them per function. */
+extern int watchdog_reboot_pending;
+
 int rv_semihosting_handle(void *cpu_ptr) {
-    rv_cpu_state_t *cpu = (rv_cpu_state_t *)cpu_ptr;
+    rv_cpu_state_t *st = (rv_cpu_state_t *)cpu_ptr;
     if (!semihosting_enabled) return 0;
 
-    uint32_t op = cpu->x[10];    /* a0 = operation */
-    uint32_t param = cpu->x[11]; /* a1 = parameter */
+    uint32_t op = st->x[10];    /* a0 = operation */
+    uint32_t param = st->x[11]; /* a1 = parameter */
 
     switch (op) {
     case SEMIHOST_SYS_WRITEC: {
         char c = (char)sh_read8(param);
         fputc(c, stdout);
         fflush(stdout);
-        cpu->x[0] = 0;
+        st->x[0] = 0;
         return 1;
     }
     case SEMIHOST_SYS_WRITE0: {
@@ -156,7 +164,7 @@ int rv_semihosting_handle(void *cpu_ptr) {
             fputc(c, stdout);
         }
         fflush(stdout);
-        cpu->x[0] = 0;
+        st->x[0] = 0;
         return 1;
     }
     case SEMIHOST_SYS_WRITE: {
@@ -168,12 +176,12 @@ int rv_semihosting_handle(void *cpu_ptr) {
             fputc(sh_read8(data + i), out);
         }
         fflush(out);
-        cpu->x[0] = 0;
+        st->x[0] = 0;
         return 1;
     }
     case SEMIHOST_SYS_READC: {
         int c = fgetc(stdin);
-        cpu->x[0] = (c == EOF) ? (uint32_t)-1 : (uint32_t)c;
+        st->x[0] = (c == EOF) ? (uint32_t)-1 : (uint32_t)c;
         return 1;
     }
     case SEMIHOST_SYS_EXIT: {
@@ -187,20 +195,20 @@ int rv_semihosting_handle(void *cpu_ptr) {
         return 1;
     }
     case SEMIHOST_SYS_ERRNO:
-        cpu->x[0] = 0;
+        st->x[0] = 0;
         return 1;
     case SEMIHOST_SYS_ELAPSED:
-        cpu->x[0] = 0;
+        st->x[0] = 0;
         return 1;
     case SEMIHOST_SYS_TICKFREQ:
-        cpu->x[0] = 100;
+        st->x[0] = 100;
         return 1;
     case SEMIHOST_SYS_OPEN:
     case SEMIHOST_SYS_CLOSE:
     case SEMIHOST_SYS_READ:
     case SEMIHOST_SYS_SEEK:
     case SEMIHOST_SYS_FLEN:
-        cpu->x[0] = (uint32_t)-1;
+        st->x[0] = (uint32_t)-1;
         return 1;
     default:
         return 0;  /* Not a semihosting call */
@@ -680,8 +688,6 @@ int script_init(const char *path) {
 
 void script_poll(uint32_t elapsed_us) {
     if (!script_enabled) return;
-    extern void uart_rx_push(int uart_num, uint8_t byte);
-    extern void gpio_set_input_pin(uint8_t pin, uint8_t value);
 
     for (int i = 0; i < script_event_count; i++) {
         script_event_t *ev = &script_events[i];
@@ -1081,7 +1087,6 @@ int fault_add(const char *spec) {
 }
 
 void fault_check(uint64_t cycle) {
-    extern int watchdog_reboot_pending;
     for (int i = 0; i < fault_count; i++) {
         fault_injection_t *fi = &fault_injections[i];
         if (fi->fired || cycle < fi->trigger_cycle) continue;

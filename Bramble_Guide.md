@@ -25,7 +25,7 @@ subsystem, networking stack, and developer tools.
 | Test suite | 390 tests across 60+ categories |
 | Compiler warnings | Zero (`-Wall -Wextra -pedantic`) |
 | Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350-ARM + RP2350-RV) |
-| Version | 0.49.3 |
+| Version | 0.49.4 |
 
 The project compiles clean under `-Wall -Wextra -pedantic`. It did not always:
 four VFP decoder arms in `src/thumb32.c` were unreachable, and fixing them

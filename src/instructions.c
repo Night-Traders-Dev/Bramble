@@ -6,6 +6,11 @@
 #include "devtools.h"
 #include "corepool.h"
 
+/* Hoisted to file scope: these were declared inside function bodies,
+ * which is legal C but needlessly re-declares them per function. */
+extern uint32_t m33_basepri;
+extern uint32_t m33_basepri;
+
 /* pc_updated flag: instruction handlers set this when they modify cpu.r[15] */
 extern int pc_updated;
 
@@ -902,7 +907,6 @@ void instr_msr_32(uint8_t rn, uint8_t sysm) {
         case 0x11: /* BASEPRI (M33/M4 only) */
         case 0x12: /* BASEPRI_MAX — write only if new value > current */
         {
-            extern uint32_t m33_basepri;
             if (sysm == 0x12) {
                 /* BASEPRI_MAX: only increase the threshold */
                 if ((val & 0xFF) > m33_basepri || m33_basepri == 0)
@@ -959,7 +963,6 @@ void instr_mrs_32(uint8_t rd, uint8_t sysm) {
         case 0x11: /* BASEPRI (M33/M4 only) */
         case 0x12: /* BASEPRI_MAX */
         {
-            extern uint32_t m33_basepri;
             val = m33_basepri;
             break;
         }

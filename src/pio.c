@@ -22,6 +22,11 @@ pio_block_t pio_state[PIO_NUM_BLOCKS];
 
 #include "nvic.h"
 
+/* Hoisted to file scope: these were declared inside function bodies,
+ * which is legal C but needlessly re-declares them per function. */
+extern int membus_rp2350_mode;
+extern int membus_rp2350_mode;
+
 /* Forward declare FIFO helpers needed by pio_compute_intr */
 static int fifo_full(pio_fifo_t *f);
 static int fifo_empty(pio_fifo_t *f);
@@ -615,7 +620,6 @@ void pio_init(void) {
 int pio_match(uint32_t addr) {
     /* Declared locally: emulator.h redeclares fifo_push/fifo_pop with
      * incompatible signatures that this file also defines. */
-    extern int membus_rp2350_mode;
     uint32_t base = addr & ~0x3000;  /* Strip atomic alias bits */
     if (base >= PIO0_BASE && base < PIO0_BASE + PIO_BLOCK_SIZE)
         return 0;
@@ -636,7 +640,6 @@ int pio_match(uint32_t addr) {
 
 /* Number of PIO state-machine IRQ bits on the selected chip. */
 static uint32_t pio_irq_mask(void) {
-    extern int membus_rp2350_mode;
     return membus_rp2350_mode
         ? ((1u << PIO_SM_COUNT_RP2350) - 1u)
         : ((1u << PIO_SM_COUNT_RP2040) - 1u);
