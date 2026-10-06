@@ -837,3 +837,12 @@ Both now extract the sub-word from the 32-bit bus. The write path is
 deliberately unchanged: a read-modify-write against a FIFO register would push
 garbage into the FIFO, which is the O28 hazard, so widening writes needs a
 per-device access-width list rather than a blanket fallback.
+
+### ACCESSCTRL decode — **fixed in 0.49.6**
+`src/rp2350_rv/rp2350_periph.c`. The read and write handlers tested a hard-coded
+`0x40160000` while `rp2350_periph_match()` routes `RP2350_ACCESSCTRL_BASE`
+(`0x40060000`). The branch was unreachable, so all ACCESSCTRL registers read 0
+instead of their `0xFF` reset value -- "nothing accessible" rather than
+"everything accessible". Found by auditing peripheral bases against the
+datasheet rather than trusting the model. BOOTRAM, the other nine bases, and
+window overlap were checked in the same pass and were clean.

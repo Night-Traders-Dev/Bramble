@@ -448,9 +448,17 @@ uint32_t rp2350_periph_read32(rp2350_periph_state_t *state, uint32_t addr) {
         return (idx < 16) ? state->coresight_regs[idx] : 0;
     }
 
-    /* ACCESSCTRL */
-    if (base >= 0x40160000 && base < 0x40160000 + 0x100) {
-        uint32_t idx = (base - 0x40160000) / 4;
+    /* ACCESSCTRL.
+     *
+     * This used to test a hard-coded 0x40160000, but ACCESSCTRL_BASE is
+     * 0x40060000 (datasheet peripheral list) and that is also what
+     * rp2350_periph_match() routes here. So the test never matched: the branch
+     * was dead, 0x40160000 was not a matched region at all, and every ACCESSCTRL
+     * register read 0 instead of its reset value. 0 is not a harmless default
+     * either -- it means "nothing is accessible", where the reset value 0xFF
+     * means "everything is". */
+    if (base >= RP2350_ACCESSCTRL_BASE && base < RP2350_ACCESSCTRL_BASE + 0x100) {
+        uint32_t idx = (base - RP2350_ACCESSCTRL_BASE) / 4;
         return (idx < 64) ? state->accessctrl_regs[idx] : 0;
     }
 
@@ -516,9 +524,9 @@ void rp2350_periph_write32(rp2350_periph_state_t *state, uint32_t addr, uint32_t
         return;
     }
 
-    /* ACCESSCTRL */
-    if (base >= 0x40160000 && base < 0x40160000 + 0x100) {
-        uint32_t idx = (base - 0x40160000) / 4;
+    /* ACCESSCTRL -- see the read side; the base was wrong there too. */
+    if (base >= RP2350_ACCESSCTRL_BASE && base < RP2350_ACCESSCTRL_BASE + 0x100) {
+        uint32_t idx = (base - RP2350_ACCESSCTRL_BASE) / 4;
         if (idx < 64) state->accessctrl_regs[idx] = val;
         return;
     }

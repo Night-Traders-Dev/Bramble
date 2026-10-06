@@ -6834,6 +6834,40 @@ TEST(test_tmds_reachable_from_arm_and_shared_with_rv) {
     PASS();
 }
 
+/* ACCESSCTRL registers are at 0x40060000. Both the read and write handlers
+ * tested a hard-coded 0x40160000 instead, which is not a matched region at all,
+ * so the branch was dead and every ACCESSCTRL register read 0 rather than its
+ * reset value of 0xFF (all-access). 0 is not a harmless default: it reads as
+ * "nothing is accessible". */
+TEST(test_accessctrl_register_map) {
+    rp2350_periph_state_t st;
+    rp2350_periph_init(&st, 1);
+
+    /* rp2350_periph_match must claim the real base. */
+    ASSERT_TRUE(rp2350_periph_match(RP2350_ACCESSCTRL_BASE),
+                "ACCESSCTRL at 0x40060000 must be matched");
+
+    /* Reset value is all-access (0xFF) for the permission masks. */
+    uint32_t lock = rp2350_periph_read32(&st, RP2350_ACCESSCTRL_BASE + 0x00);
+    uint32_t rom  = rp2350_periph_read32(&st, RP2350_ACCESSCTRL_BASE + 0x14);
+    ASSERT_NEQ(0u, lock, "ACCESSCTRL must not read as 0 at reset");
+    ASSERT_NEQ(0u, rom,  "ACCESSCTRL ROM mask must not read as 0 at reset");
+
+    /* The datasheet registers must be independently readable and writable. */
+    rp2350_periph_write32(&st, RP2350_ACCESSCTRL_BASE + 0x0c, 0x0000000Fu);
+    ASSERT_EQ(0x0000000Fu, rp2350_periph_read32(&st, RP2350_ACCESSCTRL_BASE + 0x0c),
+              "GPIO_NSMASK0 at 0x0c must round-trip");
+    ASSERT_NEQ(0x0000000Fu,
+               rp2350_periph_read32(&st, RP2350_ACCESSCTRL_BASE + 0x10),
+               "neighbouring registers must not alias");
+
+    /* And the wrong base must not be decoded at all. */
+    rp2350_periph_write32(&st, 0x40160000u, 0x12345678u);
+    ASSERT_NEQ(0x12345678u, rp2350_periph_read32(&st, 0x40160000u),
+               "0x40160000 is not ACCESSCTRL and must not decode as it");
+    PASS();
+}
+
 /* RP2350 has four DMA interrupt lines (INTE0-INTE3 at 0x404..0x43c) where
  * RP2040 has two. INTE2/INTE3 did not decode at all, and only two lines were
  * signalled, so a channel could never raise DMA_IRQ_2 or DMA_IRQ_3. */
@@ -7875,6 +7909,7 @@ int main(void) {
     RUN_TEST(test_arm_spinlocks_survive_the_widened_sio_window);
     RUN_TEST(test_tmds_reachable_from_arm_and_shared_with_rv);
     RUN_TEST(test_tmds_reachable_through_rv_sio_bus);
+    RUN_TEST(test_accessctrl_register_map);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);
     RUN_TEST(test_dma_extra_irqs_are_rp2350_only);
     RUN_TEST(test_vfp_vmov_both_directions);

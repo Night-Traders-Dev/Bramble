@@ -1,5 +1,32 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.6] - 2026-10-01
+
+### Fixed
+
+- **ACCESSCTRL registers were never decoded.** Both the read and write handlers
+  tested a hard-coded `0x40160000`, but `ACCESSCTRL_BASE` is `0x40060000` (RP2350
+  datasheet peripheral list) and that is what `rp2350_periph_match()` routes
+  here. The test could never be true, so the branch was dead code and
+  `0x40160000` was not a matched region at all -- every ACCESSCTRL register read
+  `0` regardless of what was written.
+
+  `0` is not a harmless fallback: the reset value is `0xFF` ("everything
+  accessible") and `0` reads as "nothing is accessible", so firmware inspecting
+  ROM or peripheral access permissions would see the block as closed.
+
+Found by a systematic register-decode audit against the datasheet, checking each
+peripheral's base and offsets rather than assuming the model was right.
+
+### Audit results
+
+Also checked and found correct: BOOTRAM (`WRITE_ONCE` ORs rather than stores,
+bootlock claim/unclaim returns `1 << n` on success, all offsets match), the base
+addresses of all ten peripherals handled by `rp2350_periph_match`, and the
+absence of overlapping address windows between them.
+
+---
+
 ## [0.49.5] - 2026-10-01
 
 ### Fixed
