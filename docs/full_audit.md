@@ -828,3 +828,12 @@ handshake, bus-fault exceptions, and U-mode/PMP.
 declarations sat inside function bodies. Both are now tidy, which takes a build
 under `-Wredundant-decls`/`-Wnested-externs` from 476 warnings to 0 across the
 project's own `-Wall -Wextra -pedantic` plus the common extras.
+
+### Sub-word peripheral reads — **fixed in 0.49.5**
+`mem_read16` modelled only a few blocks and ended in `return 0`, so halfword
+reads of CLOCKS, TIMER, PADS, GPIO, USB and the NVIC returned zero while the
+same access as 32 bits worked; `mem_read8` fell through to its unmapped path.
+Both now extract the sub-word from the 32-bit bus. The write path is
+deliberately unchanged: a read-modify-write against a FIFO register would push
+garbage into the FIFO, which is the O28 hazard, so widening writes needs a
+per-device access-width list rather than a blanket fallback.

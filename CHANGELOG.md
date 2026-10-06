@@ -1,5 +1,37 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.5] - 2026-10-01
+
+### Fixed
+
+- **Halfword and byte reads did not reach most peripherals.** `mem_read16`
+  modelled only a handful of blocks, so a halfword read of CLOCKS, TIMER, PADS,
+  GPIO, USB or the NVIC returned 0 while the identical access as 32 bits worked
+  -- the previous version ended in `/* No 16-bit peripheral emulation yet. */
+  return 0;`. `mem_read8` had the same shape and fell through to its unmapped
+  path.
+
+  Both now fall back to the 32-bit bus and extract the sub-word, so every
+  peripheral the 32-bit path knows about is reachable at any width. Reads are
+  side-effect free, so delegating is safe.
+
+### Notes
+
+**The write path was deliberately left alone.** A sub-word write implemented as
+read-modify-write against a FIFO register would push a garbage word into the
+FIFO -- exactly the hazard audit item O28 describes. Widening the write path
+needs a per-device list of which registers actually support byte and halfword
+access, which is not something to guess at. Sub-word writes remain limited to the
+SIO registers handled in 0.49.3, where the merge is known to be correct.
+
+### Verification
+
+- Fresh `--clean`, `--clean` (FUSE), `--clean --debug`: 0 warnings, 0 errors
+- riscv64 ASan/UBSan and x86_64 ASan/UBSan: 391/391, zero findings
+- All eight firmware images run clean under sanitizers on both architectures
+
+---
+
 ## [0.49.4] - 2026-10-01
 
 ### Fixed

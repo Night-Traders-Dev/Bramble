@@ -1952,8 +1952,15 @@ uint16_t mem_read16(uint32_t addr) {
         return (uint16_t)((val32 >> (bo * 8)) & 0xFFFF);
     }
 
-    /* No 16-bit peripheral emulation yet. */
-    return 0;
+    /* Fall back to the 32-bit bus and extract the halfword. Without this,
+     * mem_read16 modelled only a handful of peripheral blocks, so a halfword
+     * read of CLOCKS, TIMER, PADS, GPIO, USB or the NVIC returned 0 while the
+     * same access as 32 bits worked. Reads are side-effect free here, so
+     * delegating is safe. */
+    {
+        uint32_t word = mem_read32(addr & ~3u);
+        return (uint16_t)((word >> ((addr & 2u) * 8u)) & 0xFFFFu);
+    }
 }
 
 uint8_t mem_read8(uint32_t addr) {
@@ -2013,7 +2020,14 @@ uint8_t mem_read8(uint32_t addr) {
         return (uint8_t)((val32 >> (bo * 8)) & 0xFF);
     }
 
-    return 0xFF;  /* Unmapped reads return 0xFF */
+    /* Fall back to the 32-bit bus and extract the byte. The SIO case above is
+     * handled separately because it must precede gpio_bus_match(); everything
+     * else -- CLOCKS, TIMER, PADS, USB, the NVIC -- is reachable this way
+     * rather than reading back as unmapped 0xFF. */
+    {
+        uint32_t word = mem_read32(addr & ~3u);
+        return (uint8_t)((word >> ((addr & 3u) * 8u)) & 0xFFu);
+    }
 }
 
 /* ========================================================================

@@ -6668,6 +6668,37 @@ TEST(test_tmds_reachable_through_rv_sio_bus) {
     PASS();
 }
 
+/* Halfword and byte reads must reach the same peripheral models as 32-bit
+ * reads. mem_read16 modelled only a handful of blocks, so a halfword read of
+ * CLOCKS, TIMER, PADS, GPIO, USB or the NVIC returned 0 while the identical
+ * access as 32 bits worked. */
+TEST(test_subword_reads_reach_peripherals) {
+    extern int membus_rp2350_mode;
+    int saved = membus_rp2350_mode;
+    membus_rp2350_mode = 0;
+    reset_cpu();
+
+    /* CLOCKS: FREQ_CNT is a plain counter we can write. */
+    mem_write32(CLOCKS_BASE + 0x04, 0x1234u);   /* CLK_GPCNT0 */
+    uint32_t w = mem_read32(CLOCKS_BASE + 0x04);
+    ASSERT_EQ(0x1234u, w, "32-bit CLOCKS read is the baseline");
+    ASSERT_EQ(0x1234u, mem_read16(CLOCKS_BASE + 0x04), "low halfword");
+    ASSERT_EQ(0x0000u, mem_read16(CLOCKS_BASE + 0x06), "high halfword");
+    ASSERT_EQ(0x34u, mem_read8(CLOCKS_BASE + 0x04), "byte 0");
+    ASSERT_EQ(0x12u, mem_read8(CLOCKS_BASE + 0x05), "byte 1");
+
+    /* NVIC: ISER0 is plain read/write. */
+    mem_write32(NVIC_BASE + 0x100, 0xA5A50000u);
+    w = mem_read32(NVIC_BASE + 0x100);
+    ASSERT_EQ(0xA5A50000u, w, "32-bit NVIC read is the baseline");
+    ASSERT_EQ(0x0000u, mem_read16(NVIC_BASE + 0x100), "NVIC low halfword");
+    ASSERT_EQ(0xA5A5u,  mem_read16(NVIC_BASE + 0x102), "NVIC high halfword");
+    ASSERT_EQ(0xA5u,    mem_read8(NVIC_BASE + 0x102), "NVIC byte");
+
+    membus_rp2350_mode = saved;
+    PASS();
+}
+
 /* Byte and halfword access to the SIO register block. The four sub-word entry
  * points had no SIO handling: mem_write8 discarded SIO writes outright and
  * mem_read8 fell through to its unmapped path, so LDRB from SIO_GPIO_IN returned
@@ -7839,6 +7870,7 @@ int main(void) {
     RUN_TEST(test_tmds_peek_does_not_shift_but_pop_does);
     RUN_TEST(test_tmds_interleave_packing);
     RUN_TEST(test_tmds_lane_rotation);
+    RUN_TEST(test_subword_reads_reach_peripherals);
     RUN_TEST(test_sio_subword_access);
     RUN_TEST(test_arm_spinlocks_survive_the_widened_sio_window);
     RUN_TEST(test_tmds_reachable_from_arm_and_shared_with_rv);
