@@ -876,7 +876,9 @@ Rules learned the hard way:
 - `rp2350_periph` internals: GLITCH_DETECTOR (decode correct; `TRIG_STATUS` is
   write-1-clear and `TRIG_FORCE` should set bits in it, currently a flat array),
   CORESIGHT (flat array), QMI, OTP.
-- Shared per-chip models: PADS, UART0/UART1, SPI0/SPI1, I2C0/I2C1, ADC, PWM.
+- Shared per-chip models: PADS, ADC, PWM. (UART and SPI verified -- their
+  matchers branch per chip; I2C **fixed in 0.49.7**, it had no branch and was
+  dead on RP2350.)
 - `src/membus.c` other-than-SIO: clocks, timers, XIP, DMA, PIO, UART, SPI, I2C,
   ADC, PWM, HSTX, USB, RTC.
 - Sub-word *write* paths beyond SIO — deliberately unfixed, because a blanket
@@ -889,3 +891,15 @@ Rules learned the hard way:
   read-modify-write on a FIFO register has side effects. The TMDS data-symbol
   encoding is in the same category — implemented, never validated against a
   reference decoder.
+
+### I2C on RP2350 — **fixed in 0.49.7**
+`src/i2c.c`. RP2350 moved I2C0 to `0x40090000` and I2C1 to `0x40098000`, but
+`i2c_match()` used the RP2040 constants with no per-chip branch, so neither
+controller was decoded on RP2350. `uart_match()` and `spi_match()` already
+branch. No test firmware exercises I2C, so the suite passed throughout.
+
+Worth noting how this was found: checking `uart` first *looked* like a bug,
+because `UART0_BASE` in `uart.h` is the RP2040 address. `uart_match()` selects
+per chip, so it was a false alarm -- but asking the same question of I2C turned
+up the real bug. Check each peripheral rather than stopping at the first
+plausible-looking problem.

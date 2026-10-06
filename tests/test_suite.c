@@ -6834,6 +6834,39 @@ TEST(test_tmds_reachable_from_arm_and_shared_with_rv) {
     PASS();
 }
 
+/* RP2350 moved both I2C controllers -- I2C0 to 0x40090000 and I2C1 to
+ * 0x40098000 -- but i2c_match() used the RP2040 constants unconditionally with
+ * no per-chip branch, so on RP2350 neither controller was decoded and accesses
+ * fell through as unmapped. uart_match() and spi_match() both branch already. */
+TEST(test_i2c_reachable_on_rp2350) {
+    extern int membus_rp2350_mode;
+    int saved = membus_rp2350_mode;
+
+    membus_rp2350_mode = 1;
+    ASSERT_EQ(0, i2c_match(RP2350_I2C0_BASE), "RP2350 I2C0 must be matched");
+    ASSERT_EQ(1, i2c_match(RP2350_I2C1_BASE), "RP2350 I2C1 must be matched");
+    /* Past the block, and clear of the 0x3000 alias mask i2c_match() strips. */
+    ASSERT_EQ(-1, i2c_match(RP2350_I2C1_BASE + 0x8000),
+              "an address past I2C1 must not match");
+
+    /* The RP2040 addresses must not be claimed on RP2350 -- they are different
+     * peripherals there. */
+    ASSERT_EQ(-1, i2c_match(I2C0_BASE),
+              "the RP2040 I2C0 base must not match on RP2350");
+    ASSERT_EQ(-1, i2c_match(I2C1_BASE),
+              "the RP2040 I2C1 base must not match on RP2350");
+
+    /* RP2040 must still match its own addresses. */
+    membus_rp2350_mode = 0;
+    ASSERT_EQ(0, i2c_match(I2C0_BASE), "RP2040 I2C0 must still match");
+    ASSERT_EQ(1, i2c_match(I2C1_BASE), "RP2040 I2C1 must still match");
+    ASSERT_EQ(-1, i2c_match(RP2350_I2C0_BASE),
+              "the RP2350 I2C0 base must not match on RP2040");
+
+    membus_rp2350_mode = saved;
+    PASS();
+}
+
 /* ACCESSCTRL registers are at 0x40060000. Both the read and write handlers
  * tested a hard-coded 0x40160000 instead, which is not a matched region at all,
  * so the branch was dead and every ACCESSCTRL register read 0 rather than its
@@ -7909,6 +7942,7 @@ int main(void) {
     RUN_TEST(test_arm_spinlocks_survive_the_widened_sio_window);
     RUN_TEST(test_tmds_reachable_from_arm_and_shared_with_rv);
     RUN_TEST(test_tmds_reachable_through_rv_sio_bus);
+    RUN_TEST(test_i2c_reachable_on_rp2350);
     RUN_TEST(test_accessctrl_register_map);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);
     RUN_TEST(test_dma_extra_irqs_are_rp2350_only);

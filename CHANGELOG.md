@@ -1,5 +1,33 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.7] - 2026-10-01
+
+### Fixed
+
+- **I2C was unreachable on RP2350.** RP2350 moved both controllers -- I2C0 to
+  `0x40090000` and I2C1 to `0x40098000` -- but `i2c_match()` used the RP2040
+  constants (`0x40044000` / `0x40048000`) unconditionally with no per-chip
+  branch, so neither controller was decoded on RP2350 and accesses fell through
+  as unmapped. `uart_match()` and `spi_match()` already branch; this now does
+  too.
+
+  Nothing in the test firmware uses I2C, which is why 392 tests passed with the
+  peripheral dead on RP2350.
+
+Found by the register-decode audit. Checking `uart` first looked like a bug --
+`UART0_BASE` in `uart.h` is the RP2040 address -- but `uart_match()` selects per
+chip, so that was a false alarm. Asking the same question of I2C found the real
+one, which is the argument for checking each peripheral rather than stopping at
+the first plausible-looking problem.
+
+### Verification
+
+- Fresh `--clean`, `--clean` (FUSE), `--clean --debug`: 0 warnings, 0 errors
+- riscv64 ASan/UBSan and x86_64 ASan/UBSan: 393/393, zero findings
+- All eight firmware images run clean under sanitizers on both architectures
+
+---
+
 ## [0.49.6] - 2026-10-01
 
 ### Fixed

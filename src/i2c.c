@@ -11,6 +11,8 @@
 
 #include <string.h>
 #include "i2c.h"
+#include "emulator.h"
+#include "rp2350_rv/rp2350_memmap.h"
 #include "nvic.h"
 
 i2c_state_t i2c_state[2];
@@ -46,6 +48,20 @@ void i2c_init(void) {
 
 int i2c_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
+
+    /* RP2350 moved both I2C controllers: I2C0 is at 0x40090000 and I2C1 at
+     * 0x40098000, while the RP2040 constants in i2c.h are 0x40044000 and
+     * 0x40048000. This function had no per-chip branch, so on RP2350 neither
+     * controller was decoded at all -- accesses fell through as unmapped.
+     * uart_match() and spi_match() both branch already; this now matches them. */
+    if (membus_rp2350_mode && !membus_rv_delegate) {
+        if (base >= RP2350_I2C0_BASE && base < RP2350_I2C0_BASE + I2C_BLOCK_SIZE)
+            return 0;
+        if (base >= RP2350_I2C1_BASE && base < RP2350_I2C1_BASE + I2C_BLOCK_SIZE)
+            return 1;
+        return -1;
+    }
+
     if (base >= I2C0_BASE && base < I2C0_BASE + I2C_BLOCK_SIZE)
         return 0;
     if (base >= I2C1_BASE && base < I2C1_BASE + I2C_BLOCK_SIZE)
