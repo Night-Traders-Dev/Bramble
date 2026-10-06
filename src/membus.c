@@ -1220,6 +1220,18 @@ void mem_write32(uint32_t addr, uint32_t val) {
     }
 
     /* SIO core-local registers */
+    /* SIO spinlocks.
+     *
+     * Checked before the SIO window below: SPINLOCK_BASE is SIO_BASE + 0x100,
+     * and on RP2350 that window is 0x200 wide, so testing SIO first would
+     * swallow every spinlock access on the Arm path. Widening the window to
+     * reach TMDS at 0x1c0 introduced exactly that regression. */
+    if (addr >= SPINLOCK_BASE && addr < SPINLOCK_BASE + SPINLOCK_SIZE * 4) {
+        uint32_t lock_num = (addr - SPINLOCK_BASE) / 4;
+        spinlock_release(lock_num);
+        return;
+    }
+
     if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
         sio_write32(addr - SIO_BASE, val);
         return;
@@ -1229,13 +1241,6 @@ void mem_write32(uint32_t addr, uint32_t val) {
      * Aliases at +0x1000 (XOR), +0x2000 (SET), +0x3000 (CLR) used by hw_set_bits/hw_clear_bits. */
     if (gpio_bus_match(addr)) {
         gpio_write32(addr, val);
-        return;
-    }
-
-    /* SIO spinlocks */
-    if (addr >= SPINLOCK_BASE && addr < SPINLOCK_BASE + SPINLOCK_SIZE * 4) {
-        uint32_t lock_num = (addr - SPINLOCK_BASE) / 4;
-        spinlock_release(lock_num);
         return;
     }
 
@@ -1693,6 +1698,15 @@ uint32_t mem_read32(uint32_t addr) {
     }
 
     /* SIO core-local registers */
+    /* SIO spinlocks -- must precede the SIO window, see mem_write32(). */
+    if (addr == SIO_BASE + 0x5C) {
+        return sio_spinlock_state_bitmap();
+    }
+    if (addr >= SPINLOCK_BASE && addr < SPINLOCK_BASE + SPINLOCK_SIZE * 4) {
+        uint32_t lock_num = (addr - SPINLOCK_BASE) / 4;
+        return spinlock_acquire(lock_num);
+    }
+
     if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
         return sio_read32(addr - SIO_BASE);
     }
@@ -1700,15 +1714,6 @@ uint32_t mem_read32(uint32_t addr) {
     /* GPIO registers */
     if (gpio_bus_match(addr)) {
         return gpio_read32(addr);
-    }
-
-    /* SIO spinlock state and lock registers */
-    if (addr == SIO_BASE + 0x5C) {
-        return sio_spinlock_state_bitmap();
-    }
-    if (addr >= SPINLOCK_BASE && addr < SPINLOCK_BASE + SPINLOCK_SIZE * 4) {
-        uint32_t lock_num = (addr - SPINLOCK_BASE) / 4;
-        return spinlock_acquire(lock_num);
     }
 
     /* Clock-domain peripherals (Resets, Clocks, XOSC, PLLs, Watchdog) */

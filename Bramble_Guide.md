@@ -22,10 +22,10 @@ subsystem, networking stack, and developer tools.
 |--------|-------|
 | Source lines | 33,660 (47 `.c` files) |
 | Header files | 44 `.h` files |
-| Test suite | 388 tests across 60+ categories |
+| Test suite | 389 tests across 60+ categories |
 | Compiler warnings | Zero (`-Wall -Wextra -pedantic`) |
 | Tested firmware | MicroPython, CircuitPython, littleOS (RP2040 + RP2350-ARM + RP2350-RV) |
-| Version | 0.49.1 |
+| Version | 0.49.2 |
 
 The project compiles clean under `-Wall -Wextra -pedantic`. It did not always:
 four VFP decoder arms in `src/thumb32.c` were unreachable, and fixing them
@@ -303,7 +303,7 @@ ctest --test-dir build --output-on-failure
 ./build/bramble_tests
 ```
 
-The test suite contains **388 tests** organized into 60+ categories:
+The test suite contains **389 tests** organized into 60+ categories:
 
 | Category Group | Tests | Description |
 |----------------|-------|-------------|

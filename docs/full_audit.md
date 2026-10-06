@@ -510,6 +510,13 @@ from the DVI specification, and the data-symbol path has never been checked
 against a reference decoder or a real DVI link. The control symbols, register
 semantics, packing and rotation are tested; the encoded data symbols are not.
 
+### Arm spinlocks after the SIO widening — **regression fixed in 0.49.2**
+Widening the Arm SIO window to 0x200 for TMDS made it overlap `SPINLOCK_BASE`
+(`SIO_BASE + 0x100`), and the window test ran first, so spinlock accesses were
+dropped. Fixed by ordering the spinlock check first in `mem_read32()` and
+`mem_write32()`. 0.49.1's test suite passed throughout because no test touched
+a spinlock through those entry points.
+
 ### TMDS reachability — **fixed in 0.49.1**
 Adding TMDS in 0.49.0 put the decoder in the RV SIO path only, and the Arm SIO
 decode window was hard-coded to `0x100` bytes in three places while RP2350's

@@ -6656,6 +6656,65 @@ TEST(test_tmds_reachable_through_rv_sio_bus) {
     PASS();
 }
 
+/* Widening the Arm SIO window to 0x200 to reach TMDS at 0x1c0 silently broke
+ * spinlocks: SPINLOCK_BASE is SIO_BASE + 0x100, so the SIO window test ran first
+ * and swallowed every spinlock access on the Arm path. The 388-test suite still
+ * passed, because nothing exercised spinlocks through mem_write32. */
+TEST(test_arm_spinlocks_survive_the_widened_sio_window) {
+    extern int membus_rp2350_mode;
+    int saved = membus_rp2350_mode;
+
+    /* spinlock_acquire() returns 1 << n when it takes the lock and 0 when it is
+     * already held; a write releases. So acquire, re-read, release, re-read
+     * pins the whole round trip. */
+
+    /* RP2040: SIO window 0x100, spinlocks begin immediately after it. */
+    membus_rp2350_mode = 0;
+    reset_cpu();
+    mem_write32(SPINLOCK_BASE, 1u);                        /* release lock 0 */
+    ASSERT_EQ(1u, mem_read32(SPINLOCK_BASE),
+              "acquiring spinlock 0 must return 1 << 0");
+    ASSERT_EQ(0u, mem_read32(SPINLOCK_BASE),
+              "re-reading a held spinlock must report it as already held");
+    mem_write32(SPINLOCK_BASE, 1u);
+    ASSERT_EQ(1u, mem_read32(SPINLOCK_BASE),
+              "a released spinlock must be acquirable again");
+
+    /* RP2350: window is 0x200 and so overlaps the entire spinlock block. If the
+     * SIO window is tested first these never reach the spinlock model. */
+    membus_rp2350_mode = 1;
+    reset_cpu();
+
+    mem_write32(SPINLOCK_BASE + 8, 1u);                    /* lock 2 */
+    ASSERT_EQ(1u << 2, mem_read32(SPINLOCK_BASE + 8),
+              "spinlock 2 must reach the spinlock model on RP2350");
+    ASSERT_EQ(0u, mem_read32(SPINLOCK_BASE + 8), "and stay held");
+
+    /* The top of the block, 0x17c, right where the widened window's overlap
+     * ends -- the case most likely to be mis-routed. */
+    mem_write32(SPINLOCK_BASE + (31 * 4), 1u);
+    ASSERT_EQ(1u << 31, mem_read32(SPINLOCK_BASE + (31 * 4)),
+              "spinlock 31 (0x17c) must reach the spinlock model");
+
+    /* The *write* side needs its own check: release lock 3, then prove it was
+     * really released by acquiring it again. Reading alone cannot tell a
+     * swallowed write from a working one, because a read acquires either way. */
+    ASSERT_EQ(1u << 3, mem_read32(SPINLOCK_BASE + 12),
+              "acquiring spinlock 3 must return 1 << 3");
+    ASSERT_EQ(0u, mem_read32(SPINLOCK_BASE + 12), "and then report it held");
+    mem_write32(SPINLOCK_BASE + 12, 1u);              /* release */
+    ASSERT_EQ(1u << 3, mem_read32(SPINLOCK_BASE + 12),
+              "a release written through mem_write32 must take effect");
+
+    /* And the TMDS register just past the spinlocks must still decode, so the
+     * two regions cannot both be claimed by one window test. */
+    uint32_t val = mem_read32(SIO_BASE + TMDS_CTRL);
+    (void)val;   /* reachability is asserted by the TMDS tests */
+
+    membus_rp2350_mode = saved;
+    PASS();
+}
+
 /* The RP2350 TMDS encoder lives in the shared SIO block, so the Arm cores must
  * reach it. The decoder was originally in the RV SIO path only, which made
  * TMDS unreachable from Arm entirely -- and it had its own private state copy,
@@ -7743,6 +7802,7 @@ int main(void) {
     RUN_TEST(test_tmds_peek_does_not_shift_but_pop_does);
     RUN_TEST(test_tmds_interleave_packing);
     RUN_TEST(test_tmds_lane_rotation);
+    RUN_TEST(test_arm_spinlocks_survive_the_widened_sio_window);
     RUN_TEST(test_tmds_reachable_from_arm_and_shared_with_rv);
     RUN_TEST(test_tmds_reachable_through_rv_sio_bus);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);

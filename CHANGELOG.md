@@ -1,5 +1,37 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.2] - 2026-10-01
+
+### Fixed
+
+- **Regression from 0.49.1: SIO spinlocks were swallowed on the Arm path.**
+  Widening the Arm SIO decode window from `0x100` to `0x200` to reach TMDS also
+  made it cover `SPINLOCK_BASE`, which is exactly `SIO_BASE + 0x100`. The window
+  test ran first, so every spinlock access on the Arm path went into
+  `sio_write32()`/`sio_read32()`, which have no spinlock case, and was silently
+  dropped.
+
+  The spinlock check now precedes the SIO window test in both `mem_read32()` and
+  `mem_write32()`.
+
+  Nothing caught this: the 388-test suite passed, because no test exercised a
+  spinlock through `mem_read32()`/`mem_write32()` on the RP2350 path. The test
+  added here pins acquire/re-acquire/release round trips for locks 0, 2, 3 and
+  31 on both chips -- 31 sits at `0x17c`, right where the widened window's
+  overlap ends.
+
+  Note the write side needs its own assertion: reading a spinlock *acquires* it,
+  so a read-only test cannot distinguish a swallowed write from a working one.
+  Releasing lock 3 and then re-acquiring it is what actually pins the ordering.
+
+### Verification
+
+- riscv64 ASan/UBSan: 389/389, zero findings
+- x86_64 ASan/UBSan: 389/389, zero findings
+- x86_64 plain build: zero warnings on a clean rebuild, all eight firmware
+
+---
+
 ## [0.49.1] - 2026-10-01
 
 ### Fixed
