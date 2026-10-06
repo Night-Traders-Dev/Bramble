@@ -846,3 +846,46 @@ instead of their `0xFF` reset value -- "nothing accessible" rather than
 "everything accessible". Found by auditing peripheral bases against the
 datasheet rather than trusting the model. BOOTRAM, the other nine bases, and
 window overlap were checked in the same pass and were clean.
+
+## Register-decode audit queue
+
+Method: for each peripheral, take the base address and register offsets from the
+RP2350 datasheet peripheral list and register tables, then check them against
+what the emulator actually tests in its decode path. Do not assume the model is
+right. The two worst bugs found this way both had decode branches that could
+never be taken, so they compiled and ran cleanly while the peripheral was dead.
+
+Rules learned the hard way:
+- Check the base the *matcher* routes, not just the base the handler tests. They
+  disagreed for ACCESSCTRL (matcher 0x40060000, handler 0x40160000), which made
+  the branch dead code.
+- Prefer the symbolic `_BASE` constant over a literal; ACCESSCTRL's mismatch was
+  a hard-coded address next to a correct constant three functions away.
+- A flat register array is fine for decode, but check for registers with special
+  access semantics (write-1-to-clear, read-to-claim, set-on-write).
+
+### Done
+- BOOTRAM — correct. `WRITE_ONCE` ORs, bootlocks return `1 << n` on a successful
+  claim, all offsets match.
+- ACCESSCTRL — **bug fixed in 0.49.6** (dead decode, wrong base).
+- All ten bases in `rp2350_periph_match`, verified against the datasheet.
+- Window overlap between those ten: none.
+- TIMER0/TIMER1 window sizing — correct, see above.
+
+### Not yet audited
+- `rp2350_periph` internals: GLITCH_DETECTOR (decode correct; `TRIG_STATUS` is
+  write-1-clear and `TRIG_FORCE` should set bits in it, currently a flat array),
+  CORESIGHT (flat array), QMI, OTP.
+- Shared per-chip models: PADS, UART0/UART1, SPI0/SPI1, I2C0/I2C1, ADC, PWM.
+- `src/membus.c` other-than-SIO: clocks, timers, XIP, DMA, PIO, UART, SPI, I2C,
+  ADC, PWM, HSTX, USB, RTC.
+- Sub-word *write* paths beyond SIO — deliberately unfixed, because a blanket
+  read-modify-write against a FIFO register is audit item O28.
+
+### Blocked on hardware
+- RV bus-fault exceptions: needs either real silicon or a decode path that
+  reports "handled" explicitly rather than inferring it from mappedness.
+- O28 atomic aliases: needs real silicon to see whether an interposer
+  read-modify-write on a FIFO register has side effects. The TMDS data-symbol
+  encoding is in the same category — implemented, never validated against a
+  reference decoder.
