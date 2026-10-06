@@ -510,6 +510,14 @@ from the DVI specification, and the data-symbol path has never been checked
 against a reference decoder or a real DVI link. The control symbols, register
 semantics, packing and rotation are tested; the encoded data symbols are not.
 
+### SIO sub-word access — **fixed in 0.49.3**
+`mem_read8`/`mem_write8`/`mem_read16`/`mem_write16` had no SIO handling:
+`mem_write8` discarded SIO writes outright and the reads returned `0xFF`, so
+`LDRB` from `SIO_GPIO_IN` and `STRB` to `SIO_GPIO_OUT` were both broken. Now
+routed through the 32-bit SIO decoder with a read-modify-write, restricted to
+offsets below `0x100` because the spinlocks and TMDS are 32-bit only. Must be
+placed ahead of `gpio_bus_match()`, which claims the whole SIO window.
+
 ### Arm spinlocks after the SIO widening — **regression fixed in 0.49.2**
 Widening the Arm SIO window to 0x200 for TMDS made it overlap `SPINLOCK_BASE`
 (`SIO_BASE + 0x100`), and the window test ran first, so spinlock accesses were

@@ -6656,6 +6656,40 @@ TEST(test_tmds_reachable_through_rv_sio_bus) {
     PASS();
 }
 
+/* Byte and halfword access to the SIO register block. The four sub-word entry
+ * points had no SIO handling: mem_write8 discarded SIO writes outright and
+ * mem_read8 fell through to its unmapped path, so LDRB from SIO_GPIO_IN returned
+ * 0xFF and STRB to SIO_GPIO_OUT did nothing. */
+TEST(test_sio_subword_access) {
+    extern int membus_rp2350_mode;
+    int saved = membus_rp2350_mode;
+    membus_rp2350_mode = 0;
+    reset_cpu();
+
+    /* DIV_UDIVIDEND at SIO+0x60 is plain read/write storage. */
+    mem_write32(SIO_BASE + 0x60, 0xAABBCCDDu);
+
+    ASSERT_EQ(0xDDu, mem_read8(SIO_BASE + 0x60), "byte 0 is the low byte");
+    ASSERT_EQ(0xCCu, mem_read8(SIO_BASE + 0x61), "byte 1 is bits 15:8");
+    ASSERT_EQ(0xBBu, mem_read8(SIO_BASE + 0x62), "byte 2 is bits 23:16");
+    ASSERT_EQ(0xAAu, mem_read8(SIO_BASE + 0x63), "byte 3 is the high byte");
+
+    ASSERT_EQ(0xCCDDu, mem_read16(SIO_BASE + 0x60), "low halfword");
+    ASSERT_EQ(0xAABBu, mem_read16(SIO_BASE + 0x62), "high halfword");
+
+    /* A sub-word write must merge into the register, not replace it. */
+    mem_write8(SIO_BASE + 0x61, 0x11u);
+    ASSERT_EQ(0xAABB11DDu, mem_read32(SIO_BASE + 0x60),
+              "a byte write must merge into the register");
+
+    mem_write16(SIO_BASE + 0x62, 0x5678u);
+    ASSERT_EQ(0x567811DDu, mem_read32(SIO_BASE + 0x60),
+              "a halfword write must merge into the register");
+
+    membus_rp2350_mode = saved;
+    PASS();
+}
+
 /* Widening the Arm SIO window to 0x200 to reach TMDS at 0x1c0 silently broke
  * spinlocks: SPINLOCK_BASE is SIO_BASE + 0x100, so the SIO window test ran first
  * and swallowed every spinlock access on the Arm path. The 388-test suite still
@@ -7802,6 +7836,7 @@ int main(void) {
     RUN_TEST(test_tmds_peek_does_not_shift_but_pop_does);
     RUN_TEST(test_tmds_interleave_packing);
     RUN_TEST(test_tmds_lane_rotation);
+    RUN_TEST(test_sio_subword_access);
     RUN_TEST(test_arm_spinlocks_survive_the_widened_sio_window);
     RUN_TEST(test_tmds_reachable_from_arm_and_shared_with_rv);
     RUN_TEST(test_tmds_reachable_through_rv_sio_bus);

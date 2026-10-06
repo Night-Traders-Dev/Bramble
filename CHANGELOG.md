@@ -1,5 +1,37 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.3] - 2026-10-01
+
+### Fixed
+
+- **Byte and halfword access to the SIO register block did nothing.** None of
+  the four sub-word entry points had any SIO handling. `mem_write8` explicitly
+  discarded writes to SIO:
+
+      if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) return;
+
+  and `mem_read8` fell through to its unmapped path, so an `LDRB` from
+  `SIO_GPIO_IN` returned `0xFF` while an `STRB` to `SIO_GPIO_OUT` was silently
+  lost. The 16-bit entry points were the same. The SIO registers are
+  byte-accessible on real silicon, so both directions now read and merge into
+  the containing 32-bit register.
+
+  Only the first `0x100` is handled: the spinlocks (`0x100`-`0x17c`) and TMDS
+  (`0x1c0`-`0x1e4`) are 32-bit registers and are left to the 32-bit entry
+  points.
+
+One trap worth recording: **`gpio_bus_match()` claims the entire SIO window**, so
+it has to be consulted *after* the SIO sub-word test. Placed after it -- as the
+32-bit path already does -- sub-word SIO access is routed into the GPIO decoder,
+which only understands the GPIO registers and returns 0 for everything else.
+
+### Verification
+
+- riscv64 ASan/UBSan and x86_64 ASan/UBSan: 390/390, zero findings
+- x86_64 plain build: zero warnings on a clean rebuild, all eight firmware
+
+---
+
 ## [0.49.2] - 2026-10-01
 
 ### Fixed

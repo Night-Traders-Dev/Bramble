@@ -1042,6 +1042,25 @@ static void sio_write32(uint32_t offset, uint32_t val) {
     }
 }
 
+
+/* Byte and halfword access to the SIO register block.
+ *
+ * The four sub-word entry points had no SIO handling: mem_write8 discarded SIO
+ * writes outright and mem_read8 fell through to its unmapped path, so LDRB from
+ * SIO_GPIO_IN returned 0xFF and STRB to SIO_GPIO_OUT did nothing. The SIO
+ * registers are byte-accessible on real silicon.
+ *
+ * Only the first 0x100 is handled. The spinlocks (0x100-0x17c) and TMDS
+ * (0x1c0-0x1e4) are 32-bit registers, so sub-word access to them is left to the
+ * 32-bit entry points.
+ *
+ * These tests must be placed ahead of gpio_bus_match(), which claims the whole
+ * SIO window and would otherwise route sub-word SIO access into the GPIO
+ * decoder, which only understands the GPIO registers. */
+static inline int sio_subword_ok(uint32_t off) {
+    return off < 0x100u;
+}
+
 static uint32_t sio_read32(uint32_t offset) {
     int core_id = sio_current_core();
     uint32_t val = 0;
@@ -1539,6 +1558,20 @@ void mem_write16(uint32_t addr, uint16_t val) {
     }
 
     /* GPIO */
+    /* SIO sub-word write -- see sio_subword_ok(). Must precede gpio_bus_match. */
+    if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
+        uint32_t off = addr - SIO_BASE;
+        if (sio_subword_ok(off)) {
+            uint32_t base = off & ~(2u);
+            uint32_t shift = (off & 2u) * 8u;
+            uint32_t mask = 0xFFFFu << shift;
+            uint32_t word = sio_read32(base);
+            sio_write32(base, (word & ~mask) |
+                              (((uint32_t)val << shift) & mask));
+            return;
+        }
+    }
+
     if (gpio_bus_match(addr)) {
         gpio_write32(addr & ~0x3, val);
         return;
@@ -1594,6 +1627,20 @@ void mem_write8(uint32_t addr, uint8_t val) {
     }
 
     /* GPIO */
+    /* SIO sub-word write -- see sio_subword_ok(). Must precede gpio_bus_match. */
+    if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
+        uint32_t off = addr - SIO_BASE;
+        if (sio_subword_ok(off)) {
+            uint32_t base = off & ~(3u);
+            uint32_t shift = (off & 3u) * 8u;
+            uint32_t mask = 0xFFu << shift;
+            uint32_t word = sio_read32(base);
+            sio_write32(base, (word & ~mask) |
+                              (((uint32_t)val << shift) & mask));
+            return;
+        }
+    }
+
     if (gpio_bus_match(addr)) {
         gpio_write32(addr & ~0x3, val);
         return;
@@ -1884,6 +1931,15 @@ uint16_t mem_read16(uint32_t addr) {
     }
 
     /* GPIO */
+    /* SIO sub-word read -- see sio_subword_ok(). Must precede gpio_bus_match. */
+    if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
+        uint32_t off = addr - SIO_BASE;
+        if (sio_subword_ok(off)) {
+            uint32_t word = sio_read32(off & ~(2u));
+            return (uint16_t)((word >> ((off & 2u) * 8u)) & 0xFFFFu);
+        }
+    }
+
     if (gpio_bus_match(addr)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         return (uint16_t)(val32 & 0xFFFF);
@@ -1935,6 +1991,15 @@ uint8_t mem_read8(uint32_t addr) {
     }
 
     /* GPIO */
+    /* SIO sub-word read -- see sio_subword_ok(). Must precede gpio_bus_match. */
+    if (addr >= SIO_BASE && addr < SIO_BASE + (uint32_t)sio_span()) {
+        uint32_t off = addr - SIO_BASE;
+        if (sio_subword_ok(off)) {
+            uint32_t word = sio_read32(off & ~(3u));
+            return (uint8_t)((word >> ((off & 3u) * 8u)) & 0xFFu);
+        }
+    }
+
     if (gpio_bus_match(addr)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         uint8_t byte_offset = addr & 0x3;
