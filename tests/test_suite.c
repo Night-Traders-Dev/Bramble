@@ -4293,8 +4293,10 @@ TEST(test_vnet_peer_socketpair) {
     hdr[0] = flen & 0xFF; hdr[1] = (flen >> 8) & 0xFF;
     hdr[2] = (flen >> 16) & 0xFF; hdr[3] = (flen >> 24) & 0xFF;
 
-    write(sv[1], hdr, 4);
-    write(sv[1], frame, 14);
+    /* Check both writes: a partial frame here would make the test fail for the
+     * wrong reason. */
+    ASSERT_EQ(4, write(sv[1], hdr, 4), "vnet: header write must be complete");
+    ASSERT_EQ(14, write(sv[1], frame, 14), "vnet: frame write must be complete");
 
     test_vnet_rx_len = 0;
     vnet_poll();

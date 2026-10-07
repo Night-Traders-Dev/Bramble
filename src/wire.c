@@ -398,7 +398,15 @@ void wire_send_eth_frame(const uint8_t *frame, int len) {
         /* Write header + frame (best-effort, non-blocking) */
         ssize_t n = write(l->peer_fd, hdr, sizeof(hdr));
         if (n == (ssize_t)sizeof(hdr)) {
-            write(l->peer_fd, frame, (size_t)len);
+            /* A short or failed body write desynchronises the peer's length
+             * prefix, so treat it as a link error rather than dropping it.
+             * EAGAIN here is benign -- the header already went out, so the
+             * peer will time out on an incomplete frame. */
+            ssize_t m = write(l->peer_fd, frame, (size_t)len);
+            if (m != (ssize_t)len && errno != EAGAIN && errno != EWOULDBLOCK) {
+                fprintf(stderr, "[Wire] %s: ETH body write error\n", l->path);
+                wire_disconnect_peer(l);
+            }
         } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             fprintf(stderr, "[Wire] %s: ETH write error\n", l->path);
             wire_disconnect_peer(l);
