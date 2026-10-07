@@ -876,9 +876,9 @@ Rules learned the hard way:
 - `rp2350_periph` internals: GLITCH_DETECTOR (decode correct; `TRIG_STATUS` is
   write-1-clear and `TRIG_FORCE` should set bits in it, currently a flat array),
   CORESIGHT (flat array), QMI, OTP.
-- Shared per-chip models: PADS, ADC, PWM. (UART and SPI verified -- their
-  matchers branch per chip; I2C **fixed in 0.49.7**, it had no branch and was
-  dead on RP2350.)
+- Shared per-chip models: PADS, ADC, PWM. (UART, SPI verified -- matchers branch
+  per chip; I2C **fixed in 0.49.7** and USB **fixed in 0.49.8**, both had no
+  branch and were dead on one chip.)
 - `src/membus.c` other-than-SIO: clocks, timers, XIP, DMA, PIO, UART, SPI, I2C,
   ADC, PWM, HSTX, USB, RTC.
 - Sub-word *write* paths beyond SIO — deliberately unfixed, because a blanket
@@ -903,3 +903,16 @@ because `UART0_BASE` in `uart.h` is the RP2040 address. `uart_match()` selects
 per chip, so it was a false alarm -- but asking the same question of I2C turned
 up the real bug. Check each peripheral rather than stopping at the first
 plausible-looking problem.
+
+### USB on RP2040 — **fixed in 0.49.8**
+`src/usb.c`. `usb_match()`, `usb_read32()` and `usb_write32()` all hard-coded the
+RP2350 controller addresses (DPRAM `0x50100000`, registers `0x50110000`), so the
+block was never decoded on RP2040 and sub-word accesses to `0x50000000` — which
+real hardware routes to USB, telling it apart from DMA by access width — fell
+through as unmapped. Bases are now selected per chip.
+
+Found by listing every `*_match` function and checking each for a per-chip
+branch, rather than reading peripherals one at a time. Sixteen use a `_BASE`
+constant without branching; most are RP2350-only or share an address across both
+chips, but each had to be confirmed individually. Two of them were outright
+broken.

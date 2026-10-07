@@ -1,5 +1,39 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.8] - 2026-10-01
+
+### Fixed
+
+- **USB was unreachable on RP2040.** `usb_match()`, `usb_read32()` and
+  `usb_write32()` all hard-coded the RP2350 controller addresses -- DPRAM
+  `0x50100000` and registers `0x50110000` -- with no per-chip branch. On RP2040
+  the block was never decoded, so 8/16-bit accesses to `0x50000000`, which real
+  hardware routes to USB, fell through as unmapped.
+
+  Both chips' bases are now selected through `usb_dpram_base()` and
+  `usb_regs_base()`, using the same `membus_rp2350_mode && !membus_rv_delegate`
+  test as `uart_match()`, `spi_match()` and `i2c_match()`. The
+  `membus_rv_delegate` half matters because RP2040's `USB_REGS_BASE` is the same
+  address as RP2350's DPRAM, so the two maps must never both be accepted.
+
+Two pre-existing USB tests asserted against the RP2350 addresses without
+selecting the chip; they now set `membus_rp2350_mode` explicitly.
+
+### Method
+
+This was found by a systematic sweep rather than by reading one peripheral: every
+`*_match` function was listed and checked for a per-chip branch. Sixteen use a
+`_BASE` constant without branching; most are RP2350-only or share an address
+across both chips and are fine, but each needed individual confirmation.
+
+### Verification
+
+- Fresh `--clean`, `--clean` (FUSE), `--clean --debug`: 0 warnings, 0 errors
+- riscv64 ASan/UBSan and x86_64 ASan/UBSan: 394/394, zero findings
+- All eight firmware images run clean under sanitizers on both architectures
+
+---
+
 ## [0.49.7] - 2026-10-01
 
 ### Fixed

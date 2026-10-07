@@ -2836,12 +2836,16 @@ TEST(test_usb_write_no_crash) {
 }
 
 TEST(test_usb_dpram_readback) {
+    extern int membus_rp2350_mode;
+    int saved_usb_mode = membus_rp2350_mode;
+    membus_rp2350_mode = 1;   /* these tests use the RP2350 controller */
     reset_cpu();
     /* DPRAM is real memory — writes should be readable */
     mem_write32(USBCTRL_DPRAM_BASE + 0x80, 0xCAFEBABE);
     ASSERT_EQ(0xCAFEBABE, mem_read32(USBCTRL_DPRAM_BASE + 0x80),
               "USB DPRAM should retain written data");
-    PASS();
+        membus_rp2350_mode = saved_usb_mode;
+PASS();
 }
 
 TEST(test_usb_sie_status_disconnected) {
@@ -2857,11 +2861,15 @@ TEST(test_usb_sie_status_disconnected) {
 }
 
 TEST(test_usb_main_ctrl_readback) {
+    extern int membus_rp2350_mode;
+    int saved_usb_mode = membus_rp2350_mode;
+    membus_rp2350_mode = 1;   /* these tests use the RP2350 controller */
     reset_cpu();
     mem_write32(USBCTRL_REGS_BASE + USB_MAIN_CTRL, 0x01);
     ASSERT_EQ(0x01, mem_read32(USBCTRL_REGS_BASE + USB_MAIN_CTRL),
               "MAIN_CTRL should retain written value");
-    PASS();
+        membus_rp2350_mode = saved_usb_mode;
+PASS();
 }
 
 TEST(test_usb_cdc_stdio_active_requires_bidirectional_console) {
@@ -6834,6 +6842,45 @@ TEST(test_tmds_reachable_from_arm_and_shared_with_rv) {
     PASS();
 }
 
+/* usb_match(), usb_read32() and usb_write32() all hard-coded the RP2350
+ * controller addresses, so on RP2040 the block was never decoded: 8/16-bit
+ * accesses to 0x50000000, which real hardware routes to USB, fell through as
+ * unmapped. RP2040's USB_REGS_BASE (0x50100000) is also RP2350's DPRAM address,
+ * so the two must never both be accepted. */
+TEST(test_usb_reachable_on_both_chips) {
+    extern int membus_rp2350_mode;
+    int saved = membus_rp2350_mode;
+
+    /* RP2040: DPRAM at 0x50000000, registers at 0x50100000. */
+    membus_rp2350_mode = 0;
+    reset_cpu();
+    ASSERT_TRUE(usb_match(USB_DPRAM_BASE_RP2040), "RP2040 USB DPRAM must match");
+    ASSERT_TRUE(usb_match(USB_REGS_BASE_RP2040), "RP2040 USB registers must match");
+    ASSERT_EQ(0, usb_match(USB_REGS_BASE_RP2040 + 0x8000),
+              "an address past the RP2040 USB block must not match");
+
+    /* DPRAM is real memory and must retain writes at the RP2040 address. */
+    mem_write32(USB_DPRAM_BASE_RP2040 + 0x40, 0xFEEDFACEu);
+    ASSERT_EQ(0xFEEDFACEu, mem_read32(USB_DPRAM_BASE_RP2040 + 0x40),
+              "RP2040 USB DPRAM must retain written data");
+
+    /* A controller register must round-trip at the RP2040 address. */
+    mem_write32(USB_REGS_BASE_RP2040, 0x00000001u);      /* ADDR_ENDP */
+    ASSERT_EQ(0x00000001u, mem_read32(USB_REGS_BASE_RP2040),
+              "RP2040 USB registers must round-trip");
+
+    /* RP2350: DPRAM at 0x50100000, registers at 0x50110000. */
+    membus_rp2350_mode = 1;
+    ASSERT_TRUE(usb_match(USBCTRL_DPRAM_BASE), "RP2350 USB DPRAM must match");
+    ASSERT_TRUE(usb_match(USBCTRL_REGS_BASE), "RP2350 USB registers must match");
+    mem_write32(USBCTRL_DPRAM_BASE + 0x40, 0xCAFEBABEu);
+    ASSERT_EQ(0xCAFEBABEu, mem_read32(USBCTRL_DPRAM_BASE + 0x40),
+              "RP2350 USB DPRAM must still retain written data");
+
+    membus_rp2350_mode = saved;
+    PASS();
+}
+
 /* RP2350 moved both I2C controllers -- I2C0 to 0x40090000 and I2C1 to
  * 0x40098000 -- but i2c_match() used the RP2040 constants unconditionally with
  * no per-chip branch, so on RP2350 neither controller was decoded and accesses
@@ -7942,6 +7989,7 @@ int main(void) {
     RUN_TEST(test_arm_spinlocks_survive_the_widened_sio_window);
     RUN_TEST(test_tmds_reachable_from_arm_and_shared_with_rv);
     RUN_TEST(test_tmds_reachable_through_rv_sio_bus);
+    RUN_TEST(test_usb_reachable_on_both_chips);
     RUN_TEST(test_i2c_reachable_on_rp2350);
     RUN_TEST(test_accessctrl_register_map);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);

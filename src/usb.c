@@ -519,11 +519,33 @@ void usb_init(void) {
     usb_state.ep_abort_done = 0xFFFFFFFF;
 }
 
+
+/* USB block bases for the selected chip.
+ *
+ * usb_match(), usb_read32() and usb_write32() all hard-coded the RP2350
+ * addresses (DPRAM 0x50100000, registers 0x50110000), so on RP2040 the block was
+ * never decoded at all: 8/16-bit accesses to 0x50000000, which real hardware
+ * routes to USB, fell through as unmapped. The Hazard3 path rewrites RP2350
+ * addresses to their RP2040 equivalents before delegating, so it must get the
+ * RP2040 bases too, hence the membus_rv_delegate test rather than a plain
+ * membus_rp2350_mode check. */
+static inline uint32_t usb_dpram_base(void) {
+    extern int membus_rp2350_mode, membus_rv_delegate;
+    return (membus_rp2350_mode && !membus_rv_delegate)
+        ? USBCTRL_DPRAM_BASE : USB_DPRAM_BASE_RP2040;
+}
+
+static inline uint32_t usb_regs_base(void) {
+    extern int membus_rp2350_mode, membus_rv_delegate;
+    return (membus_rp2350_mode && !membus_rv_delegate)
+        ? USBCTRL_REGS_BASE : USB_REGS_BASE_RP2040;
+}
+
 int usb_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
-    if (base >= USBCTRL_DPRAM_BASE && base < USBCTRL_DPRAM_BASE + USBCTRL_DPRAM_SIZE)
+    if (base >= usb_dpram_base() && base < usb_dpram_base() + USBCTRL_DPRAM_SIZE)
         return 1;
-    if (base >= USBCTRL_REGS_BASE && base < USBCTRL_REGS_BASE + USBCTRL_REGS_SIZE)
+    if (base >= usb_regs_base() && base < usb_regs_base() + USBCTRL_REGS_SIZE)
         return 1;
     return 0;
 }
@@ -532,15 +554,15 @@ uint32_t usb_read32(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
 
     /* DPRAM reads */
-    if (base >= USBCTRL_DPRAM_BASE && base < USBCTRL_DPRAM_BASE + USBCTRL_DPRAM_SIZE) {
-        uint32_t off = base - USBCTRL_DPRAM_BASE;
+    if (base >= usb_dpram_base() && base < usb_dpram_base() + USBCTRL_DPRAM_SIZE) {
+        uint32_t off = base - usb_dpram_base();
         uint32_t val;
         memcpy(&val, &usb_state.dpram[off], 4);
         return val;
     }
 
     /* Controller registers */
-    uint32_t offset = base - USBCTRL_REGS_BASE;
+    uint32_t offset = base - usb_regs_base();
     switch (offset) {
     case USB_ADDR_ENDP:
         return usb_state.addr_endp;
@@ -590,9 +612,9 @@ void usb_write32(uint32_t addr, uint32_t val) {
     uint32_t alias = (addr >> 12) & 0x3;
 
     /* DPRAM writes (no alias for DPRAM) */
-    if (base >= USBCTRL_DPRAM_BASE && base < USBCTRL_DPRAM_BASE + USBCTRL_DPRAM_SIZE) {
+    if (base >= usb_dpram_base() && base < usb_dpram_base() + USBCTRL_DPRAM_SIZE) {
         usb_state.dpram_touched = 1;
-        uint32_t off = base - USBCTRL_DPRAM_BASE;
+        uint32_t off = base - usb_dpram_base();
         if (alias == 0) {
             memcpy(&usb_state.dpram[off], &val, 4);
         } else {
@@ -609,7 +631,7 @@ void usb_write32(uint32_t addr, uint32_t val) {
     }
 
     /* Controller registers */
-    uint32_t offset = base - USBCTRL_REGS_BASE;
+    uint32_t offset = base - usb_regs_base();
 
     #define ALIAS_APPLY(reg) do { \
         switch (alias) { \

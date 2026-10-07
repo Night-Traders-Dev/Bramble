@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(Bramble
-    VERSION 0.49.7
+    VERSION 0.49.8
     DESCRIPTION "A lightweight RP2040/RP2350 emulator in C"
     LANGUAGES C
 )

@@ -12,9 +12,17 @@
  * ======================================================================== */
 
 /* Base addresses */
+/* RP2350 USB controller. */
 #define USBCTRL_DPRAM_BASE      0x50100000  /* USB dual-port RAM (4KB) */
 #define USBCTRL_DPRAM_SIZE      0x1000
 #define USBCTRL_REGS_BASE       0x50110000  /* USB controller registers */
+
+/* RP2040 USB sits at the same place as DMA (0x50000000) and is told apart by
+ * access width: USB answers 8/16-bit accesses, DMA answers 32-bit ones. RP2040's
+ * USB_REGS_BASE (0x50100000) is also the same address as RP2350's DPRAM, so the
+ * two must never both be accepted. */
+#define USB_DPRAM_BASE_RP2040   0x50000000
+#define USB_REGS_BASE_RP2040    0x50100000
 #define USBCTRL_REGS_SIZE       0x1000
 
 /* Register offsets (from USBCTRL_REGS_BASE) */
