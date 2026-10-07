@@ -6,16 +6,47 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 
 394 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
 
-**v0.49.8** is a correctness release driven by two datasheet-grounded audits (RP2040/RP2350/Hazard3) plus a full correctness, concurrency and security review of the emulator itself. The headline fixes:
+**v0.49.8** is a correctness release. The headline work is a register-decode
+audit against the RP2350 and RP2040 datasheets, plus the memory-bus plumbing
+review that came out of it:
 
-- **RISC-V interrupts actually work.** Peripheral IRQs are now routed from the NVIC into the Hazard3 Xh3irq controller, so `mip.MEIP` can be set and a RISC-V hart can trap on a UART, timer or GPIO interrupt. Previously the pending bit was latched in a structure the RV core never read, so firmware waiting on any peripheral interrupt hung indefinitely.
-- **The Xh3irq CSRs are the ones the hardware has** — MEIEA/MEIPA/MEIFA/MEIPRA/MEINEXT at their real addresses, implemented as the indexed 16-bit array accesses the SDK emits, so `csrs 0xbe0, index | (mask << 16)` does what it looks like.
-- **Per-chip peripheral maps.** GPIO banks, IRQ vectors, SPI, UART FIFOs, PIO, TIMER0/TIMER1, clocks (FC0 offsets, 16.16 `CLK_DIV`, ROSC) and PWM now decode per chip instead of assuming RP2040 numbering on both.
-- **Memory safety.** Closed guest-triggerable out-of-bounds writes in flash ROM erase/program, flash persistence, SD/eMMC block arithmetic and the GDB packet parser, and a `SIGPIPE` that could kill the process.
-- **Concurrency.** Real ARM `WFE` event register, latched `SEV`, spinlock and FIFO wakeups, correct thread lifecycle, and no more PIO/USB core starvation or timer double-tick.
-- **Storage.** FAT16/FAT32 geometry, cluster and directory-entry bounds checks; 32-bit sector counts; validated FUSE offsets; and `emu_flash_size` used consistently by ELF and UF2 loading.
+- **Peripherals whose decode could never be reached.** All of these compiled
+  clean, passed the full suite and ran every firmware image while the peripheral
+  was dead: RP2350 TICKS (register offsets were discarded, so every register
+  resolved to generator 0, and the generator stride was 8 instead of 12);
+  RP2350 PIO interrupts (the IRQ registers sat at `0x128`-`0x140`, which is
+  actually the RX FIFO PUTGET window); RP2350 `DMA_IRQ_2`/`IRQ_3` (never decoded);
+  the RP2350 TMDS encoder (`0x1c0`-`0x1e4` was unmapped, and unreachable from
+  the Arm cores even once mapped); ACCESSCTRL (a dead branch at `0x40160000` when
+  the real base is `0x40060000`); I2C on RP2350 (no per-chip branch, so neither
+  controller was decoded); and USB on RP2040 (bases hard-coded to RP2350, so
+  `0x50000000` fell through unmapped instead of reaching USB).
+- **Arm spinlocks were swallowed** by the widened SIO window — a regression found
+  and fixed in the same session that introduced it. `SPINLOCK_BASE` is
+  `SIO_BASE + 0x100`, so widening the window to `0x200` for TMDS made the window
+  test win over the spinlock test.
+- **Byte and halfword access.** `mem_write8` discarded SIO writes outright and
+  `mem_read8`/`mem_read16` returned `0xFF`/0 for most peripherals, so `LDRB`
+  from `SIO_GPIO_IN` and `STRB` to `SIO_GPIO_OUT` were both broken. Reads now
+  fall back to the 32-bit bus. Sub-word *writes* beyond SIO stay unfixed on
+  purpose: a blanket read-modify-write against a FIFO register is audit item
+  O28, so widening that needs a per-device access-width list rather than a guess.
+- **Watchdog.** `LOAD` was stored and never counted, so firmware that armed the
+  watchdog to recover from a hang would spin forever instead of being reset.
+- **VFP.** `.64` load/store indexed a 16-entry array by a register number
+  reaching D31, overwriting an adjacent global; the single and double views did
+  not alias; and `VMOV` between a core register and a VFP register never worked
+  (its opcode mask pinned the direction bit, and the instruction was not
+  dispatched at all).
+- **Memory safety, concurrency and storage**, from the earlier review: guest
+  out-of-bounds writes in flash erase/program and the GDB packet parser, a
+  `SIGPIPE` that could kill the process, real ARM `WFE`/`SEV` wakeups, spinlock
+  and FIFO wakeups, FAT16/FAT32 geometry and bounds checks, and validated FUSE
+  offsets.
 
-Verification: 394/394 tests, and 0 AddressSanitizer / UndefinedBehaviorSanitizer reports on both x86_64 and riscv64 across the suite and all eight bundled firmware images. See `docs/full_audit.md` and `docs/datasheet_audit.md` for the findings and what remains open.
+Verification: 394/394 tests, and 0 AddressSanitizer / UndefinedBehaviorSanitizer reports on both x86_64 and riscv64 across the suite and all eight bundled firmware images. See `docs/full_audit.md` for current findings, the audit queue and what remains
+open; `docs/datasheet_audit.md` is the point-in-time datasheet audit and
+`docs/audit_report.md` is the older internal code review it supersedes.
 
 ### Coverage
 
@@ -458,7 +489,7 @@ Bramble/
 │   └── rp2350_arm/
 │       └── m33_cpu.h       # Cortex-M33 placeholder
 ├── tests/
-│   └── test_suite.c    # Unit test suite (366 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (394 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test

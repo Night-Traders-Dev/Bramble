@@ -776,7 +776,7 @@ gated on `BRAMBLE_TEST_TAP` so the suite still passes without root.
 `fuse_mount`'s entry validation is covered and its data path needs a live
 `/dev/fuse` mount, exercised manually via `-mount` rather than in the suite.
 
-The coverage figure in the original report (19.9%) is superseded: 366 tests, up
+The coverage figure in the original report (19.9%) is superseded: 394 tests, up
 from 319, and no source file is unreferenced.
 
 One trap worth recording for anyone adding tests here: `PASS()` does **not**
@@ -847,6 +847,31 @@ instead of their `0xFF` reset value -- "nothing accessible" rather than
 datasheet rather than trusting the model. BOOTRAM, the other nine bases, and
 window overlap were checked in the same pass and were clean.
 
+### I2C on RP2350 — **fixed in 0.49.7**
+`src/i2c.c`. RP2350 moved I2C0 to `0x40090000` and I2C1 to `0x40098000`, but
+`i2c_match()` used the RP2040 constants with no per-chip branch, so neither
+controller was decoded on RP2350. `uart_match()` and `spi_match()` already
+branch. No test firmware exercises I2C, so the suite passed throughout.
+
+Worth noting how this was found: checking `uart` first *looked* like a bug,
+because `UART0_BASE` in `uart.h` is the RP2040 address. `uart_match()` selects
+per chip, so it was a false alarm -- but asking the same question of I2C turned
+up the real bug. Check each peripheral rather than stopping at the first
+plausible-looking problem.
+
+### USB on RP2040 — **fixed in 0.49.8**
+`src/usb.c`. `usb_match()`, `usb_read32()` and `usb_write32()` all hard-coded the
+RP2350 controller addresses (DPRAM `0x50100000`, registers `0x50110000`), so the
+block was never decoded on RP2040 and sub-word accesses to `0x50000000` — which
+real hardware routes to USB, telling it apart from DMA by access width — fell
+through as unmapped. Bases are now selected per chip.
+
+Found by listing every `*_match` function and checking each for a per-chip
+branch, rather than reading peripherals one at a time. Sixteen use a `_BASE`
+constant without branching; most are RP2350-only or share an address across both
+chips, but each had to be confirmed individually. Two of them were outright
+broken.
+
 ## Register-decode audit queue
 
 Method: for each peripheral, take the base address and register offsets from the
@@ -881,6 +906,14 @@ Rules learned the hard way:
   branch and were dead on one chip.)
 - `src/membus.c` other-than-SIO: clocks, timers, XIP, DMA, PIO, UART, SPI, I2C,
   ADC, PWM, HSTX, USB, RTC.
+- Matchers from the systematic sweep that use a `_BASE` constant without a
+  per-chip branch and were **not** individually confirmed yet: `syscfg`,
+  `tbman`, `rtc`, `pads_qspi`, `io_qspi`, `busctrl`, `dma`, `ticks`, `vreg`,
+  `trng`, `sha256`, `otp`, `hstx`. Most are RP2350-only or share an address
+  across both chips and are probably fine -- but I2C and USB were both in this
+  list and both were outright broken, so each one needs confirming rather than
+  assuming. `rp2350_periph_match` is exempt: it is only reached when
+  `membus_rp2350_mode` is already set.
 - Sub-word *write* paths beyond SIO — deliberately unfixed, because a blanket
   read-modify-write against a FIFO register is audit item O28.
 
@@ -891,28 +924,3 @@ Rules learned the hard way:
   read-modify-write on a FIFO register has side effects. The TMDS data-symbol
   encoding is in the same category — implemented, never validated against a
   reference decoder.
-
-### I2C on RP2350 — **fixed in 0.49.7**
-`src/i2c.c`. RP2350 moved I2C0 to `0x40090000` and I2C1 to `0x40098000`, but
-`i2c_match()` used the RP2040 constants with no per-chip branch, so neither
-controller was decoded on RP2350. `uart_match()` and `spi_match()` already
-branch. No test firmware exercises I2C, so the suite passed throughout.
-
-Worth noting how this was found: checking `uart` first *looked* like a bug,
-because `UART0_BASE` in `uart.h` is the RP2040 address. `uart_match()` selects
-per chip, so it was a false alarm -- but asking the same question of I2C turned
-up the real bug. Check each peripheral rather than stopping at the first
-plausible-looking problem.
-
-### USB on RP2040 — **fixed in 0.49.8**
-`src/usb.c`. `usb_match()`, `usb_read32()` and `usb_write32()` all hard-coded the
-RP2350 controller addresses (DPRAM `0x50100000`, registers `0x50110000`), so the
-block was never decoded on RP2040 and sub-word accesses to `0x50000000` — which
-real hardware routes to USB, telling it apart from DMA by access width — fell
-through as unmapped. Bases are now selected per chip.
-
-Found by listing every `*_match` function and checking each for a per-chip
-branch, rather than reading peripherals one at a time. Sixteen use a `_BASE`
-constant without branching; most are RP2350-only or share an address across both
-chips, but each had to be confirmed individually. Two of them were outright
-broken.

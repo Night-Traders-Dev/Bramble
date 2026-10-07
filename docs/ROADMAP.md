@@ -1,6 +1,6 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.45.0
+## Current State: v0.49.8
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -8,10 +8,10 @@
 | RP2350 RV | Complete | Hazard3: 130+ instructions (RV32IMAC + Zba/Zbb/Zbs/Zcb/Zcmp), Hazard3 CSRs, CLINT, SDK bootrom, icache, GDB, semihosting |
 | RP2350 ARM | Complete | Cortex-M33 (`-arch m33`): full Thumb-2 engine reuse, BASEPRI, M33 CPUID (0x410FD210), UF2 auto-detect |
 | RP2350 Peripherals | Complete | TICKS, POWMAN, QMI, OTP+data, BOOTRAM, TIMER1, PIO2, 48 GPIO, GLITCH, CORESIGHT, ACCESSCTRL |
-| Memory Map | 100% | RP2040: all regions. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals + SIO with hart launch |
-| Peripherals | 100% | All 30 RP2040 peripherals + 11 RP2350-specific peripherals |
+| Memory Map | Broad, not complete | RP2040: all regions. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals + SIO with hart launch |
+| Peripherals | Broad, not complete | All 30 RP2040 + 11 RP2350 peripherals modelled; a register-decode audit found several that compiled and ran while being unreachable (see `full_audit.md`) |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
-| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec, MRET, CLINT, Hazard3 ext IRQ |
+| Exceptions | No bus faults | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec, MRET, CLINT, Hazard3 ext IRQ |
 | Boot | 100% | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash entry), picobin parser |
 | Firmware | MicroPython + CircuitPython + littleOS | RP2040 firmware + RP2350 RV32 UF2/ELF auto-detection |
 | Networking | UART-to-TCP + VNet | Bridge UART to TCP, virtual network bus with TAP/peer mesh, W5500 live sockets |
@@ -19,9 +19,16 @@
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 | Privilege | Auto-sudo | `-tap`, `-net`, `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting (ARM+RV), coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
-| Validation | 319 tests | 276 RP2040 + 20 RISC-V + 4 M33 + 19 networking tests |
+| Validation | 394 tests | 57+ categories, RP2040 + RISC-V + M33 + networking; clean under ASan/UBSan on x86_64 and riscv64 |
 
-### Recent Changes (v0.45.0)
+### Recent Changes
+
+Correctness releases v0.48.5 through v0.49.8, all audit-driven. See
+`CHANGELOG.md` for the per-release detail and `full_audit.md` for the
+outstanding register-decode queue and the two items still blocked on hardware
+(RISC-V bus-fault exceptions, and O28 atomic-alias side effects).
+
+### v0.45.0
 
 - **Virtual Network Bus (vnet)**: Central Ethernet frame routing layer. Device models (CYW43, W5500, SDDs) register as ports; frames routed between ports, TAP interface, and peer Bramble instances.
 - **Single-Command Internet Bridge**: `-net` flag creates TAP + NAT in one step with auto-sudo. Works for both WiFi (CYW43) and Ethernet (W5500) firmware.
