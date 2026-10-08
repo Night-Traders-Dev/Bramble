@@ -6916,6 +6916,141 @@ TEST(test_i2c_reachable_on_rp2350) {
     PASS();
 }
 
+/* Two more matchers in the same category as I2C and USB. Both used a single
+ * RP2040 base with no per-chip branch:
+ *   syscfg_match() -- RP2040 0x40004000, RP2350 0x40008000
+ *   tbman_match()  -- RP2040 0x4006C000, RP2350 0x40160000
+ * The RP2350 constants already existed in rp2350_memmap.h; nothing referenced
+ * them. So on RP2350 both peripherals were unmapped, and TBMAN.PLATFORM read 0
+ * instead of 1 -- firmware that gates on "am I an ASIC?" would believe it was
+ * neither an ASIC nor an FPGA. */
+TEST(test_syscfg_reachable_on_rp2350) {
+    extern int membus_rp2350_mode;
+    int saved_mode = membus_rp2350_mode;
+    int saved_delegate = membus_rv_delegate;
+
+    membus_rv_delegate = 0;
+
+    membus_rp2350_mode = 1;
+    ASSERT_EQ(1, syscfg_match(RP2350_SYSCFG_BASE),
+              "RP2350 SYSCFG base must be matched");
+    ASSERT_EQ(1, syscfg_match(RP2350_SYSCFG_BASE + 0x18),
+              "an offset inside the page must still match");
+    ASSERT_EQ(0, syscfg_match(RP2350_SYSCFG_BASE + 0x8000),
+              "an address past the block must not match");
+    ASSERT_EQ(0, syscfg_match(SYSCFG_BASE_RP2040),
+              "the RP2040 SYSCFG base must not match on RP2350");
+
+    /* Also go through the bus, so this covers the dispatch and not just the
+     * matcher. DEVID / CPUCFG are plain storage above PROC_CONFIG. */
+    mem_write32(RP2350_SYSCFG_BASE + 0x0Cu, 0xABCDu);
+    ASSERT_EQ(0xABCDu, mem_read32(RP2350_SYSCFG_BASE + 0x0Cu),
+              "RP2350 SYSCFG must round-trip through the bus");
+
+    membus_rp2350_mode = 0;
+    ASSERT_EQ(1, syscfg_match(SYSCFG_BASE_RP2040),
+              "RP2040 SYSCFG must still match");
+    ASSERT_EQ(0, syscfg_match(RP2350_SYSCFG_BASE),
+              "the RP2350 SYSCFG base must not match on RP2040");
+
+    membus_rp2350_mode = saved_mode;
+    membus_rv_delegate = saved_delegate;
+    PASS();
+}
+
+TEST(test_tbman_reachable_on_rp2350) {
+    extern int membus_rp2350_mode;
+    int saved_mode = membus_rp2350_mode;
+    int saved_delegate = membus_rv_delegate;
+
+    membus_rv_delegate = 0;
+
+    membus_rp2350_mode = 1;
+    ASSERT_EQ(1, tbman_match(RP2350_TBMAN_BASE),
+              "RP2350 TBMAN base must be matched");
+    ASSERT_EQ(0, tbman_match(RP2350_TBMAN_BASE + 0x8000),
+              "an address past the block must not match");
+    ASSERT_EQ(0, tbman_match(TBMAN_BASE_RP2040),
+              "the RP2040 TBMAN base must not match on RP2350");
+
+    /* PLATFORM must read 1 (ASIC) on both chips once the block is decoded. */
+    ASSERT_EQ(1, tbman_read(0x00), "TBMAN PLATFORM must report ASIC");
+    ASSERT_EQ(0, tbman_read(0x04), "TBMAN unused slot must read 0");
+
+    /* Through the bus: before the fix this read 0, because the block was
+     * unmapped on RP2350 rather than because PLATFORM was 0. */
+    ASSERT_EQ(1, mem_read32(RP2350_TBMAN_BASE),
+              "TBMAN.PLATFORM must read 1 through the bus on RP2350");
+
+    membus_rp2350_mode = 0;
+    ASSERT_EQ(1, tbman_match(TBMAN_BASE_RP2040),
+              "RP2040 TBMAN must still match");
+    ASSERT_EQ(0, tbman_match(RP2350_TBMAN_BASE),
+              "the RP2350 TBMAN base must not match on RP2040");
+
+    membus_rp2350_mode = saved_mode;
+    membus_rv_delegate = saved_delegate;
+    PASS();
+}
+
+/* busctrl_match() and io_qspi_match() are static, so these go through the bus.
+ *
+ * Both moved on RP2350: BUSCTRL 0x40030000 -> 0x40068000, IO_QSPI 0x40018000
+ * -> 0x40030000. Neither had a per-chip branch, so on RP2350 BUSCTRL was
+ * unmapped (perf counters read 0, which is what pico_rand seeds from) and QSPI
+ * pad control was unmapped.
+ *
+ * The two cases are also entangled: RP2350's IO_QSPI base is exactly RP2040's
+ * BUSCTRL base. So 0x40030000 must behave as BUSCTRL on RP2040 and as IO_QSPI
+ * on RP2350 -- which makes it a direct test of the branch rather than of either
+ * block alone. */
+TEST(test_busctrl_io_qspi_reachable_on_rp2350) {
+    extern int membus_rp2350_mode;
+    int saved_mode = membus_rp2350_mode;
+    int saved_delegate = membus_rv_delegate;
+
+    /* 0x40030000: RP2040 BUSCTRL, RP2350 IO_QSPI. Pin 0 CTRL is +0x04 and is
+     * read/write; IO_QSPI pin 0 STATUS at +0x00 is read-only and reads 0. */
+    const uint32_t shared = 0x40030000u;
+
+    membus_rv_delegate = 0;
+
+    membus_rp2350_mode = 0;
+    mem_write32(shared, 0x1111u);
+    ASSERT_EQ(0x1111u, mem_read32(shared),
+              "0x40030000 must be BUSCTRL.BUS_PRIORITY on RP2040");
+
+    membus_rp2350_mode = 1;
+
+    /* Same address, now an IO_QSPI pin STATUS: read-only, so a write must not
+     * stick. If BUSCTRL still claimed it this would read back 0x1111. */
+    ASSERT_EQ(0, mem_read32(shared),
+              "0x40030000 must be IO_QSPI STATUS on RP2350, not BUSCTRL");
+    mem_write32(shared + 0x04u, 0x0006u);
+    ASSERT_EQ(0x0006u, mem_read32(shared + 0x04u),
+              "IO_QSPI pin 0 CTRL must round-trip on RP2350");
+
+    /* BUSCTRL at its RP2350 base. BUS_PRIORITY is masked to 0x1111 on write. */
+    mem_write32(RP2350_BUSCTRL_BASE, 0x1111u);
+    ASSERT_EQ(0x1111u, mem_read32(RP2350_BUSCTRL_BASE),
+              "RP2350 BUSCTRL.BUS_PRIORITY must round-trip");
+
+    /* The RP2040 IO_QSPI base must not be claimed on RP2350. */
+    ASSERT_EQ(0, mem_read32(0x40018000u + 0x04u),
+              "the RP2040 IO_QSPI base must not decode on RP2350");
+
+    membus_rp2350_mode = 0;
+    mem_write32(0x40018000u + 0x04u, 0x0003u);
+    ASSERT_EQ(0x0003u, mem_read32(0x40018000u + 0x04u),
+              "RP2040 IO_QSPI must still round-trip");
+    ASSERT_EQ(0, mem_read32(RP2350_BUSCTRL_BASE),
+              "the RP2350 BUSCTRL base must not decode on RP2040");
+
+    membus_rp2350_mode = saved_mode;
+    membus_rv_delegate = saved_delegate;
+    PASS();
+}
+
 /* ACCESSCTRL registers are at 0x40060000. Both the read and write handlers
  * tested a hard-coded 0x40160000 instead, which is not a matched region at all,
  * so the branch was dead and every ACCESSCTRL register read 0 rather than its
@@ -7993,6 +8128,9 @@ int main(void) {
     RUN_TEST(test_tmds_reachable_through_rv_sio_bus);
     RUN_TEST(test_usb_reachable_on_both_chips);
     RUN_TEST(test_i2c_reachable_on_rp2350);
+    RUN_TEST(test_syscfg_reachable_on_rp2350);
+    RUN_TEST(test_tbman_reachable_on_rp2350);
+    RUN_TEST(test_busctrl_io_qspi_reachable_on_rp2350);
     RUN_TEST(test_accessctrl_register_map);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);
     RUN_TEST(test_dma_extra_irqs_are_rp2350_only);

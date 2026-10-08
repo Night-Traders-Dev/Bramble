@@ -1,6 +1,6 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.49.8
+## Current State: v0.49.9
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -19,11 +19,11 @@
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 | Privilege | Auto-sudo | `-tap`, `-net`, `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting (ARM+RV), coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
-| Validation | 394 tests | 57+ categories, RP2040 + RISC-V + M33 + networking; clean under ASan/UBSan on x86_64 and riscv64 |
+| Validation | 397 tests | 57+ categories, RP2040 + RISC-V + M33 + networking; clean under ASan/UBSan on x86_64 and riscv64 |
 
 ### Recent Changes
 
-Correctness releases v0.48.5 through v0.49.8, all audit-driven. See
+Correctness releases v0.48.5 through v0.49.9, all audit-driven. See
 `CHANGELOG.md` for the per-release detail and `full_audit.md` for the
 outstanding register-decode queue and the two items still blocked on hardware
 (RISC-V bus-fault exceptions, and O28 atomic-alias side effects).

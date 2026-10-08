@@ -142,7 +142,9 @@ void timeout_cancel(void);
  * Mostly read-only on real hardware.
  * ======================================================================== */
 
-#define SYSCFG_BASE     0x40004000
+/* Chip-dependent: RP2040 decodes SYSCFG at 0x40004000, RP2350 at 0x40008000.
+ * See syscfg_match() -- a single base left the peripheral unmapped on RP2350. */
+#define SYSCFG_BASE_RP2040  0x40004000
 #define SYSCFG_SIZE     0x20
 
 int  syscfg_match(uint32_t addr);
@@ -156,7 +158,7 @@ void syscfg_write(uint32_t offset, uint32_t val);
  * simulation.  Returns PLATFORM=1 (simulation) for emulator.
  * ======================================================================== */
 
-#define TBMAN_BASE      0x4006C000
+#define TBMAN_BASE_RP2040   0x4006C000
 #define TBMAN_SIZE      0x08
 
 int  tbman_match(uint32_t addr);

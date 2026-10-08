@@ -124,7 +124,7 @@ static uint32_t sysinfo_read(uint32_t offset) {
  * Used by pico_rand for entropy seeding.
  * ======================================================================== */
 
-#define BUSCTRL_BASE 0x40030000
+#define BUSCTRL_BASE_RP2040 0x40030000
 
 static uint32_t busctrl_bus_priority = 0;
 static uint32_t busctrl_perfsel[4] = {0x1F, 0x1F, 0x1F, 0x1F};  /* Reset value */
@@ -132,7 +132,12 @@ static uint32_t busctrl_perfctr[4] = {0, 0, 0, 0};
 
 static int busctrl_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
-    return base >= BUSCTRL_BASE && base < BUSCTRL_BASE + 0x1000;
+    /* RP2350 moves BUSCTRL to 0x40068000 (RP2350_BUSCTRL_BASE); the RP2040 base
+     * is 0x40030000. No per-chip branch here meant BUSCTRL was unmapped on
+     * RP2350, so the perf counters that pico_rand seeds from read as 0. */
+    uint32_t bbase = (membus_rp2350_mode && !membus_rv_delegate)
+                   ? RP2350_BUSCTRL_BASE : BUSCTRL_BASE_RP2040;
+    return base >= bbase && base < bbase + 0x1000;
 }
 
 static uint32_t busctrl_read(uint32_t offset) {
@@ -175,7 +180,7 @@ static void busctrl_write(uint32_t offset, uint32_t val) {
  * Plus INTR/INTE/INTF/INTS at 0x30-0x3C
  * ======================================================================== */
 
-#define IO_QSPI_BASE        0x40018000
+#define IO_QSPI_BASE_RP2040   0x40018000
 #define IO_QSPI_BLOCK_SIZE  0x60
 
 /* Store CTRL registers for 6 QSPI GPIOs + interrupt registers */
@@ -185,7 +190,17 @@ static uint32_t io_qspi_intf;
 
 static int io_qspi_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000;
-    return (base >= IO_QSPI_BASE && base < IO_QSPI_BASE + IO_QSPI_BLOCK_SIZE);
+    /* RP2350 moves the QSPI bank IO registers to 0x40030000
+     * (RP2350_IO_QSPI_BASE); the RP2040 base is 0x40018000. No per-chip branch
+     * meant QSPI pad control was unmapped on RP2350.
+     *
+     * Note the collision that makes the branch mandatory rather than optional:
+     * RP2350's IO_QSPI base 0x40030000 is exactly RP2040's BUSCTRL base. A
+     * single union of both windows would let one chip's peripheral shadow the
+     * other's. */
+    uint32_t qbase = (membus_rp2350_mode && !membus_rv_delegate)
+                   ? RP2350_IO_QSPI_BASE : IO_QSPI_BASE_RP2040;
+    return (base >= qbase && base < qbase + IO_QSPI_BLOCK_SIZE);
 }
 
 static uint32_t io_qspi_read(uint32_t offset) {

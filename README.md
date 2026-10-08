@@ -2,11 +2,23 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.49.8
+## Current Status: v0.49.9
 
-394 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
+397 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
 
-**v0.49.8** is a correctness release. The headline work is a register-decode
+**v0.49.9** continues the register-decode audit and closes four more per-chip
+decode gaps. `syscfg_match()`, `tbman_match()`, `busctrl_match()` and
+`io_qspi_match()` each used a single RP2040 base, so on RP2350 all four were
+unmapped -- the third batch of this defect after I2C and USB, and the RP2350
+constants had been sitting unused in `rp2350_memmap.h` every time. Two are
+worth more than their size suggests: `TBMAN.PLATFORM` read 0 instead of 1, which
+is not a safe default for firmware branching on "am I an ASIC?", and
+`BUSCTRL`'s perf counters read 0 rather than their `0x1F` `PERFSEL` reset value,
+which is what `pico_rand` seeds from. The four cases are also entangled -- RP2350's
+`IO_QSPI_BASE` is exactly RP2040's `BUSCTRL_BASE`, both `0x40030000` -- so they
+had to be branched apart rather than merged.
+
+**v0.49.8** was a correctness release. The headline work is a register-decode
 audit against the RP2350 and RP2040 datasheets, plus the memory-bus plumbing
 review that came out of it:
 

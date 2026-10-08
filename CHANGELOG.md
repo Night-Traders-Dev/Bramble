@@ -1,5 +1,61 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.9] - 2026-10-08
+
+### Fixed
+
+- **Four more per-chip decode gaps: SYSCFG, TBMAN, BUSCTRL and IO_QSPI.** All
+  four matchers used a single RP2040 base with no per-chip branch, so on RP2350
+  none of them were decoded and accesses fell through as unmapped. This is the
+  third instance of the same defect after I2C (0.49.7) and USB (0.49.8), and the
+  RP2350 constants had in every case already been sitting unused in
+  `rp2350_memmap.h`.
+
+  | Peripheral | RP2040    | RP2350    | Effect on RP2350                        |
+  |------------|-----------|-----------|-----------------------------------------|
+  | SYSCFG     | `0x40004000` | `0x40008000` | unmapped                       |
+  | TBMAN      | `0x4006C000` | `0x40160000` | unmapped; `PLATFORM` read 0   |
+  | BUSCTRL    | `0x40030000` | `0x40068000` | perf counters read 0           |
+  | IO_QSPI    | `0x40018000` | `0x40030000` | QSPI pad control unmapped      |
+
+  The consequences were not all cosmetic. `TBMAN.PLATFORM` reads 1 on real
+  silicon and 0 here, and 0 is not a safe default: firmware that branches on
+  "am I an ASIC?" concludes it is running on neither an ASIC nor an FPGA.
+  `BUSCTRL`'s performance counters are what `pico_rand` seeds its entropy from,
+  and the reset value of `PERFSEL` is 0x1F, not the 0 that an unmapped block
+  returns.
+
+  Each matcher now selects its base on `membus_rp2350_mode && !membus_rv_delegate`,
+  the same test `uart_match()`, `spi_match()`, `i2c_match()` and `usb_match()`
+  already use. Bases renamed to `*_RP2040` to make the pairing explicit.
+
+  One detail makes the branch mandatory rather than stylistic: RP2350's
+  `IO_QSPI_BASE` is exactly RP2040's `BUSCTRL_BASE`, both `0x40030000`. A
+  single union of the two windows would let each chip's peripheral shadow the
+  other's, so the two cases have to be distinguished, not merged.
+
+- `syscfg_match()` and `tbman_match()` were in `devtools.c` and assumed a single
+  chip throughout.
+
+### Tests
+
+- 397 tests, up from 394. Three new ones, each covering a region above *and*
+  through the bus so the dispatch is exercised rather than just the matcher:
+  - `test_syscfg_reachable_on_rp2350`
+  - `test_tbman_reachable_on_rp2350`
+  - `test_busctrl_io_qspi_reachable_on_rp2350`
+
+  The last one uses `0x40030000` as the discriminator, since it must behave as
+  `BUSCTRL.BUS_PRIORITY` on RP2040 and as a read-only `IO_QSPI` pin `STATUS` on
+  RP2350 -- so a missing branch shows up as the wrong block answering, not just
+  as an address that stops matching.
+
+  All three are load-bearing: reverting the four branches drops the suite to
+  394/397. Each chip's bases were cross-checked against pico-sdk's per-chip
+  `hardware/regs/addressmap.h` rather than the RP2350 datasheet alone, which is
+  what corrected an assumption worth recording -- RP2040's `BUSCTRL_BASE` really
+  is `0x40030000`, which the RP2350 datasheet alone would not have shown.
+
 ## [0.49.8] - 2026-10-01
 
 ### Fixed

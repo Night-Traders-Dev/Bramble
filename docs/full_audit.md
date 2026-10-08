@@ -907,13 +907,24 @@ Rules learned the hard way:
 - `src/membus.c` other-than-SIO: clocks, timers, XIP, DMA, PIO, UART, SPI, I2C,
   ADC, PWM, HSTX, USB, RTC.
 - Matchers from the systematic sweep that use a `_BASE` constant without a
-  per-chip branch and were **not** individually confirmed yet: `syscfg`,
-  `tbman`, `rtc`, `pads_qspi`, `io_qspi`, `busctrl`, `dma`, `ticks`, `vreg`,
-  `trng`, `sha256`, `otp`, `hstx`. Most are RP2350-only or share an address
-  across both chips and are probably fine -- but I2C and USB were both in this
-  list and both were outright broken, so each one needs confirming rather than
-  assuming. `rp2350_periph_match` is exempt: it is only reached when
-  `membus_rp2350_mode` is already set.
+  per-chip branch: `rtc`, `dma`, `vreg`, `trng`, `sha256`, `otp`, `hstx`.
+  Most are RP2350-only or share an address across both chips and are probably
+  fine -- but I2C and USB were both in this list and both were outright broken,
+  so each one needs confirming rather than assuming. `rtc` is RP2040-only and
+  its base already matches; `trng`, `sha256`, `otp`, `hstx` and `ticks` are
+  RP2350-only and their bases were confirmed against the datasheet.
+
+  `syscfg`, `tbman`, `busctrl`, `io_qspi` and `dma`-adjacent windows were also
+  in this list and were **all broken** -- now fixed in 0.49.9. `pads_qspi`
+  already branched correctly. `rp2350_periph_match` is exempt: it is only
+  reached when `membus_rp2350_mode` is already set.
+
+  The reliable cross-check is pico-sdk's per-chip
+  `src/<chip>/hardware_regs/include/hardware/regs/addressmap.h`, which lists
+  every base for that chip. The RP2350 datasheet alone is not enough: it cannot
+  show that a constant already used is really the *RP2040* one. Checking
+  against it is what showed RP2040's `BUSCTRL_BASE` is `0x40030000` and that
+  this collides with RP2350's `IO_QSPI_BASE`.
 - Sub-word *write* paths beyond SIO — deliberately unfixed, because a blanket
   read-modify-write against a FIFO register is audit item O28.
 

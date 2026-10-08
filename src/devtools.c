@@ -12,6 +12,7 @@
 #include <inttypes.h>
 #include "emulator.h"
 #include "devtools.h"
+#include "rp2350_rv/rp2350_memmap.h"
 
 /* ========================================================================
  * ARM Semihosting
@@ -423,7 +424,13 @@ static uint32_t syscfg_regs[SYSCFG_SIZE / 4];
 
 int syscfg_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000u;
-    return (base >= SYSCFG_BASE && base < SYSCFG_BASE + SYSCFG_SIZE);
+    /* RP2350 moves SYSCFG to 0x40008000 (RP2350_SYSCFG_BASE); the RP2040 base
+     * is 0x40004000. This function had no per-chip branch, so on RP2350 the
+     * peripheral was never decoded and accesses fell through as unmapped.
+     * uart_match()/spi_match()/i2c_match() branch already; this now joins them. */
+    uint32_t sbase = (membus_rp2350_mode && !membus_rv_delegate)
+                   ? RP2350_SYSCFG_BASE : SYSCFG_BASE_RP2040;
+    return (base >= sbase && base < sbase + SYSCFG_SIZE);
 }
 
 uint32_t syscfg_read(uint32_t offset) {
@@ -456,7 +463,12 @@ void syscfg_write(uint32_t offset, uint32_t val) {
 
 int tbman_match(uint32_t addr) {
     uint32_t base = addr & ~0x3000u;
-    return (base >= TBMAN_BASE && base < TBMAN_BASE + TBMAN_SIZE);
+    /* RP2350 moves TBMAN to 0x40160000 (RP2350_TBMAN_BASE); the RP2040 base is
+     * 0x4006C000. Like syscfg_match(), this had no per-chip branch, so TBMAN
+     * was unmapped on RP2350 and PLATFORM read as 0 instead of 1 (ASIC). */
+    uint32_t tbase = (membus_rp2350_mode && !membus_rv_delegate)
+                   ? RP2350_TBMAN_BASE : TBMAN_BASE_RP2040;
+    return (base >= tbase && base < tbase + TBMAN_SIZE);
 }
 
 uint32_t tbman_read(uint32_t offset) {
