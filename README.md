@@ -2,11 +2,20 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.49.9
+## Current Status: v0.49.10
 
-397 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
+398 tests passing. **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation with Zba, Zbb, Zbs, Zcb, Zcmp, and Zbkb extensions. Boots MicroPython Pico 2 RISC-V and SagePico REPL with full semihosting I/O. **RP2350 ARM**: Cortex-M33 mode (`-arch m33`) with RP2350 ROM format and clock-domain peripheral address mapping. Boots to TinyUSB init. **Tri-architecture**: `-arch m0+` / `-arch m33` / `-arch rv32` with automatic firmware detection via UF2 family ID and picobin IMAGE_DEF blocks. **Networking**: Virtual network bus with TAP bridge, multi-instance Ethernet mesh, W5500 live sockets, and software-defined devices.
 
-**v0.49.9** continues the register-decode audit and closes four more per-chip
+**v0.49.10** closes one more of the same class: `is_adc_addr()` had no per-chip
+branch, so on RP2350 it claimed `0x4004C000` -- where the ADC isn't -- and the
+real ADC at `0x400A0000` was unmapped. It hid better than the earlier ones
+because there's no `adc_match()` function, just a predicate inlined at the read
+and write call sites, so a sweep searching for matchers by name missed it.
+The rest of the queue (`dma`, `rtc`, `vreg`, `trng`, `sha256`, `otp`, `hstx`,
+`ticks`) is confirmed correct against pico-sdk's per-chip headers and documented
+as such.
+
+**v0.49.9** continued the register-decode audit and closed four more per-chip
 decode gaps. `syscfg_match()`, `tbman_match()`, `busctrl_match()` and
 `io_qspi_match()` each used a single RP2040 base, so on RP2350 all four were
 unmapped -- the third batch of this defect after I2C and USB, and the RP2350

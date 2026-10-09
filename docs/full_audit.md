@@ -906,25 +906,27 @@ Rules learned the hard way:
   branch and were dead on one chip.)
 - `src/membus.c` other-than-SIO: clocks, timers, XIP, DMA, PIO, UART, SPI, I2C,
   ADC, PWM, HSTX, USB, RTC.
-- Matchers from the systematic sweep that use a `_BASE` constant without a
-  per-chip branch: `rtc`, `dma`, `vreg`, `trng`, `sha256`, `otp`, `hstx`.
-  Most are RP2350-only or share an address across both chips and are probably
-  fine -- but I2C and USB were both in this list and both were outright broken,
-  so each one needs confirming rather than assuming. `rtc` is RP2040-only and
-  its base already matches; `trng`, `sha256`, `otp`, `hstx` and `ticks` are
-  RP2350-only and their bases were confirmed against the datasheet.
+- ~~Matchers from the systematic sweep that use a `_BASE` constant without a
+  per-chip branch~~ — **queue closed in 0.49.10.** Six were broken and are now
+  fixed: `syscfg`, `tbman`, `busctrl`, `io_qspi` (0.49.9) and the ADC
+  (0.49.10). The rest are confirmed correct: `dma`, `rtc`, `vreg`, `trng`,
+  `sha256`, `otp`, `hstx`, `ticks`, plus `pwm` and `pads_qspi`, which already
+  branched. `rp2350_periph_match` was exempt throughout: it is only reached when
+  `membus_rp2350_mode` is already set.
 
-  `syscfg`, `tbman`, `busctrl`, `io_qspi` and `dma`-adjacent windows were also
-  in this list and were **all broken** -- now fixed in 0.49.9. `pads_qspi`
-  already branched correctly. `rp2350_periph_match` is exempt: it is only
-  reached when `membus_rp2350_mode` is already set.
+  Two lessons worth keeping, because both cost time:
 
-  The reliable cross-check is pico-sdk's per-chip
-  `src/<chip>/hardware_regs/include/hardware/regs/addressmap.h`, which lists
-  every base for that chip. The RP2350 datasheet alone is not enough: it cannot
-  show that a constant already used is really the *RP2040* one. Checking
-  against it is what showed RP2040's `BUSCTRL_BASE` is `0x40030000` and that
-  this collides with RP2350's `IO_QSPI_BASE`.
+  **Check per-chip headers, not just the RP2350 datasheet.** pico-sdk's
+  `src/<chip>/hardware_regs/include/hardware/regs/addressmap.h` lists every base
+  for that chip. The RP2350 datasheet alone cannot show that a constant already
+  in use is really the *RP2040* one. Comparing against it is what established
+  that RP2040's `BUSCTRL_BASE` is `0x40030000` — had I "corrected" it to a
+  plausible-looking RP2040 value I would have broken the working chip.
+
+  **A matcher is not always a matcher.** The ADC had no `adc_match()` function at
+  all, just `is_adc_addr()` inlined at its two call sites, so a sweep searching
+  for `*_match(` by name passed straight over it while it was broken. Searching
+  for the `_BASE` constants rather than the function names is what found it.
 - Sub-word *write* paths beyond SIO — deliberately unfixed, because a blanket
   read-modify-write against a FIFO register is audit item O28.
 

@@ -8,7 +8,7 @@ specified inside the RP2350 datasheet).
 **Supersedes:** `audit_report.md` (2026-06-28, v0.46.0) — that was an internal
 code audit; this one is datasheet-referenced.
 
-**Status note (v0.49.9):** this document is a point-in-time audit. Most of its
+**Status note (v0.49.10):** this document is a point-in-time audit. Most of its
 findings have since been fixed, several by the later register-decode pass, which
 caught peripherals that were unreachable despite passing every test. For current
 status, the outstanding queue and the items still blocked on hardware, read

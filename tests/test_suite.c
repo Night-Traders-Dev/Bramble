@@ -7051,6 +7051,48 @@ TEST(test_busctrl_io_qspi_reachable_on_rp2350) {
     PASS();
 }
 
+/* The ADC moved to 0x400A0000 on RP2350; RP2040 keeps 0x4004C000. is_adc_addr()
+ * took a single base with no per-chip branch, so on RP2350 it claimed an
+ * address that is not the ADC there -- 0x4004C000 sits between PADS_QSPI and
+ * XOSC -- and the real ADC was unmapped.
+ *
+ * The write path goes through is_adc_addr() to adc_write32(), and that
+ * handler derives its offset as `addr & 0xFFF`, so the block size only has to
+ * cover the registers the model implements. DIV (0x10) is the cleanest probe:
+ * a plain storage register whose value is distinguishable from the zero an
+ * unmapped address returns. */
+TEST(test_adc_reachable_on_rp2350) {
+    extern int membus_rp2350_mode;
+    int saved_mode = membus_rp2350_mode;
+    int saved_delegate = membus_rv_delegate;
+
+    membus_rv_delegate = 0;
+
+    membus_rp2350_mode = 0;
+    mem_write32(ADC_BASE + 0x10u, 0xABCDu);
+    ASSERT_EQ(0xABCDu, mem_read32(ADC_BASE + 0x10u),
+              "RP2040 ADC.DIV must round-trip");
+
+    membus_rp2350_mode = 1;
+    mem_write32(RP2350_ADC_BASE + 0x10u, 0x1234u);
+    ASSERT_EQ(0x1234u, mem_read32(RP2350_ADC_BASE + 0x10u),
+              "RP2350 ADC.DIV must round-trip");
+
+    /* The RP2040 ADC base must no longer be claimed on RP2350. It is not a
+     * neighbouring peripheral there, so an unmapped read is the expectation --
+     * what matters is that it does not answer as the ADC. */
+    ASSERT_EQ(0, mem_read32(ADC_BASE + 0x10u),
+              "the RP2040 ADC base must not decode as ADC on RP2350");
+
+    membus_rp2350_mode = 0;
+    ASSERT_EQ(0, mem_read32(RP2350_ADC_BASE + 0x10u),
+              "the RP2350 ADC base must not decode on RP2040");
+
+    membus_rp2350_mode = saved_mode;
+    membus_rv_delegate = saved_delegate;
+    PASS();
+}
+
 /* ACCESSCTRL registers are at 0x40060000. Both the read and write handlers
  * tested a hard-coded 0x40160000 instead, which is not a matched region at all,
  * so the branch was dead and every ACCESSCTRL register read 0 rather than its
@@ -8131,6 +8173,7 @@ int main(void) {
     RUN_TEST(test_syscfg_reachable_on_rp2350);
     RUN_TEST(test_tbman_reachable_on_rp2350);
     RUN_TEST(test_busctrl_io_qspi_reachable_on_rp2350);
+    RUN_TEST(test_adc_reachable_on_rp2350);
     RUN_TEST(test_accessctrl_register_map);
     RUN_TEST(test_dma_rp2350_has_four_interrupt_lines);
     RUN_TEST(test_dma_extra_irqs_are_rp2350_only);

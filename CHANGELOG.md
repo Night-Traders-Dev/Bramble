@@ -1,5 +1,49 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.49.10] - 2026-10-08
+
+### Fixed
+
+- **The ADC was unreachable on RP2350.** RP2350 moves it to `0x400A0000`; the
+  RP2040 base is `0x4004C000`. `is_adc_addr()` compared against the RP2040 base
+  with no per-chip branch, so on RP2350 it claimed `0x4004C000` -- an address
+  that is not the ADC there, sitting between `PADS_QSPI` and `XOSC` -- and the
+  real ADC went unmapped.
+
+  This is the same defect as I2C (0.49.7), USB (0.49.8) and the four matchers in
+  0.49.9, but it hid better: there is no `adc_match()` function, just a predicate
+  inlined at both the read and write call sites in `membus.c`, so a sweep looking
+  for matchers by name had not turned it up. Worth recording as a lesson about
+  the shape of the search rather than about the ADC.
+
+- `is_adc_addr()` now selects its base on `membus_rp2350_mode &&
+  !membus_rv_delegate`, like every other per-chip matcher.
+
+### Confirmed correct, no change needed
+
+Audited the remainder of the per-chip matcher queue against pico-sdk's per-chip
+`addressmap.h`:
+
+- `dma` -- `DMA_BASE` is `0x50000000` on both chips. Its RP2350 interrupt lines
+  were already fixed earlier.
+- `rtc` -- RP2040-only, `0x4005C000`, base already correct. RP2350 has no
+  RP2040-style RTC; the AON timer lives in POWMAN, already modelled.
+- `vreg` -- RP2040-only. On RP2350 the VREG registers are part of `POWMAN` at
+  `0x40100000`, which `rp2350_periph.c` already implements.
+- `pwm` -- already branches per chip, with a comment recording that RP2040's
+  `0x40050000` is `PLL_SYS` on RP2350.
+- `pads_qspi` -- already branches; its bases collide across chips, which is why.
+- `trng`, `sha256`, `otp`, `hstx`, `ticks` -- RP2350-only, all bases confirmed.
+
+### Tests
+
+- 398 tests, up from 397. `test_adc_reachable_on_rp2350` probes through the bus
+  in both chip modes, using `DIV` (0x10) as a plain storage register whose value
+  is distinguishable from the zero an unmapped address returns.
+- Load-bearing: reverting the branch drops the suite to 397/398.
+- Clean at 0 warnings with and without FUSE and under debug; 398/398 in each
+  configuration and under ASan/UBSan.
+
 ## [0.49.9] - 2026-10-08
 
 ### Fixed

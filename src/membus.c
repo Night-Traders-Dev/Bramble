@@ -634,7 +634,13 @@ static int is_clocks_addr(uint32_t addr) {
 }
 
 static int is_adc_addr(uint32_t addr) {
-    return (addr & ~0x3FFF) == ADC_BASE;
+    /* RP2350 moves the ADC to 0x400A0000; the RP2040 base is 0x4004C000. There
+     * was no per-chip branch here, so on RP2350 this matched 0x4004C000 -- an
+     * address that is not the ADC there (it sits after PADS_QSPI and before
+     * XOSC) -- while the real ADC at 0x400A0000 was unmapped. */
+    uint32_t abase = (membus_rp2350_mode && !membus_rv_delegate)
+                   ? RP2350_ADC_BASE : ADC_BASE;
+    return (addr & ~0x3FFF) == abase;
 }
 
 /* ========================================================================
